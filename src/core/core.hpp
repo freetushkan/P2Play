@@ -24,6 +24,7 @@
 #include "../../third_party/nlohmann/json.hpp"
 #include "auth.hpp"
 #include "http.hpp"
+#include "mesh.hpp"
 #include "ram_cache.hpp"
 #include "store.hpp"
 
@@ -91,6 +92,8 @@ namespace p2p {
 
         // api_silo.cpp: the native API, Silo's scheme under /api (file indexes from 0)
         void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
+        // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)
+        void routeMesh(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
         void siloAdd(const HttpRequest &req, HttpResponse &res, const User &user);
         void siloUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
         nlohmann::json siloStatus(const TorrentPtr &t, const std::string &user);
@@ -167,6 +170,7 @@ namespace p2p {
 
         CoreConfig m_config;
         Store m_store;
+        Mesh m_mesh;
         Auth m_auth;
         Settings m_settings;
         std::unique_ptr<RamCache> m_cache;   // null with useDisk

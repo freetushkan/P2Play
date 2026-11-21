@@ -242,6 +242,7 @@ namespace p2p {
     bool Core::start() {
         m_started = Clock::now();
         m_store.load();
+        m_mesh.load(m_store.dir(), [this](const std::string &line) { log("%s", line.c_str()); });
         m_auth.load(m_store.dir());
         loadSettings();
         // one BitTorrent port for every socket, chosen once and kept (0: a random port per

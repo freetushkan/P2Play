@@ -58,6 +58,22 @@ trackers)) are added on both APIs as any other link; the status of `/api` gives 
 Not yet: `/api/events` (SSE), Silo's transcoding and plugins.
 Unlike Silo, a stream does not mark a file viewed (players read the end of a file first): the progress does.
 
+### MediaMesh lists (stage 3, the local half)
+
+A list is an ed25519 key; a version is a signed manifest and append-only segments of records,
+in `lists/<pubkey>/` of the data directory (the format: `src/core/mesh.hpp`). The lists of a node are
+checked (signature, seq, segment hashes, limits), merged and searched. Not yet: the network (a version
+as a v2 torrent, the BEP 44 pointer, the `mediamesh` extension, the directory swarm).
+
+| Route | |
+| --- | --- |
+| `GET /api/catalog/search?q=&tag=&limit=` | every word in the title or tags (any case, Latin and Cyrillic, ё = е); each result with its `torrs://` link and lists |
+| `GET /api/catalog/:infohash` | a record and its lists |
+| `GET /api/lists`, `DELETE /api/lists/:pubkey` | the lists of this node; a received one dropped |
+| `POST /api/lists/import` | `{"dir"}`: a version directory taken (admins) |
+| `POST /api/publish` | `{"name","description"}`: a new list, its key in `keys/` (admins) |
+| `POST /api/publish/:pubkey/records`, `.../release`, `GET .../status` | NDJSON records (`ih`, `title`, `size`, `files`, `date`, `tags`, `trackers`, `poster`; `{"del": ih}`), the next version |
+
 ### MatriX
 
 | Route | |

@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""MediaMesh lists, the local half: a list published on one node, taken by another, searched.
+
+    tools/mesh-test.py build-linux/src/app/p2playd
+
+Checks: a list made (its key on the node); records checked (a bad one refused) and released
+as signed versions; the search (words in any case, Cyrillic too, a tag filter) with a
+torrs:// link a result; a removal in a later version; another node takes the version
+directory: the signature, the segment hashes and seq checked (tampered copies refused, an
+older version refused); the list kept after a restart, dropped by hand.
+"""
+
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import tempfile
+import urllib.request
+
+spec = importlib.util.spec_from_file_location("core_test", os.path.join(os.path.dirname(__file__), "core-test.py"))
+ct = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ct)
+check = ct.check
+
+
+def call(path, body=None, method=None, raw=None):
+    data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
+    req = urllib.request.Request(ct.BASE + path, data=data, method=method or ("POST" if data is not None else "GET"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"null")
+
+
+IH1, IH2, IH3 = "a" * 40, "b" * 40, "c" * 64
+RECORDS = "\n".join(json.dumps(r, ensure_ascii=False) for r in [
+    {"ih": IH1, "title": "Сериал Тест S01 1080p", "size": 1234567, "tags": ["tv", "WEB-DL"], "trackers": ["udp://t.example:1337"]},
+    {"ih": IH2.upper(), "title": "Some Movie (2024)", "files": 3, "date": 1700000000, "tags": ["movie"]},
+    {"ih": IH3, "title": "Ёлки — v2 only"},
+])
+
+
+def main():
+    daemon = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "build-linux/src/app/p2playd")
+    root = tempfile.mkdtemp(prefix="p2play-mesh-")
+    a, b = os.path.join(root, "a"), os.path.join(root, "b")
+    os.makedirs(a)
+    os.makedirs(b)
+    proc = None
+    try:
+        proc = ct.start_daemon(daemon, a)
+        status, out = call("/api/publish", {"name": "Test list", "description": "for the test"})
+        pk = out.get("pubkey", "")
+        check(status == 201 and len(pk) == 64 and os.path.exists(os.path.join(a, "keys", pk + ".seed")), "a list made, its key kept")
+        status, out = call(f"/api/publish/{pk}/records", raw=b'{"ih": "xyz", "title": "bad"}\n')
+        check(status == 400 and "line 1" in out["error"], "a bad record refused")
+        status, out = call(f"/api/publish/{pk}/records", raw=RECORDS.encode())
+        check(status == 200 and out["count"] == 3 and out["pending"] == 3, "records waiting")
+        status, out = call(f"/api/publish/{pk}/release", {})
+        check(status == 200 and out["seq"] == 1 and out["records"] == 3, "version 1 released")
+        check(call(f"/api/publish/{pk}/release", {})[0] == 400, "nothing to release")
+
+        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 1080P"))[1]["results"]
+        check([r["hash"] for r in res] == [IH1] and res[0]["torrs"].startswith("torrs://") and res[0]["lists"] == [pk],
+              "search: Cyrillic in another case, a torrs:// link")
+        res = call("/api/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"]
+        check([r["hash"] for r in res] == [IH3] and "torrs" not in res[0], "search: ё as е; no torrs:// for a v2-only hash")
+        res = call("/api/catalog/search?q=&tag=MOVIE")[1]["results"]
+        check([r["hash"] for r in res] == [IH2], "search: a tag, hashes in lower case")
+        status, rec = call(f"/api/catalog/{IH1}")
+        check(status == 200 and rec["size"] == 1234567 and rec["sources"][0]["name"] == "Test list", "a record and its list")
+
+        call(f"/api/publish/{pk}/records", raw=json.dumps({"del": IH2}).encode())
+        status, out = call(f"/api/publish/{pk}/release", {})
+        check(status == 200 and out["seq"] == 2 and out["records"] == 2
+              and call("/api/catalog/search?q=movie")[1]["results"] == [], "version 2: a removal")
+        ct.stop_daemon(proc)
+        proc = None
+
+        # another node takes the version
+        src = os.path.join(a, "lists", pk)
+        proc = ct.start_daemon(daemon, b)
+        bad = os.path.join(root, "bad")
+        shutil.copytree(src, bad)
+        with open(os.path.join(bad, "records", "seg-000001.z"), "r+b") as f:
+            f.seek(10)
+            byte = f.read(1)
+            f.seek(10)
+            f.write(bytes([byte[0] ^ 1]))
+        status, out = call("/api/lists/import", {"dir": bad})
+        check(status == 400 and "hash mismatch" in out["error"], "a tampered segment refused")
+        shutil.rmtree(bad)
+        shutil.copytree(src, bad)
+        manifest = open(os.path.join(bad, "manifest.ben"), "rb").read()
+        open(os.path.join(bad, "manifest.ben"), "wb").write(manifest.replace(b"4:name9:Test list", b"4:name9:Evil list"))
+        status, out = call("/api/lists/import", {"dir": bad})
+        check(status == 400 and "signature" in out["error"], "a tampered manifest refused")
+        status, _ = call("/api/lists/import", {"dir": src})
+        lists = call("/api/lists")[1]["lists"]
+        check(status == 200 and len(lists) == 1 and lists[0]["seq"] == 2 and not lists[0]["own"], "the version taken")
+        check(call("/api/lists/import", {"dir": src})[0] == 400, "the same version again refused")
+        check([r["hash"] for r in call("/api/catalog/search?q=" + urllib.parse.quote("тест"))[1]["results"]] == [IH1], "searched on the other node")
+        ct.stop_daemon(proc)
+        proc = ct.start_daemon(daemon, b)
+        check(len(call("/api/lists")[1]["lists"]) == 1, "kept after a restart")
+        check(call(f"/api/publish/{pk}/status")[0] == 404, "no publishing without the key")
+        check(call(f"/api/lists/{pk}", method="DELETE")[0] == 200 and call("/api/lists")[1]["lists"] == []
+              and call("/api/catalog/search?q=" + urllib.parse.quote("тест"))[1]["results"] == [], "the list dropped")
+        print("PASS")
+    finally:
+        if proc:
+            proc.terminate()
+            proc.wait(timeout=20)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    import urllib.parse
+    main()

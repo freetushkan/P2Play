@@ -205,14 +205,41 @@ bool p2p::platformIsConsole() { return true; }
 extern "C" int sceKernelSendNotificationRequest(int device, void *request, size_t size, int blocking);
 
 // A payload has no system "already running": the icon opened again starts a second
-// process next to the first (and an updated package runs beside the old server). As the
-// pPlay loader: the process names its main thread and finds another one by it. Opening the
-// icon again stops the running server (asked over a loopback control socket, killed if it
-// does not go); the next opening starts the new one.
+// process next to the first (and an updated package runs beside the old server). As pPlay
+// (its port 9095): the running server holds a loopback control port (UDP), which the system
+// releases when the process ends, whatever way (a process name would outlive it: an ended
+// payload stays listed until its parent reaps it). Opening the icon again finds the port
+// taken: it asks the server to quit, waits for the port (kills the server by its thread name
+// after 10 s) and exits; the next opening starts the new one.
 namespace {
     constexpr const char *kThreadName = "p2play";
     constexpr uint16_t kControlPort = 9097;   // pPlay holds 9095
     int g_control = -1;
+
+    sockaddr_in loopback(uint16_t port) {
+        sockaddr_in addr{};
+        addr.sin_len = sizeof(addr);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        return addr;
+    }
+
+    // the control port bound, -1 if taken. UDP: nothing of it outlives the process (a TCP
+    // port can stay in TIME_WAIT), no SO_REUSEADDR: a second one must fail.
+    int listenControl() {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            return -1;
+        }
+        sockaddr_in addr = loopback(kControlPort);
+        if (bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+            close(fd);
+            return -1;
+        }
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        return fd;
+    }
 
     // the pid of another process whose (main) thread is named so, -1 if none (pPlay's hbldr)
     pid_t findOther(const char *name) {
@@ -227,6 +254,7 @@ namespace {
             return -1;
         }
         const pid_t self = getpid();
+        pid_t found = -1;
         for (size_t off = 0; off + 460 <= size;) {
             const uint8_t *p = buf.data() + off;
             int structSize;
@@ -237,20 +265,11 @@ namespace {
                 break;
             }
             if (pid != self && std::strncmp(reinterpret_cast<const char *>(p + 447), name, 20) == 0) {
-                return pid;
+                found = pid;
             }
             off += static_cast<size_t>(structSize);
         }
-        return -1;
-    }
-
-    sockaddr_in loopback(uint16_t port) {
-        sockaddr_in addr{};
-        addr.sin_len = sizeof(addr);
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        return addr;
+        return found;
     }
 
     // a GET on 127.0.0.1; the answer's start
@@ -278,24 +297,30 @@ namespace {
         return out;
     }
 
-    // the running server asked to quit, killed after 10 s
-    void stopOther(pid_t other) {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+    // the running server asked to quit; true once its port is free (killed after 10 s)
+    bool stopRunning() {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd >= 0) {
             sockaddr_in addr = loopback(kControlPort);
-            if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-                send(fd, "quit\n", 5, 0);
-            }
+            sendto(fd, "quit", 4, 0, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
             close(fd);
         }
-        for (int i = 0; i < 50 && findOther(kThreadName) == other; i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        for (int i = 0; i < 80; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (i == 40) {
+                pid_t other = findOther(kThreadName);
+                klog_printf("[p2play] the running server did not quit in 10 s: killing pid %d\n", static_cast<int>(other));
+                if (other > 0) {
+                    kill(other, SIGKILL);
+                }
+            }
+            int probe = listenControl();
+            if (probe >= 0) {
+                close(probe);
+                return true;
+            }
         }
-        if (findOther(kThreadName) == other) {
-            klog_printf("[p2play] the running server (pid %d) did not quit: killed\n", static_cast<int>(other));
-            kill(other, SIGKILL);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        return false;
     }
 }
 
@@ -304,33 +329,29 @@ bool p2p::platformInit() {
     syscall(SYS_thr_set_name, -1, kThreadName);
     mkdir(dataDir().c_str(), 0777);
 
-    // opened again: the running server stops, this process too (before the log is opened,
-    // it is the other's)
-    if (pid_t other = findOther(kThreadName); other > 0) {
-        klog_printf("[p2play] already running (pid %d): stopping it\n", static_cast<int>(other));
-        stopOther(other);
-        platformNotify("P2Play: stopped. Open it again to start");
+    g_control = listenControl();
+    if (g_control < 0) {
+        // opened again: the running server stops, this process too (before the log is
+        // opened, it is the other's)
+        klog_printf("[p2play] already running: stopping it\n");
+        platformNotify(stopRunning() ? "P2Play: stopped. Open it again to start"
+                                     : "P2Play: the running server does not stop");
         return false;
     }
-    // a server from before this (no thread name): its MatriX /shutdown
+    // a server from before the control port: its MatriX /shutdown
     if (localGet(8090, "/echo").find("P2Play/") != std::string::npos) {
         klog_printf("[p2play] an older server answers on 8090: /shutdown\n");
         localGet(8090, "/shutdown");
-        platformNotify("P2Play: stopped. Open it again to start");
-        return false;
-    }
-
-    g_control = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr = loopback(kControlPort);
-    int one = 1;
-    setsockopt(g_control, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    if (g_control >= 0 && (bind(g_control, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 ||
-                           listen(g_control, 4) != 0)) {
+        bool gone = false;
+        for (int i = 0; i < 40 && !gone; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            gone = localGet(8090, "/echo").find("P2Play/") == std::string::npos;
+        }
         close(g_control);
         g_control = -1;
-    }
-    if (g_control >= 0) {
-        fcntl(g_control, F_SETFL, fcntl(g_control, F_GETFL, 0) | O_NONBLOCK);
+        platformNotify(gone ? "P2Play: stopped. Open it again to start"
+                            : "P2Play: an older server holds port 8090 and does not stop: restart the console");
+        return false;
     }
     return true;
 }
@@ -350,9 +371,8 @@ bool p2p::platformRunning() {
     }
     // another opening of the icon
     if (g_control >= 0) {
-        int fd = accept(g_control, nullptr, nullptr);
-        if (fd >= 0) {
-            close(fd);
+        char b[16];
+        if (recv(g_control, b, sizeof(b), 0) >= 4 && std::memcmp(b, "quit", 4) == 0) {
             platformPrint("[App] opened again: quitting");
             return false;
         }

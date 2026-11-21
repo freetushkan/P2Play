@@ -228,6 +228,11 @@ namespace p2p {
             return;
         }
 
+        if (at(1) == "catalog" || at(1) == "lists" || at(1) == "publish") {
+            routeMesh(req, res, user, parts);
+            return;
+        }
+
         if (at(1) == "users") {
             siloUsers(req, res, user, parts);
             return;
