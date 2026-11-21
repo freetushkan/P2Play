@@ -6,8 +6,11 @@
 //     "Authorization: Bearer" (clients) or the silo_token / p2play_token cookie (browsers);
 //     POST /api/auth/login gives it for a name and a password.
 //   the MatriX routes: "Authorization: Basic" (WWW-Authenticate).
-// As Silo: the owner (id "owner", rank 100) always exists; without a password set for any
-// user nothing is asked and every request is the owner's. Ranks: owner 100, admins 50-99,
+// As Silo: the owner (id "owner", rank 100) always exists. Silo's clients ask a login for any
+// server but their own, so /api is for users once the owner has a password; until then every
+// request is the owner's and the first login as the owner with a password sets it (a console
+// has no other way to). The MatriX routes ask Basic only when "matrix_basic" is on (as
+// TorrServer's --httpauth): pPlay and Lampa keep working without credentials. Ranks: owner 100, admins 50-99,
 // users 10-49, guests 1-9; a user manages those of a lower rank only.
 // auth.json: {"users": [{"id", "username", "password_hash", "rank", "api_token", "is_banned",
 // "created_at"}]}. A plain "password" (written by hand) is hashed at the start.
@@ -44,8 +47,16 @@ namespace p2p {
 
         void load(const std::string &dir);
 
-        // a password is set: requests need a user
+        // a password is set: /api needs a user
         bool required() const;
+
+        // the MatriX routes need Basic (a password set and "matrix_basic" on)
+        bool matrixRequired() const;
+
+        std::string setMatrixBasic(bool on);
+
+        // the owner without a password (none set yet): this one set; the owner, else invalid
+        User claimOwner(const std::string &password);
 
         // the user of a token (?token=, Bearer, cookie) or of Basic; invalid if none. Without
         // users required both give the owner.
@@ -81,6 +92,7 @@ namespace p2p {
         std::string m_path;
         mutable std::mutex m_mutex;
         std::vector<User> m_users;
+        bool m_matrixBasic = false;
     };
 
 }

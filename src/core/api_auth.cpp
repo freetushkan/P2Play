@@ -56,8 +56,14 @@ namespace p2p {
             User u = body.is_object() && body.value("password", json()).is_string()
                              ? m_auth.login(name, body.value("password", ""))
                              : User();
-            if (!m_auth.required() && name == Auth::kOwner) {
-                u = m_auth.find(Auth::kOwner);
+            if (!u.valid() && name == Auth::kOwner && !m_auth.required()) {
+                // no password yet: the first one given becomes the owner's (Silo's clients ask a
+                // login anyway; a console has no other place to set it)
+                const std::string password = body.value("password", json()).is_string() ? body["password"].get<std::string>() : "";
+                u = password.empty() ? m_auth.find(Auth::kOwner) : m_auth.claimOwner(password);
+                if (u.valid() && !password.empty()) {
+                    log("[Auth] the owner's password set at the first login, from %s", req.peer.c_str());
+                }
             }
             if (!u.valid()) {
                 log("[Web] failed login for \"%s\" from %s", name.c_str(), req.peer.c_str());

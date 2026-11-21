@@ -237,6 +237,25 @@ namespace p2p {
                               {"uptime_sec", uptime},
                               {"version", version()},
                               {"torrent", std::string("libtorrent ") + LIBTORRENT_VERSION}});
+            } else if (m == "PUT" && at(2) == "auth") {
+                // the MatriX routes behind Basic or not
+                json b = body(req);
+                if (user.rank < 100) {
+                    error(res, 403, "owner access required");
+                    return;
+                }
+                if (b.is_null() || !b.value("matrix_basic", json()).is_boolean()) {
+                    error(res, 400, "invalid request format");
+                    return;
+                }
+                const std::string err = m_auth.setMatrixBasic(b["matrix_basic"].get<bool>());
+                if (!err.empty()) {
+                    error(res, 400, err);
+                    return;
+                }
+                ok(res, 200, {{"matrix_basic", b["matrix_basic"].get<bool>()}});
+            } else if (get && at(2) == "auth") {
+                ok(res, 200, {{"required", m_auth.required()}, {"matrix_basic", m_auth.matrixRequired()}});
             } else if (get && at(2) == "torrent-config") {
                 if (user.rank < 100) {
                     error(res, 403, "owner access required");

@@ -99,19 +99,22 @@ as a v2 torrent, the BEP 44 pointer, the `mediamesh` extension, the directory sw
 
 ### Users
 
-One set of users, `auth.json` in the data directory, for both APIs; each API asks as its original does:
-`/api` a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie), the MatriX routes Basic
-(`WWW-Authenticate`). As Silo: the `owner` (rank 100) always exists; while no user has a password nothing is
-asked and every request is the owner's. To set the owner's password, write it by hand and restart:
+One set of users, `auth.json` in the data directory, for both APIs; each API asks as its original does.
 
-    {"users": [{"username": "owner", "password": "secret"}]}
+- `/api` (Silo): a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie). Silo's clients ask a
+  login for any server but their own, so it is required once the owner (`owner`, rank 100, always there) has a
+  password. Until then every request is the owner's, and the first login as `owner` with a password sets it:
+  on a console there is no other place to set it. Or by hand: `{"users": [{"username": "owner", "password":
+  "secret"}]}` in `auth.json` (hashed at the start), or `PUT /api/users/owner {"password"}`.
+- MatriX: Basic (`WWW-Authenticate`), only with `matrix_basic` on (as TorrServer's `--httpauth`):
+  `PUT /api/system/auth {"matrix_basic": true}`, `GET /api/system/auth`. Off by default: pPlay and Lampa need no
+  credentials. A torrent already known can be played without a login (`/stream` with `play` or `m3u`, `/play`,
+  `/playlist`): players such as pPlay and VLC open those links without credentials.
 
-It is hashed at the start (`password_hash`), the token (`api_token`, `ts_...`) generated. Or through the API
-while nothing is asked: `PUT /api/users/owner {"password": "..."}`. The other users are
-made through `/api/users`: a user manages those of a lower rank (admins 50-99, users 10-49, guests 1-9).
-Each user has their own library and progress; a torrent no library holds is forgotten once closed.
-A torrent already known can be played on the MatriX routes without a login (`/stream` with `play` or `m3u`,
-`/play`, `/playlist`): players such as pPlay and VLC open those links without credentials.
+The other users are made through `/api/users`: a user manages those of a lower rank (admins 50-99, users 10-49,
+guests 1-9). Each user has their own library and progress; a torrent no library holds is forgotten once closed.
+
+A client works with a server through one of the two APIs: their file numbers differ (MatriX's id, Silo's index).
 
 Discovery: pPlay and TorrServe find a TorrServer on port 8090 by `/echo` (public, `MatriX.141 P2Play/...`:
 MatriX's version prefix); Silo's clients by the public `/api/system/ping`.

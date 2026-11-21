@@ -186,6 +186,7 @@ namespace p2p {
                 m_users.push_back(user);
             }
         }
+        m_matrixBasic = j.is_object() && j.value("matrix_basic", false);
         if (!findLocked(kOwner)) {
             User o;
             o.id = kOwner;
@@ -221,7 +222,7 @@ namespace p2p {
                              {"created_at", u.created}});
         }
         std::string tmp = m_path + ".tmp";
-        std::string text = json{{"users", users}}.dump(2);
+        std::string text = json{{"users", users}, {"matrix_basic", m_matrixBasic}}.dump(2);
         if (FILE *f = std::fopen(tmp.c_str(), "wb")) {
             bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
             ok = std::fclose(f) == 0 && ok;
@@ -280,8 +281,40 @@ namespace p2p {
         return User();
     }
 
-    User Auth::byBasic(const HttpRequest &req) const {
+    bool Auth::matrixRequired() const {
         if (!required()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_matrixBasic;
+    }
+
+    std::string Auth::setMatrixBasic(bool on) {
+        if (on && !required()) {
+            return "set the owner's password first";
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_matrixBasic = on;
+        save();
+        return "";
+    }
+
+    User Auth::claimOwner(const std::string &password) {
+        if (password.empty() || required()) {
+            return User();
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        User *o = findLocked(kOwner);
+        if (!o) {
+            return User();
+        }
+        o->passwordHash = hashPassword(password);
+        save();
+        return *o;
+    }
+
+    User Auth::byBasic(const HttpRequest &req) const {
+        if (!matrixRequired()) {
             std::lock_guard<std::mutex> lock(m_mutex);
             return owner();
         }

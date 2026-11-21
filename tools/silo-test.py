@@ -190,6 +190,15 @@ def main():
               and card["poster"] == "https://image.tmdb.org/t/p/w500/abc.jpg" and card["category"] == "tv"
               and card["torrent_size"] == 12345678901, "a torrs:// link of Silo")
         check(call("/api/torrents/5d902edb06f1ca0d2a713ce3cdd395b75d36f735", method="DELETE")[0] == 200, "its card removed")
+        # the first login as the owner with a password sets it; /api needs a token from then on,
+        # the MatriX routes stay open until matrix_basic
+        status, out = call("/api/auth/login", {"username": "owner", "password": "first"})
+        token = out.get("token", "") if status == 200 else ""
+        check(token.startswith("ts_") and call("/api/torrents")[0] == 401, "the first login sets the owner's password")
+        check(call("/api/auth/login", {"username": "owner", "password": "other"})[0] == 401, "another password refused")
+        check(ct.http("/torrents", {"action": "list"})[0] == 200, "MatriX still open")
+        check(call("/api/system/auth", {"matrix_basic": True}, "PUT", headers={"Authorization": "Bearer " + token})[0] == 200
+              and ct.http("/torrents", {"action": "list"})[0] == 401, "MatriX behind Basic once asked")
         print("PASS")
         del ses
     finally:

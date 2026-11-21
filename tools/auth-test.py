@@ -54,7 +54,7 @@ def main():
     os.makedirs(data)
     owner_token = "ts_owner0000000000000000000"
     with open(os.path.join(data, "auth.json"), "w") as f:
-        json.dump({"users": [{"name": "owner", "password": "secret", "token": owner_token}]}, f)
+        json.dump({"users": [{"name": "owner", "password": "secret", "token": owner_token}], "matrix_basic": True}, f)
     proc = None
     try:
         folder, files = ct.make_payload(root)
@@ -73,6 +73,8 @@ def main():
               "found by pPlay's discovery and TorrServe with users set: " + echo.decode())
         stored = json.load(open(os.path.join(data, "auth.json")))["users"][0]
         check(stored["password_hash"].startswith("sha256$") and "password" not in stored, "auth.json: the password hashed")
+        check(json.loads(call("/api/system/auth", headers=bearer(owner_token))[2]) == {"required": True, "matrix_basic": True},
+              "/api/system/auth")
 
         # MatriX: Basic only
         status, headers, _ = call("/torrents", {"action": "list"})
