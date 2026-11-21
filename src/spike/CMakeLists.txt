@@ -28,7 +28,7 @@ if (PLATFORM_SWITCH)
             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 elseif (PLATFORM_PS4)
     target_include_directories(p2spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ps4)
-    target_link_libraries(p2spike PRIVATE SceSysmodule SceNet kernel)
+    target_link_libraries(p2spike PRIVATE SceSysmodule SceNet SceSystemService kernel)
     # Linux constants in the musl headers, FreeBSD ones in libkernel (ps4/ps4_compat.c)
     target_link_options(p2spike PRIVATE
             "LINKER:--wrap=clock_gettime"

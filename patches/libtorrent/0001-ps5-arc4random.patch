@@ -1,12 +1,12 @@
 diff --git a/include/libtorrent/config.hpp b/include/libtorrent/config.hpp
-index 6752a5eb1..fe7e77d35 100644
+index 6752a5eb1..7153ae303 100644
 --- a/include/libtorrent/config.hpp
 +++ b/include/libtorrent/config.hpp
 @@ -159,7 +159,11 @@ POSSIBILITY OF SUCH DAMAGE.
  #else
  
  // non-Apple BSD
-+#if defined __PS4__ || defined __PS5__
++#if defined __PS5__
 +#define TORRENT_USE_ARC4RANDOM 1
 +#else
  #define TORRENT_USE_GETRANDOM 1

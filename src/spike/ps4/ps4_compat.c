@@ -148,6 +148,46 @@ ssize_t __wrap_recvfrom(int fd, void *buf, size_t len, int flags, struct sockadd
     return __real_recvfrom(fd, buf, len, ps4_msg_flags(flags) & ~FBSD_MSG_NOSIGNAL, addr, alen);
 }
 
+// libc++abi registers thread_local destructors here, the OpenOrbis musl has no such function.
+// Weak: a toolchain that has it wins.
+
+struct ps4_tls_dtor {
+    void (*dtor)(void *);
+    void *obj;
+    struct ps4_tls_dtor *next;
+};
+
+static pthread_key_t g_tls_key;
+static pthread_once_t g_tls_once = PTHREAD_ONCE_INIT;
+
+static void ps4_tls_run(void *head) {
+    struct ps4_tls_dtor *d = (struct ps4_tls_dtor *) head;
+    while (d) {
+        struct ps4_tls_dtor *next = d->next;
+        d->dtor(d->obj);
+        free(d);
+        d = next;
+    }
+}
+
+static void ps4_tls_init(void) {
+    pthread_key_create(&g_tls_key, ps4_tls_run);
+}
+
+__attribute__((weak)) int __cxa_thread_atexit_impl(void (*dtor)(void *), void *obj, void *dso) {
+    (void) dso;
+    pthread_once(&g_tls_once, ps4_tls_init);
+    struct ps4_tls_dtor *d = (struct ps4_tls_dtor *) malloc(sizeof(*d));
+    if (!d) {
+        return -1;
+    }
+    d->dtor = dtor;
+    d->obj = obj;
+    d->next = (struct ps4_tls_dtor *) pthread_getspecific(g_tls_key);
+    pthread_setspecific(g_tls_key, d);
+    return 0;
+}
+
 // asio sends and receives with sendmsg/recvmsg
 ssize_t __real_sendmsg(int fd, const struct msghdr *msg, int flags);
 ssize_t __real_recvmsg(int fd, struct msghdr *msg, int flags);

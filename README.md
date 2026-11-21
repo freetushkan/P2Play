@@ -41,6 +41,19 @@ PS5: configure with `/opt/ps5-payload-sdk/bin/prospero-cmake ... -DPLATFORM_PS5=
 libtorrent is the upstream tag in `third_party/libtorrent`; `patches/libtorrent/*.patch` are applied
 at configure time. Change libtorrent only through those patches.
 
+Boost headers get `patches/boost/*.patch` from `ci/boost-headers.sh`: on Switch and PS4 asio wakes its
+reactor through a loopback socket pair (libnx has no pipe/socketpair). What the console SDK headers
+miss is in `compat/` (forced include `compat/p2p_platform.h`, `compat/switch/sys/*.h`).
+
+| Patch | Why |
+| --- | --- |
+| libtorrent 0001 | PS5: `arc4random_buf`, no `getrandom` |
+| libtorrent 0002 | Switch: platform branch (no mmap, fallocate, rlimit; `randomGet`) |
+| libtorrent 0003 | PS4: platform branch (no sysctl, mmap, rlimit; `/dev/urandom`) |
+| libtorrent 0004 | Switch, PS4: no interface/route enumeration, listen on 0.0.0.0 as on Android 7+ |
+| libtorrent 0005 | `try_signal` (SIGBUS around mmap) left out where there is no mmap |
+| boost 0001 | asio: socket-pair interrupter and no signal blocker on request |
+
 Local check without DHT (a seeder on 127.0.0.1, byte ranges compared with the source):
 
     pip install libtorrent

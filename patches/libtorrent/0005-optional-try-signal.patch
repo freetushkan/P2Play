@@ -1,0 +1,29 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index dce745933..98c0d22d1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -544,6 +544,10 @@ if(static_runtime)
+ 	set(OPENSSL_MSVC_STATIC_RT ON)
+ endif()
+ 
++if (TORRENT_NO_TRY_SIGNAL)
++	set(try_signal_sources)
++endif()
++
+ add_library(torrent-rasterbar
+ 	${sources}
+ 	${try_signal_sources}
+diff --git a/src/mmap_storage.cpp b/src/mmap_storage.cpp
+index 3d980d802..91446acdc 100644
+--- a/src/mmap_storage.cpp
++++ b/src/mmap_storage.cpp
+@@ -40,7 +40,9 @@ POSSIBILITY OF SUCH DAMAGE.
+ #include "libtorrent/aux_/storage_utils.hpp"
+ #include "libtorrent/hasher.hpp"
+ 
++#if TORRENT_HAVE_MMAP || TORRENT_HAVE_MAP_VIEW_OF_FILE
+ #include "try_signal.hpp"
++#endif
+ 
+ #include <ctime>
+ #include <algorithm>

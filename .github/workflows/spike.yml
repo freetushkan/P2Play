@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_HEADERS }}
-          key: boost-headers-${{ env.BOOST_VERSION }}
+          key: boost-headers-${{ env.BOOST_VERSION }}-${{ hashFiles('patches/boost/**', 'ci/boost-headers.sh') }}
 
       - name: Boost headers
         run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
@@ -60,13 +60,13 @@ jobs:
       - name: Create build environment
         run: |
           apt-get update || true
-          apt-get install -y cmake curl xz-utils
+          apt-get install -y cmake curl xz-utils patch
 
       - name: Cache Boost headers
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_HEADERS }}
-          key: boost-headers-${{ env.BOOST_VERSION }}
+          key: boost-headers-${{ env.BOOST_VERSION }}-${{ hashFiles('patches/boost/**', 'ci/boost-headers.sh') }}
 
       - name: Boost headers
         run: ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
@@ -75,8 +75,18 @@ jobs:
         run: |
           cmake -S . -B build -G "Unix Makefiles" -DPLATFORM_SWITCH=ON -DCMAKE_BUILD_TYPE=Release \
             -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          set -o pipefail
           cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
-          test -f build/release/p2spike/p2spike.nro
+
+      - name: Error summary
+        if: failure()
+        run: |
+          {
+            echo "### Switch: unique errors"
+            echo '```'
+            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -121,7 +131,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_HEADERS }}
-          key: boost-headers-${{ env.BOOST_VERSION }}
+          key: boost-headers-${{ env.BOOST_VERSION }}-${{ hashFiles('patches/boost/**', 'ci/boost-headers.sh') }}
 
       - name: Boost headers
         run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
@@ -133,6 +143,16 @@ jobs:
             -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+
+      - name: Error summary
+        if: failure()
+        run: |
+          {
+            echo "### PS4: unique errors"
+            echo '```'
+            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -171,7 +191,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_HEADERS }}
-          key: boost-headers-${{ env.BOOST_VERSION }}
+          key: boost-headers-${{ env.BOOST_VERSION }}-${{ hashFiles('patches/boost/**', 'ci/boost-headers.sh') }}
 
       - name: Boost headers
         run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
@@ -182,6 +202,16 @@ jobs:
             -DPS5_PAYLOAD_SDK=/opt/ps5-payload-sdk -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+
+      - name: Error summary
+        if: failure()
+        run: |
+          {
+            echo "### PS5: unique errors"
+            echo '```'
+            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()

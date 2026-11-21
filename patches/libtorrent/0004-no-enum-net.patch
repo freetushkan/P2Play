@@ -1,0 +1,36 @@
+diff --git a/src/enum_net.cpp b/src/enum_net.cpp
+index 22e908843..3657a9f6e 100644
+--- a/src/enum_net.cpp
++++ b/src/enum_net.cpp
+@@ -951,6 +951,9 @@ int _System __libsocket_sysctl(int* mib, u_int namelen, void *oldp, size_t *oldl
+ 				, iface.interface_address.is_v4() ? AF_INET : AF_INET6);
+ 			ret.push_back(iface);
+ 		}
++#elif defined TORRENT_NO_ENUM_NET
++		TORRENT_UNUSED(ios);
++		ec.clear();
+ #else
+ 
+ #error "Don't know how to enumerate network interfaces on this platform"
+@@ -1468,7 +1471,7 @@ int _System __libsocket_sysctl(int* mib, u_int namelen, void *oldp, size_t *oldl
+ 				i = reinterpret_cast<ifreq const*>(reinterpret_cast<char const*>(i) + skip);
+ 			}
+ 		}
+-#elif defined TORRENT_ANDROID && __ANDROID_API__ >= 24
++#elif (defined TORRENT_ANDROID && __ANDROID_API__ >= 24) || defined TORRENT_NO_ENUM_NET
+ 		ec = boost::asio::error::operation_not_supported;
+ #else
+ #error "don't know how to enumerate network routes on this platform"
+diff --git a/src/session_impl.cpp b/src/session_impl.cpp
+index fe8598524..22117965e 100644
+--- a/src/session_impl.cpp
++++ b/src/session_impl.cpp
+@@ -2121,7 +2121,7 @@ namespace {
+ #endif
+ 			}
+ 
+-#if defined TORRENT_ANDROID && __ANDROID_API__ >= 24
++#if (defined TORRENT_ANDROID && __ANDROID_API__ >= 24) || defined TORRENT_NO_ENUM_NET
+ 			// For Android API >= 24, enum_routes with the current NETLINK based
+ 			// implementation is unsupported (maybe in the future the operation
+ 			// will be restore using another implementation). If routes is empty,

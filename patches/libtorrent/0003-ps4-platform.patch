@@ -1,0 +1,25 @@
+diff --git a/include/libtorrent/config.hpp b/include/libtorrent/config.hpp
+index 72e9f59a9..6320d9e72 100644
+--- a/include/libtorrent/config.hpp
++++ b/include/libtorrent/config.hpp
+@@ -106,8 +106,19 @@ POSSIBILITY OF SUCH DAMAGE.
+ 
+ 
+ // set up defines for target environments
++// ==== Sony PS4 (OpenOrbis: musl headers, FreeBSD kernel) ===
++#if defined __PS4__
++#define TORRENT_PS4
++#define TORRENT_HAS_FALLOCATE 0
++#define TORRENT_USE_RLIMIT 0
++#define TORRENT_USE_DEV_RANDOM 1
++#define TORRENT_NO_ENUM_NET 1
++#ifndef TORRENT_HAVE_MMAP
++#define TORRENT_HAVE_MMAP 0
++#endif
++
+ // ==== AMIGA ===
+-#if defined __AMIGA__ || defined __amigaos__ || defined __AROS__
++#elif defined __AMIGA__ || defined __amigaos__ || defined __AROS__
+ #define TORRENT_AMIGA
+ #define TORRENT_USE_IOSTREAM 0
+ // set this to 1 to disable all floating point operations
