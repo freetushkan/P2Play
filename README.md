@@ -15,15 +15,16 @@ Linux:
 
     p2spike "magnet:?xt=urn:btih:..." [--peer ip:port] [--port 6881] [--http 8095] [--readahead 16]
 
-Consoles read the link from `magnet.txt` in the data directory: the link on the first line,
-then optional `peer ip:port`, `port n`, `http n`, `readahead mb` lines.
+`magnet.txt` in the data directory is the config: the link on the first line, then optional
+`peer ip:port`, `port n`, `http n`, `readahead mb` lines. Arguments go on top of it (a link argument
+replaces the file's link); consoles have only the file.
 
 | Platform | Run | Data directory | Quit |
 | --- | --- | --- | --- |
 | Linux | `p2spike <link>` | `./p2play-data` (`P2SPIKE_DATA`) | Ctrl+C |
 | Switch | `p2spike.nro` from hbmenu (application mode, not the album) | `sdmc:/switch/p2play` | `+` |
 | PS4 | install the pkg, launch | `/data/p2play` | create `/data/p2play/stop` |
-| Android | install `p2spike-android.apk`, paste a magnet, Start; or open a magnet link with it, or `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity`. Play opens the stream in a player | app files: `p2play` (log on the screen) | Stop |
+| Android | install `p2spike-android.apk`, allow all files access, paste a magnet (or leave the field empty for the link of `magnet.txt`), Start; or open a magnet link with it, or `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity`. Play opens the stream in a player | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
 | PS5 | install `p2spike-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2spike.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
 
 The log goes to `spike.log` in the data directory (PS4: also klog, PS5: klog and a toast with the URL).

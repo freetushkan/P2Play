@@ -9,7 +9,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.wifi.WifiManager;
+import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Environment;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
@@ -41,8 +43,29 @@ public class SpikeService extends Service {
         return sRunning;
     }
 
+    // all files access: Android 11+ by its settings, older ones by the permission
+    static boolean hasStorage(Context context) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager();
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            return context.checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE")
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
+    }
+
+    // /sdcard/.p2play (magnet.txt, spike.log, downloads) as pPlay's .pplay; without the
+    // access: Android/data/<package>/files
     static File dataDir(Context context) {
-        return new File(context.getFilesDir(), "p2play");
+        if (hasStorage(context)) {
+            File dir = new File(Environment.getExternalStorageDirectory(), ".p2play");
+            if (dir.isDirectory() || dir.mkdirs()) {
+                return dir;
+            }
+        }
+        File ext = context.getExternalFilesDir(null);
+        return ext != null ? ext : new File(context.getFilesDir(), "p2play");
     }
 
     static File executable(Context context) {
@@ -62,14 +85,11 @@ public class SpikeService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        // no link: the one of magnet.txt
         String link = intent != null ? intent.getStringExtra(EXTRA_LINK) : null;
-        if (link == null || link.trim().isEmpty()) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         goForeground();
         stopSpike();
-        startSpike(link.trim());
+        startSpike(link != null ? link.trim() : "");
         return START_NOT_STICKY;
     }
 
@@ -93,7 +113,7 @@ public class SpikeService extends Service {
         Notification notification = builder
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle("P2Play spike")
-                .setContentText("Streaming on port 8095")
+                .setContentText("Streaming")
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build();
@@ -108,7 +128,9 @@ public class SpikeService extends Service {
         File dir = dataDir(this);
         dir.mkdirs();
         try {
-            ProcessBuilder pb = new ProcessBuilder(executable(this).getPath(), link);
+            ProcessBuilder pb = link.isEmpty()
+                    ? new ProcessBuilder(executable(this).getPath())
+                    : new ProcessBuilder(executable(this).getPath(), link);
             pb.directory(dir);
             pb.environment().put("P2SPIKE_DATA", dir.getPath());
             pb.redirectErrorStream(true);

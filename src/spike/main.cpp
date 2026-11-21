@@ -112,22 +112,10 @@ namespace {
         }
     }
 
-    // args: <link> [--peer ip:port] [--port n] [--http n] [--readahead mb]
-    // or <data dir>/magnet.txt: the link on the first line, then "peer ip:port", "port n"...
+    // <data dir>/magnet.txt: the link, then "peer ip:port", "port n", "http n", "readahead mb"
+    // lines; then the arguments on top: <link> [--peer ip:port] [--port n] [--http n] [--readahead mb]
     Config loadConfig(int argc, char **argv) {
         Config cfg;
-        for (int i = 1; i < argc; i++) {
-            std::string arg = argv[i];
-            if (arg.rfind("--", 0) == 0 && i + 1 < argc) {
-                applyOption(cfg, arg.substr(2), argv[++i]);
-            } else if (cfg.link.empty()) {
-                cfg.link = arg;
-            }
-        }
-        if (!cfg.link.empty()) {
-            return cfg;
-        }
-
         std::ifstream in(dataDir() + "/magnet.txt");
         std::string line;
         while (std::getline(in, line)) {
@@ -140,6 +128,15 @@ namespace {
                 cfg.link = line;
             } else if (space != std::string::npos) {
                 applyOption(cfg, line.substr(0, space), trim(line.substr(space + 1)));
+            }
+        }
+
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg.rfind("--", 0) == 0 && i + 1 < argc) {
+                applyOption(cfg, arg.substr(2), argv[++i]);
+            } else {
+                cfg.link = arg;
             }
         }
         return cfg;

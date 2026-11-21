@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
@@ -22,8 +23,10 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileReader;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
@@ -38,8 +41,6 @@ import java.util.Collections;
  * Usable with a remote (Android TV): every control is a focusable button or field.
  */
 public class MainActivity extends Activity {
-    private static final String STREAM = "http://127.0.0.1:8095/stream";
-    private static final String STATUS = "http://127.0.0.1:8095/status";
     private static final int LOG_TAIL = 6 * 1024;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
@@ -63,9 +64,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         buildUi();
         mLink.setText(prefs().getString("link", ""));
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
-        }
+        askPermissions();
         handleIntent(getIntent());
     }
 
@@ -104,6 +103,51 @@ public class MainActivity extends Activity {
         }
     }
 
+    // notifications (Android 13+) and all files access for /sdcard/.p2play (as pPlay)
+    private void askPermissions() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+        }
+        if (SpikeService.hasStorage(this)) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Exception e) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                } catch (Exception ignored) {
+                    // no such settings (some TVs): the data stays in Android/data
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= 23) {
+            requestPermissions(new String[]{"android.permission.READ_EXTERNAL_STORAGE",
+                    "android.permission.WRITE_EXTERNAL_STORAGE"}, 2);
+        }
+    }
+
+    // "http <port>" of magnet.txt, else 8095
+    private int httpPort() {
+        File f = new File(SpikeService.dataDir(this), "magnet.txt");
+        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                String[] kv = line.trim().split("\\s+");
+                if (kv.length == 2 && kv[0].equals("http")) {
+                    return Integer.parseInt(kv[1]);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return 8095;
+    }
+
+    private String streamUrl() {
+        return "http://127.0.0.1:" + httpPort() + "/stream";
+    }
+
     private SharedPreferences prefs() {
         return getSharedPreferences("spike", MODE_PRIVATE);
     }
@@ -115,7 +159,7 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
 
         mLink = new EditText(this);
-        mLink.setHint("magnet:?xt=urn:btih:...  or an infohash");
+        mLink.setHint("magnet:?xt=urn:btih:... (empty: the link of magnet.txt)");
         mLink.setSingleLine(true);
         mLink.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         root.addView(mLink, matchWrap());
@@ -164,10 +208,6 @@ public class MainActivity extends Activity {
 
     private void start() {
         String link = mLink.getText().toString().trim();
-        if (link.isEmpty()) {
-            mStatus.setText("No link");
-            return;
-        }
         prefs().edit().putString("link", link).apply();
         Intent i = new Intent(this, SpikeService.class).setAction(SpikeService.ACTION_START)
                 .putExtra(SpikeService.EXTRA_LINK, link);
@@ -184,7 +224,7 @@ public class MainActivity extends Activity {
 
     private void play() {
         Intent i = new Intent(Intent.ACTION_VIEW);
-        i.setDataAndType(Uri.parse(STREAM), "video/*");
+        i.setDataAndType(Uri.parse(streamUrl()), "video/*");
         try {
             startActivity(Intent.createChooser(i, "Play with"));
         } catch (Exception e) {
@@ -204,18 +244,22 @@ public class MainActivity extends Activity {
 
     private void refresh() {
         boolean running = SpikeService.isRunning();
-        StringBuilder urls = new StringBuilder("Stream: ").append(STREAM);
+        int port = httpPort();
+        StringBuilder urls = new StringBuilder("Stream: ").append(streamUrl());
         String ip = lanAddress();
         if (ip != null) {
-            urls.append("\nLAN: http://").append(ip).append(":8095/stream");
+            urls.append("\nLAN: http://").append(ip).append(':').append(port).append("/stream");
         }
+        urls.append("\nData: ").append(SpikeService.dataDir(this).getPath())
+                .append(" (magnet.txt, spike.log, downloads)");
         mUrls.setText(urls);
         if (!running) {
             mStatus.setText("Stopped");
         } else if (!mPolling) {
             mPolling = true;
+            final String statusUrl = "http://127.0.0.1:" + port + "/status";
             new Thread(() -> {
-                String text = fetchStatus();
+                String text = fetchStatus(statusUrl);
                 mHandler.post(() -> {
                     if (SpikeService.isRunning()) {
                         mStatus.setText(text);
@@ -231,10 +275,10 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static String fetchStatus() {
+    private static String fetchStatus(String url) {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(STATUS).openConnection();
+            c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(800);
             c.setReadTimeout(800);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
