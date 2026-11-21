@@ -22,6 +22,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <exception>
+
+#include "crashlog.h"
 #include "p2play.h"
 #include "platform.hpp"
 
@@ -54,6 +57,21 @@ namespace {
                 mkdir(path.substr(0, i).c_str(), 0755);
             }
         }
+    }
+
+    // an uncaught exception: its reason in the log, then abort() (the crash handler)
+    void onTerminate() {
+        std::string what = "unknown";
+        if (std::exception_ptr e = std::current_exception()) {
+            try {
+                std::rethrow_exception(e);
+            } catch (const std::exception &ex) {
+                what = ex.what();
+            } catch (...) {
+            }
+        }
+        logLine(("[App] uncaught exception: " + what).c_str(), nullptr);
+        std::abort();
     }
 
     // the address other devices reach this one at
@@ -109,11 +127,17 @@ int main(int argc, char **argv) {
     }
     makeDirs(dataDir);
     g_log = std::fopen((dataDir + "/p2play.log").c_str(), P2P_CONSOLE ? "w" : "a");
+    std::set_terminate(onTerminate);
+#if defined(__SWITCH__) || defined(__PS5__)
+    p2p::CrashLog::install(dataDir + "/crash.log");
+#endif
 
     p2play_config config{};
     config.data_dir = dataDir.c_str();
     config.http_port = port;
     config.console = p2p::platformIsConsole() ? 1 : 0;
+    const std::string platform = p2p::platformName();
+    config.platform = platform.c_str();
     config.log = logLine;
     if (p2play_start(&config) != 0) {
         logLine("[App] cannot start (already running?)", nullptr);

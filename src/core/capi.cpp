@@ -19,6 +19,9 @@ extern "C" int p2play_start(const p2play_config *config) {
     c.dataDir = config->data_dir;
     c.httpPort = config->http_port == 0 ? 8090 : config->http_port < 0 ? 0 : static_cast<uint16_t>(config->http_port);
     c.console = config->console != 0;
+    if (config->platform) {
+        c.platform = config->platform;
+    }
     if (config->log) {
         p2play_log_fn fn = config->log;
         void *user = config->log_user;

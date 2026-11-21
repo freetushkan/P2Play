@@ -18,6 +18,8 @@ The server answers on port **8090** (TorrServer's): `http://<device ip>:8090`.
 | PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
 
 The log: `p2play.log` in the data directory (Switch: also on the screen, PS4/PS5: klog, PS5: a toast with the address).
+A crash: `crash.log` there (Switch, PS4, PS5; offsets: `llvm-addr2line -f -C -e <the unstripped binary> <offset>`); an uncaught
+exception also writes its reason to `p2play.log`.
 
 ## API
 
@@ -25,7 +27,7 @@ The TorrServer MatriX API in the part pPlay and Lampa use; file ids start from 1
 
 | Route | |
 | --- | --- |
-| `GET /echo` | the version (`MatriX.141 P2Play/0.1`) |
+| `GET /echo` | the version and the platform (`MatriX.141 P2Play/0.1 ps5`) |
 | `POST /torrents` | `add` (`link`: magnet, infohash, `http://` .torrent link; `title`, `poster`, `category`, `data`, `save_to_db`), `get`, `set`, `rem`, `drop`, `list`, `wipe` |
 | `POST /torrent/upload` | .torrent files (multipart: `file`, `title`, `poster`, `data`, `save`) |
 | `GET /stream[/name]` | `?link=&index=` with `play` (the file, Range), `stat`, `preload`, `save`, `m3u`, `fromlast`, `title`, `poster` |

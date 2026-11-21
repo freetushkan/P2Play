@@ -31,6 +31,7 @@ namespace p2p {
         std::string dataDir;
         uint16_t httpPort = 8090;   // TorrServer's
         bool console = false;       // fewer connections, no LSD/UPnP/NAT-PMP, IPv4 only
+        std::string platform;       // shown by /echo
         std::function<void(const std::string &)> log;
     };
 
@@ -67,6 +68,9 @@ namespace p2p {
 
         static const char *version();
 
+        // /echo: the version and the platform
+        std::string echo() const;
+
         void log(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
     private:
@@ -75,6 +79,7 @@ namespace p2p {
 
         // api.cpp
         void handle(const HttpRequest &req, HttpResponse &res);
+        void route(const HttpRequest &req, HttpResponse &res);
         void apiTorrents(const HttpRequest &req, HttpResponse &res);
         void apiStream(const HttpRequest &req, HttpResponse &res, const std::string &hash, int index);
         void apiViewed(const HttpRequest &req, HttpResponse &res);
@@ -113,7 +118,10 @@ namespace p2p {
         nlohmann::json settingsJson();
 
         void alertLoop();
+        void alertStep();
+        void handleAlert(lt::alert *a);
         void idleLoop();
+        void idleStep();
 
         CoreConfig m_config;
         Store m_store;

@@ -11,7 +11,8 @@ and downloaded again.
 Checks: /echo; /torrents add (magnet, save_to_db) / get / list (data with the files, as
 pPlay reads it) / set; /stream ?link&index&play byte ranges and the whole file, /play;
 ?stat and ?preload; /viewed set / list / rem with timecode; a restart: the torrent in the
-library ("in db"), streamed again from its kept metadata; /settings; /playlist; rem.
+library ("in db"), streamed again from its kept metadata; /settings; /playlist; lists
+while the torrent is closed and opened again; rem.
 """
 
 import hashlib
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -211,6 +213,30 @@ def main():
             print("stream failed:", e, "- torrent:", api("/torrents", {"action": "get", "hash": ih}))
             raise
         check(status == 206 and body == e01[5000000:5100000], "restart: stream from the library")
+
+        # lists while the torrent is closed and opened again (a closed handle throws): the
+        # daemon must stay up
+        stop = []
+
+        def lister():
+            while not stop and proc.poll() is None:
+                try:
+                    http("/torrents", {"action": "list"}, timeout=5)
+                except Exception:
+                    pass
+
+        listers = [threading.Thread(target=lister) for _ in range(6)]
+        for t in listers:
+            t.start()
+        for _ in range(80):
+            if proc.poll() is not None:
+                break
+            http("/torrents", {"action": "drop", "hash": ih}, timeout=10)
+            http("/torrents", {"action": "add", "link": magnet}, timeout=10)
+        stop.append(True)
+        for t in listers:
+            t.join()
+        check(proc.poll() is None, "list during drop / add: the daemon is up")
 
         api("/torrents", {"action": "rem", "hash": ih})
         check(api("/torrents", {"action": "list"}) == [], "rem: library empty")

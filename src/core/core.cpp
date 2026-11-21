@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <sstream>
 
 #include <netdb.h>
@@ -151,6 +152,10 @@ namespace p2p {
         return "MatriX.141 P2Play/0.1";
     }
 
+    std::string Core::echo() const {
+        return m_config.platform.empty() ? std::string(version()) : std::string(version()) + " " + m_config.platform;
+    }
+
     Core::Core(CoreConfig config) : m_config(std::move(config)), m_store(m_config.dataDir) {}
 
     Core::~Core() {
@@ -172,6 +177,15 @@ namespace p2p {
     bool Core::start() {
         m_store.load();
         loadSettings();
+        // one BitTorrent port for every socket, chosen once and kept (0: a random port per
+        // socket, which the DHT cannot announce)
+        if (m_settings.listenPort == 0) {
+            std::random_device rd;
+            m_settings.listenPort = 20000 + static_cast<int>(rd() % 40000);
+            json s = m_store.settings();
+            s["PeersListenPort"] = m_settings.listenPort;
+            m_store.setSettings(s);
+        }
 
         lt::settings_pack sp;
         const std::string port = std::to_string(m_settings.listenPort);
@@ -712,8 +726,15 @@ namespace p2p {
                 {"preloaded_bytes", preloadedBytes},
                 {"preload_size", preloadSize},
         };
+        lt::torrent_status st;
         if (active) {
-            lt::torrent_status st = h.status();
+            try {
+                st = h.status();
+            } catch (const std::exception &) {
+                active = false;  // closed meanwhile
+            }
+        }
+        if (active) {
             j["download_speed"] = static_cast<double>(st.download_payload_rate);
             j["upload_speed"] = static_cast<double>(st.upload_payload_rate);
             j["total_peers"] = st.list_peers;
@@ -737,12 +758,35 @@ namespace p2p {
 
     void Core::alertLoop() {
         while (!m_stopping) {
+            try {
+                alertStep();
+            } catch (const std::exception &e) {
+                log("[Torrent] alert handling failed: %s", e.what());
+            }
+        }
+    }
+
+    void Core::alertStep() {
+        {
             if (!m_session->wait_for_alert(lt::milliseconds(200))) {
-                continue;
+                return;
             }
             std::vector<lt::alert *> alerts;
             m_session->pop_alerts(&alerts);
             for (lt::alert *a : alerts) {
+                try {
+                    handleAlert(a);
+                } catch (const std::exception &e) {
+                    log("[Torrent] %s: %s", a->what(), e.what());
+                }
+            }
+        }
+    }
+
+    // a torrent may be closed while its alerts wait: its handle throws
+    void Core::handleAlert(lt::alert *a) {
+        {
+            {
                 if (auto *rp = lt::alert_cast<lt::read_piece_alert>(a)) {
                     TorrentPtr t;
                     {
@@ -812,6 +856,16 @@ namespace p2p {
     // torrents without readers closed after the timeout; read_piece results dropped
     void Core::idleLoop() {
         while (!m_stopping) {
+            try {
+                idleStep();
+            } catch (const std::exception &e) {
+                log("[Torrent] closing idle torrents failed: %s", e.what());
+            }
+        }
+    }
+
+    void Core::idleStep() {
+        {
             for (int i = 0; i < 10 && !m_stopping; i++) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }

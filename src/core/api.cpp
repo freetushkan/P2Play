@@ -97,12 +97,25 @@ namespace p2p {
         }
     }
 
+    // an exception (a torrent closed meanwhile: its handle throws) ends the request, not the
+    // process
     void Core::handle(const HttpRequest &req, HttpResponse &res) {
+        try {
+            route(req, res);
+        } catch (const std::exception &e) {
+            log("[Web] %s %s failed: %s", req.method.c_str(), req.path.c_str(), e.what());
+            if (!res.started()) {
+                error(res, 500, e.what());
+            }
+        }
+    }
+
+    void Core::route(const HttpRequest &req, HttpResponse &res) {
         const std::string &p = req.path;
         const bool get = req.method == "GET" || req.method == "HEAD";
         const bool post = req.method == "POST";
         if (get && p == "/echo") {
-            res.text(200, version());
+            res.text(200, echo());
         } else if (get && p == "/") {
             res.json(200, json{{"name", "P2Play"}, {"version", version()}}.dump());
         } else if (post && p == "/torrents") {

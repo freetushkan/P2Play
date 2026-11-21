@@ -8,7 +8,9 @@ set(APP_SRC
 if (PLATFORM_PS4)
     list(APPEND APP_SRC ps4/ps4_compat.c ps4/crashlog.c)
 elseif (PLATFORM_SWITCH)
-    list(APPEND APP_SRC ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
+    list(APPEND APP_SRC switch/crashlog.cpp ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
+elseif (PLATFORM_PS5)
+    list(APPEND APP_SRC ps5/crashlog.cpp)
 endif ()
 
 add_executable(p2play ${APP_SRC})

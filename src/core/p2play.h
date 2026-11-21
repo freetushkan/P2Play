@@ -16,6 +16,7 @@ typedef struct p2play_config {
     const char *data_dir;   /* library, settings, metadata, disk storage */
     int http_port;          /* 0: 8090 (TorrServer's); -1: any free port */
     int console;            /* nonzero: console limits (no LSD/UPnP, IPv4 only, fewer connections) */
+    const char *platform;   /* shown by /echo next to the version; may be NULL */
     p2play_log_fn log;      /* may be NULL */
     void *log_user;
 } p2play_config;
