@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaMesh · Silo</title>
+  <link rel="stylesheet" href="/plugins/mediamesh/style.css">
+  <script src="/plugins/mediamesh/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><a href="/" class="back">Silo</a><h1>MediaMesh</h1><p>Find a release. Keep it in your library.</p></header>
+  <main>
+    <nav aria-label="MediaMesh sections">
+      <button type="button" data-view="search" aria-pressed="true">Search</button>
+      <button type="button" data-view="lists" aria-pressed="false">Lists</button>
+      <button type="button" data-view="settings" aria-pressed="false" id="settings-tab" hidden>Settings</button>
+    </nav>
+    <p id="status" role="status" aria-live="polite">Connecting to Silo…</p>
+    <section id="search-view" aria-labelledby="search-heading">
+      <h2 id="search-heading">Search your catalogs</h2>
+      <form id="search-form" class="search-form">
+        <label>Title<input id="query" type="search" maxlength="512" placeholder="Film, series or release name"></label>
+        <label>Tag<input id="tag" maxlength="128" placeholder="Any tag"></label>
+        <button type="submit">Search</button>
+      </form>
+      <div id="results" class="rows"></div>
+    </section>
+    <section id="lists-view" aria-labelledby="lists-heading" hidden>
+      <div class="section-heading"><h2 id="lists-heading">Your lists</h2><button id="reload-lists" type="button">Reload lists</button></div>
+      <div id="lists" class="rows"></div>
+      <h2>Discover lists</h2>
+      <p class="hint">Lists advertised by the network. Subscribe to make their catalog available for search.</p>
+      <div id="discover" class="rows"></div>
+      <form id="subscribe-form" hidden>
+        <label>List public key<input id="pubkey" maxlength="64" minlength="64" pattern="[0-9a-fA-F]{64}" required spellcheck="false"></label>
+        <button type="submit">Subscribe</button>
+      </form>
+      <p class="hint">Subscriptions and refresh requests require a Silo administrator. Refresh requests re-subscribe to the list. This Silo version cannot remove daemon subscriptions from plugins.</p>
+    </section>
+    <section id="settings-view" aria-labelledby="settings-heading" hidden>
+      <h2 id="settings-heading">Daemon connection</h2>
+      <p class="hint">Administrator only. The address is reached from the Silo server, not your browser. Use a trusted daemon that does not redirect requests.</p>
+      <form id="settings-form">
+        <label>Daemon URL<input id="daemon-url" type="url" required maxlength="256" placeholder="http://127.0.0.1:8080" spellcheck="false"></label>
+        <label>Daemon API token<input id="daemon-token" type="password" maxlength="512" autocomplete="new-password" placeholder="Leave blank to keep the stored token"></label>
+        <p id="token-state" class="hint"></p>
+        <label class="checkbox"><input id="clear-token" type="checkbox">Clear the stored token</label>
+        <button type="submit">Save connection</button>
+      </form>
+      <p class="hint">Use HTTPS for a remote daemon. Set an owner password in Silo before enabling this plugin: Silo's open mode treats every visitor as the owner.</p>
+    </section>
+  </main>
+</body>
+</html>

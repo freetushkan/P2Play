@@ -1,0 +1,22 @@
+id: mediamesh
+name: MediaMesh
+version: "1.0.0"
+description: Search signed MediaMesh catalogs and add selected torrents to your Silo library.
+entry: service.js
+menu:
+  - title: MediaMesh
+    route: /
+    rank: 10
+routes:
+  - /
+  - /index.html
+  - /app.js
+  - /style.css
+  - /api/session
+  - /api/settings
+  - /api/search
+  - /api/record
+  - /api/lists
+  - /api/discover
+  - /api/subscribe
+  - /api/add
