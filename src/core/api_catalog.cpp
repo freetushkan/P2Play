@@ -75,7 +75,9 @@ namespace p2p {
             if (get && n == 2) {
                 json lists = json::array();
                 for (const MeshList &l : m_mesh.lists()) {
-                    lists.push_back(card(l));
+                    json j = card(l);
+                    j["net"] = meshState(l.pubkey);
+                    lists.push_back(j);
                 }
                 res.json(200, json{{"lists", lists}}.dump());
             } else if (m == "POST" && n == 3 && at(2) == "import") {
@@ -103,7 +105,20 @@ namespace p2p {
                 }
                 res.json(200, json{{"status", "removed"}}.dump());
             } else if (m == "POST" && n == 3) {
-                error(res, 501, "subscribing through the network comes with the DHT pointers (not yet)");
+                // subscribe: the pointer from the DHT; "peers" (ip:port) help find the version
+                json b = json::parse(req.body.empty() ? "{}" : req.body, nullptr, false);
+                std::vector<std::string> peers;
+                if (b.is_object() && b.value("peers", json()).is_array()) {
+                    for (const auto &p : b["peers"]) {
+                        if (p.is_string()) peers.push_back(p.get<std::string>());
+                    }
+                }
+                const std::string err = meshSubscribe(at(2), peers);
+                if (!err.empty()) {
+                    error(res, 400, err);
+                    return;
+                }
+                res.json(202, json{{"status", "subscribing"}}.dump());
             } else {
                 error(res, 404, "not found");
             }
@@ -155,8 +170,11 @@ namespace p2p {
                 error(res, 400, err);
                 return;
             }
+            meshReleased(l.pubkey);
             m_mesh.list(l.pubkey, l);
-            res.json(200, card(l).dump());
+            json j = card(l);
+            j["net"] = meshState(l.pubkey);
+            res.json(200, j.dump());
         } else {
             error(res, 404, "not found");
         }

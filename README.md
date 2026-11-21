@@ -66,14 +66,22 @@ Unlike Silo, a stream does not mark a file viewed (players read the end of a fil
 
 A list is an ed25519 key; a version is a signed manifest and append-only segments of records,
 in `lists/<pubkey>/` of the data directory (the format: `src/core/mesh.hpp`). The lists of a node are
-checked (signature, seq, segment hashes, limits), merged and searched. Not yet: the network (a version
-as a v2 torrent, the BEP 44 pointer, the `mediamesh` extension, the directory swarm).
+checked (signature, seq, segment hashes, limits), merged and searched.
+
+Over the network: a version is a v2 torrent of the list's directory, kept on disk and seeded (the session's
+storage is RAM for streams, files for `lists/`); the pointer to the current version is a BEP 44 mutable item
+under the list's key (salt `mediamesh.v1`, value: the version's infohash and the name, seq: the version).
+Subscribing by the key: the pointer from the DHT, the version downloaded, checked, seeded. Every node puts
+the pointers of its lists again every 30 minutes and asks for newer versions: a list lives on without its
+releaser. Not yet: the `mediamesh` extension (pointers pushed between peers), the directory swarm and the
+rating, media packs and shards. `P2PDhtBootstrap` (settings, `host:port,...`): a DHT of one's own (tests, a LAN).
 
 | Route | |
 | --- | --- |
 | `GET /api/catalog/search?q=&tag=&limit=` | every word in the title or tags (any case, Latin and Cyrillic, ё = е); each result with its `torrs://` link and lists |
 | `GET /api/catalog/:infohash` | a record and its lists |
-| `GET /api/lists`, `DELETE /api/lists/:pubkey` | the lists of this node; a received one dropped |
+| `GET /api/lists`, `DELETE /api/lists/:pubkey` | the lists of this node (`net`: seeded, being fetched); a received one dropped |
+| `POST /api/lists/:pubkey` | subscribe by the key (`{"peers": ["ip:port"]}`: optional hints): 202 |
 | `POST /api/lists/import` | `{"dir"}`: a version directory taken (admins) |
 | `POST /api/publish` | `{"name","description"}`: a new list, its key in `keys/` (admins) |
 | `POST /api/publish/:pubkey/records`, `.../release`, `GET .../status` | NDJSON records (`ih`, `title`, `size`, `files`, `date`, `tags`, `trackers`, `poster`; `{"del": ih}`), the next version |
@@ -159,7 +167,7 @@ Layout:
   service, PS4 video playback ticks while streaming and exit through the system, PS5 notifications), the log,
   the data directories. p2playd on Linux and Android, the homebrew on Switch, PS4 and PS5.
 - `android/`: the APK around p2playd.
-- `tools/`: the tests of the core, the users and `/api` (a local seeder, the CI runs them), `make-icon.py` (the icons of every platform).
+- `tools/`: the tests of the core, the users, `/api` and the lists (`meshnet-test.py`: three nodes with a DHT of their own) (a local seeder, the CI runs them), `make-icon.py` (the icons of every platform).
 
 Debug symbols as pPlay: everything is built with `-g`, the release binaries are stripped, the full ones are
 kept in `build/symbols` (CI: `P2Play-Symbols-<platform>`). A crash: `crash.log` in the data directory, then

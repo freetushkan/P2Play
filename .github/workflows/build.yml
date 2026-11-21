@@ -53,6 +53,7 @@ jobs:
           python3 tools/auth-test.py build/src/app/p2playd
           python3 tools/silo-test.py build/src/app/p2playd
           python3 tools/mesh-test.py build/src/app/p2playd
+          python3 tools/meshnet-test.py build/src/app/p2playd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

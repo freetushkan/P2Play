@@ -20,6 +20,8 @@
 
 #include <libtorrent/session.hpp>
 #include <libtorrent/torrent_handle.hpp>
+#include <libtorrent/torrent_info.hpp>
+#include <libtorrent/alert.hpp>
 
 #include "../../third_party/nlohmann/json.hpp"
 #include "auth.hpp"
@@ -53,6 +55,7 @@ namespace p2p {
         bool disableDht = false;
         bool disableUpnp = false;
         int listenPort = 0;          // BitTorrent, 0: any (restart)
+        std::string dhtBootstrap;    // P2PDhtBootstrap: "host:port,...", a DHT of our own
     };
 
     class Core {
@@ -92,6 +95,27 @@ namespace p2p {
 
         // api_silo.cpp: the native API, Silo's scheme under /api (file indexes from 0)
         void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
+        // mesh_net.cpp: list versions as torrents, their pointers in the DHT (stage 3)
+        struct MeshNet {
+            lt::torrent_handle seeding;      // the current version's torrent
+            lt::sha256_hash versionIh;
+            bool wanted = false;             // subscribed, no version yet
+            std::vector<std::string> peers;  // hints: ip:port of nodes holding it
+            lt::torrent_handle fetching;
+            int64_t fetchSeq = -1;
+            std::string fetchPointer, fetchDir;
+        };
+        std::shared_ptr<lt::torrent_info> meshTorrent(const std::string &pk, std::string &error);
+        void meshSeed(const std::string &pk, std::shared_ptr<lt::torrent_info> ti);
+        void meshPut(const std::string &pk);
+        void meshGet(const std::string &pk);
+        std::string meshSubscribe(const std::string &pk, const std::vector<std::string> &peers);
+        void meshFetch(const std::string &pk, const lt::sha256_hash &ih, int64_t seq, const std::string &pointer);
+        bool meshAlert(lt::alert *a);
+        void meshTick(bool start);
+        void meshReleased(const std::string &pk);
+        nlohmann::json meshState(const std::string &pk);
+
         // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)
         void routeMesh(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
         void siloEvents(HttpResponse &res, const User &user);
@@ -173,6 +197,10 @@ namespace p2p {
         CoreConfig m_config;
         Store m_store;
         Mesh m_mesh;
+        std::mutex m_meshMutex;
+        std::map<std::string, MeshNet> m_meshNet;
+        lt::error_code m_meshError;
+        std::chrono::steady_clock::time_point m_meshLast, m_meshWantedLast;
         Auth m_auth;
         Settings m_settings;
         std::unique_ptr<RamCache> m_cache;   // null with useDisk

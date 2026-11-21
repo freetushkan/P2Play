@@ -27,6 +27,7 @@
 
 #include "core_torrent.hpp"
 #include "torrs.hpp"
+#include "hybrid_disk.hpp"
 
 namespace p2p {
 
@@ -297,7 +298,7 @@ namespace p2p {
         sp.set_str(lt::settings_pack::listen_interfaces,
                    m_config.console ? "0.0.0.0:" + port : "0.0.0.0:" + port + ",[::]:" + port);
         sp.set_int(lt::settings_pack::alert_mask, lt::alert_category::status | lt::alert_category::error |
-                                                  lt::alert_category::storage);
+                                                  lt::alert_category::storage | lt::alert_category::dht);
         sp.set_bool(lt::settings_pack::enable_lsd, !m_config.console);
         sp.set_bool(lt::settings_pack::enable_upnp, !m_config.console && !m_settings.disableUpnp);
         sp.set_bool(lt::settings_pack::enable_natpmp, !m_config.console && !m_settings.disableUpnp);
@@ -318,7 +319,8 @@ namespace p2p {
             params.disk_io_constructor = lt::posix_disk_io_constructor;
         } else {
             m_cache = std::make_unique<RamCache>(m_settings.cacheSize);
-            params.disk_io_constructor = m_cache->constructor();
+            // the MediaMesh list versions on disk, the streams in RAM
+            params.disk_io_constructor = hybridDisk(m_cache->constructor(), m_store.dir() + "/lists");
         }
         try {
             m_session = std::make_unique<lt::session>(std::move(params));
@@ -338,6 +340,7 @@ namespace p2p {
         }
 
         m_alertThread = std::thread(&Core::alertLoop, this);
+        meshTick(true);
         m_idleThread = std::thread(&Core::idleLoop, this);
 
         if (!m_http.start(m_config.httpPort, [this](const HttpRequest &req, HttpResponse &res) { handle(req, res); })) {
@@ -391,6 +394,9 @@ namespace p2p {
         b("DisableDHT", m_settings.disableDht);
         b("DisableUPNP", m_settings.disableUpnp);
         i("PeersListenPort", m_settings.listenPort);
+        if (s.contains("P2PDhtBootstrap") && s["P2PDhtBootstrap"].is_string()) {
+            m_settings.dhtBootstrap = s["P2PDhtBootstrap"].get<std::string>();
+        }
         m_settings.readAhead = std::min(100, std::max(5, m_settings.readAhead));
         m_settings.preloadCache = std::min(100, std::max(0, m_settings.preloadCache));
         m_settings.disconnectTimeout = std::max(5, m_settings.disconnectTimeout);
@@ -410,7 +416,27 @@ namespace p2p {
         sp.set_int(lt::settings_pack::upload_rate_limit,
                    m_settings.disableUpload ? 1 : m_settings.uploadRateLimit * 1024);
         sp.set_bool(lt::settings_pack::enable_dht, !m_settings.disableDht);
+        // a DHT of our own (tests, a LAN): its nodes on private and loopback addresses allowed
+        if (!m_settings.dhtBootstrap.empty()) {
+            sp.set_str(lt::settings_pack::dht_bootstrap_nodes, m_settings.dhtBootstrap);
+            sp.set_bool(lt::settings_pack::dht_restrict_routing_ips, false);
+            sp.set_bool(lt::settings_pack::dht_restrict_search_ips, false);
+            sp.set_bool(lt::settings_pack::dht_ignore_dark_internet, false);
+            sp.set_bool(lt::settings_pack::dht_prefer_verified_node_ids, false);
+            sp.set_bool(lt::settings_pack::allow_multiple_connections_per_ip, true);
+        }
         m_session->apply_settings(sp);
+        // the nodes given known at once (the bootstrap list is read when the DHT starts)
+        size_t pos = 0;
+        while (pos < m_settings.dhtBootstrap.size()) {
+            size_t end = m_settings.dhtBootstrap.find(',', pos);
+            const std::string node = m_settings.dhtBootstrap.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            const size_t colon = node.rfind(':');
+            if (colon != std::string::npos) {
+                m_session->add_dht_node({node.substr(0, colon), std::atoi(node.c_str() + colon + 1)});
+            }
+            pos = end == std::string::npos ? m_settings.dhtBootstrap.size() : end + 1;
+        }
     }
 
     json Core::settingsJson() {
@@ -1072,6 +1098,9 @@ namespace p2p {
 
     // a torrent may be closed while its alerts wait: its handle throws
     void Core::handleAlert(lt::alert *a) {
+        if (meshAlert(a)) {
+            return;
+        }
         {
             {
                 if (auto *rp = lt::alert_cast<lt::read_piece_alert>(a)) {
@@ -1170,6 +1199,7 @@ namespace p2p {
             for (const auto &t : idle) {
                 close(t);
             }
+            meshTick(false);
             std::lock_guard<std::mutex> lock(m_readsMutex);
             if (m_reads.size() > 16) {
                 m_reads.clear();
