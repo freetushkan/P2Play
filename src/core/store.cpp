@@ -1,10 +1,15 @@
 #include "store.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <tuple>
 
+#include <arpa/inet.h>
 #include <sys/stat.h>
 
 namespace p2p {
@@ -30,6 +35,90 @@ namespace p2p {
         int64_t num(const json &j, const char *key) {
             auto it = j.find(key);
             return it != j.end() && it->is_number() ? it->get<int64_t>() : 0;
+        }
+
+        bool numericAddress(const std::string &host) {
+            in_addr v4{};
+            in6_addr v6{};
+            return inet_pton(AF_INET, host.c_str(), &v4) == 1 ||
+                   inet_pton(AF_INET6, host.c_str(), &v6) == 1;
+        }
+
+        // Never include supplied values (especially credentials) in validation errors.
+        PublisherProxy parseProxy(const json &settings) {
+            PublisherProxy p;
+            auto it = settings.find("PublisherProxy");
+            if (it == settings.end()) return p;
+            if (!it->is_object() || !it->contains("Enabled") || !(*it)["Enabled"].is_boolean()) {
+                throw std::invalid_argument("PublisherProxy requires a boolean Enabled field");
+            }
+            const json &j = *it;
+            for (auto field = j.begin(); field != j.end(); ++field) {
+                if (field.key() != "Enabled" && field.key() != "Host" && field.key() != "Port" &&
+                    field.key() != "Username" && field.key() != "Password" && field.key() != "CredentialsSet") {
+                    throw std::invalid_argument("PublisherProxy has an unsupported field");
+                }
+            }
+            p.enabled = j["Enabled"].get<bool>();
+            auto text = [&](const char *key, std::string &out) {
+                if (!j.contains(key)) return;
+                if (!j[key].is_string()) throw std::invalid_argument("PublisherProxy text field has invalid type");
+                out = j[key].get<std::string>();
+                if (out.find('\0') != std::string::npos) {
+                    throw std::invalid_argument("PublisherProxy text fields must not contain NUL");
+                }
+            };
+            text("Host", p.host);
+            text("Username", p.username);
+            text("Password", p.password);
+            if (j.contains("Port")) {
+                if (!j["Port"].is_number_integer() || j["Port"] < 1 || j["Port"] > 65535) {
+                    throw std::invalid_argument("PublisherProxy Port must be an integer in 1..65535");
+                }
+                p.port = j["Port"].get<int>();
+            }
+            // The pinned libtorrent SOCKS5 UDP implementation uses an IPv4 proxy
+            // interface and cannot consume an IPv6 UDP ASSOCIATE relay reply.
+            in_addr v4{};
+            if ((!p.host.empty() || p.enabled) && inet_pton(AF_INET, p.host.c_str(), &v4) != 1) {
+                throw std::invalid_argument("PublisherProxy Host must be a numeric IPv4 address (no local DNS)");
+            }
+            if (p.enabled && (p.host.empty() || p.port == 0 || p.host == "0.0.0.0")) {
+                throw std::invalid_argument("PublisherProxy requires a concrete Host and Port");
+            }
+            if (p.username.size() > 255 || p.password.size() > 255 ||
+                p.username.empty() != p.password.empty()) {
+                throw std::invalid_argument("PublisherProxy requires paired credentials of 1..255 bytes, or neither");
+            }
+            if (p.enabled && settings.contains("P2PDhtBootstrap")) {
+                if (!settings["P2PDhtBootstrap"].is_string()) {
+                    throw std::invalid_argument("proxied P2PDhtBootstrap must be a string of numeric IP:port nodes");
+                }
+                const std::string nodes = settings["P2PDhtBootstrap"].get<std::string>();
+                size_t pos = 0;
+                while (pos < nodes.size()) {
+                    const size_t end = nodes.find(',', pos);
+                    const std::string node = nodes.substr(pos, end == std::string::npos ? end : end - pos);
+                    const size_t colon = node.rfind(':');
+                    std::string host = colon == std::string::npos ? "" : node.substr(0, colon);
+                    if (host.size() > 2 && host.front() == '[' && host.back() == ']') {
+                        host = host.substr(1, host.size() - 2);
+                    }
+                    const std::string port = colon == std::string::npos ? "" : node.substr(colon + 1);
+                    if (!numericAddress(host) || port.empty() || port.size() > 5 ||
+                        !std::all_of(port.begin(), port.end(), [](char c) { return c >= '0' && c <= '9'; }) ||
+                        std::atoi(port.c_str()) < 1 || std::atoi(port.c_str()) > 65535 || end == nodes.size() - 1) {
+                        throw std::invalid_argument("proxied P2PDhtBootstrap requires numeric IP:port nodes (no local DNS)");
+                    }
+                    pos = end == std::string::npos ? nodes.size() : end + 1;
+                }
+            }
+            return p;
+        }
+
+        bool sameProxy(const PublisherProxy &a, const PublisherProxy &b) {
+            return std::tie(a.enabled, a.host, a.port, a.username, a.password) ==
+                   std::tie(b.enabled, b.host, b.port, b.username, b.password);
         }
     }
 
@@ -94,8 +183,20 @@ namespace p2p {
                 }
             }
         }
-        json s = readJson(m_dir + "/settings.json");
-        m_settings = s.is_object() ? s : json::object();
+        // A damaged/unreadable settings file must not silently disable the proxy.
+        const std::string settingsPath = m_dir + "/settings.json";
+        struct stat st{};
+        const bool exists = stat(settingsPath.c_str(), &st) == 0;
+        if (!exists && errno != ENOENT) {
+            throw std::runtime_error("cannot inspect settings.json; refusing network startup");
+        }
+        json s = exists ? readJson(settingsPath) : json::object();
+        if (!s.is_object()) {
+            throw std::runtime_error("settings.json must be a readable JSON object; refusing network startup");
+        }
+        PublisherProxy proxy = parseProxy(s);
+        m_settings = std::move(s);
+        m_publisherProxy = std::move(proxy);
     }
 
     std::string Store::metadataPath(const std::string &hash) const {
@@ -227,10 +328,42 @@ namespace p2p {
         return m_settings;
     }
 
+    json Store::publicSettings() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        json s = m_settings;
+        if (s.contains("PublisherProxy")) {
+            auto &p = s["PublisherProxy"];
+            p.erase("Username");
+            p.erase("Password");
+            p["CredentialsSet"] = !m_publisherProxy.username.empty();
+        }
+        return s;
+    }
+
+    PublisherProxy Store::publisherProxy() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_publisherProxy;
+    }
+
     void Store::setSettings(const json &settings) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_settings = settings;
-        writeFile("settings.json", m_settings.dump(2));
+        if (!settings.is_object()) throw std::invalid_argument("settings must be an object");
+        json next = settings;
+        if (next.contains("PublisherProxy") && next["PublisherProxy"].is_object()) {
+            auto &p = next["PublisherProxy"];
+            // API reads redact credentials. An unrelated update must not erase them.
+            if (!p.contains("Username")) p["Username"] = m_publisherProxy.username;
+            if (!p.contains("Password")) p["Password"] = m_publisherProxy.password;
+            p.erase("CredentialsSet");
+        }
+        const PublisherProxy proxy = parseProxy(next);
+        if (!sameProxy(proxy, m_publisherProxy)) {
+            throw std::invalid_argument("PublisherProxy is startup-only: stop, edit settings.json, then restart");
+        }
+        if (!writeFile("settings.json", next.dump(2))) {
+            throw std::runtime_error("cannot persist settings.json");
+        }
+        m_settings = std::move(next);
     }
 
     void Store::saveTorrents() const {
@@ -267,6 +400,11 @@ namespace p2p {
         if (!f) {
             return false;
         }
+        if (name == "settings.json") {
+            // The proxy password is plaintext at rest; do not make replacement
+            // settings world-readable on POSIX systems (console FS may ignore it).
+            chmod(tmp.c_str(), 0600);
+        }
         bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
         ok = std::fclose(f) == 0 && ok;
         if (!ok) {
@@ -274,6 +412,9 @@ namespace p2p {
         }
         // some console file systems refuse to rename onto an existing file
         if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            // Never remove the last valid transport policy to update settings.
+            // A filesystem without replace-by-rename must be edited while stopped.
+            if (name == "settings.json") return false;
             std::remove(path.c_str());
             return std::rename(tmp.c_str(), path.c_str()) == 0;
         }

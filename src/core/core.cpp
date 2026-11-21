@@ -148,6 +148,60 @@ namespace p2p {
             return stat(path.c_str(), &st) == 0;
         }
 
+        // Applied before session construction, not after its network thread starts.
+        void proxySettings(lt::settings_pack &sp, const PublisherProxy &proxy) {
+            if (!proxy.enabled) return;
+            sp.set_int(lt::settings_pack::proxy_type, proxy.username.empty()
+                       ? lt::settings_pack::socks5 : lt::settings_pack::socks5_pw);
+            sp.set_str(lt::settings_pack::proxy_hostname, proxy.host);
+            sp.set_int(lt::settings_pack::proxy_port, proxy.port);
+            sp.set_str(lt::settings_pack::proxy_username, proxy.username);
+            sp.set_str(lt::settings_pack::proxy_password, proxy.password);
+            sp.set_bool(lt::settings_pack::proxy_hostnames, true);
+            sp.set_bool(lt::settings_pack::proxy_peer_connections, true);
+            sp.set_bool(lt::settings_pack::proxy_tracker_connections, true);
+            sp.set_bool(lt::settings_pack::enable_lsd, false);
+            sp.set_bool(lt::settings_pack::enable_upnp, false);
+            sp.set_bool(lt::settings_pack::enable_natpmp, false);
+            sp.set_bool(lt::settings_pack::anonymous_mode, true);
+            sp.set_bool(lt::settings_pack::socks5_udp_send_local_ep, false);
+        }
+
+        bool numericDhtNodes(const std::vector<std::pair<std::string, int>> &nodes) {
+            for (const auto &node : nodes) {
+                lt::error_code ec;
+                lt::make_address(node.first, ec);
+                if (ec || node.second < 1 || node.second > 65535) return false;
+            }
+            return true;
+        }
+
+        // libtorrent resolves non-compact HTTP tracker peer hostnames locally even
+        // with proxy_hostnames=true. In strict mode only UDP trackers are admitted.
+        // Metadata DHT bootstrap names are another local-resolver bypass.
+        bool proxyTorrent(lt::add_torrent_params &atp, std::string &error) {
+            if (!numericDhtNodes(atp.dht_nodes) || (atp.ti && !numericDhtNodes(atp.ti->nodes()))) {
+                error = "PublisherProxy requires numeric torrent DHT nodes (no local DNS)";
+                return false;
+            }
+            std::vector<std::string> trackers;
+            for (const auto &tr : atp.trackers) {
+                if (tr.rfind("udp://", 0) == 0) trackers.push_back(tr);
+            }
+            if (atp.ti) {
+                for (const auto &tr : atp.ti->trackers()) {
+                    if (tr.url.rfind("udp://", 0) == 0 &&
+                        std::find(trackers.begin(), trackers.end(), tr.url) == trackers.end()) {
+                        trackers.push_back(tr.url);
+                    }
+                }
+            }
+            atp.trackers = std::move(trackers);
+            atp.tracker_tiers.assign(atp.trackers.size(), 0);
+            atp.flags |= lt::torrent_flags::override_trackers;
+            return true;
+        }
+
         // http:// only (no TLS in the core); a few redirects
         bool httpGet(std::string url, std::string &body, std::string &error) {
             for (int hop = 0; hop < 4; hop++) {
@@ -271,18 +325,37 @@ namespace p2p {
         va_start(args, fmt);
         vsnprintf(line, sizeof(line), fmt, args);
         va_end(args);
+        std::string safe(line);
+        const PublisherProxy proxy = m_store.publisherProxy();
+        for (const std::string &secret : {proxy.username, proxy.password}) {
+            if (secret.empty()) continue;
+            for (const std::string &value : {secret, HttpServer::urlEncode(secret)}) {
+                size_t pos = 0;
+                while ((pos = safe.find(value, pos)) != std::string::npos) {
+                    safe.replace(pos, value.size(), "[redacted]");
+                    pos += std::strlen("[redacted]");
+                }
+            }
+        }
         std::lock_guard<std::mutex> lock(m_logMutex);
         if (m_config.log) {
-            m_config.log(line);
+            m_config.log(safe);
         }
     }
 
     bool Core::start() {
         m_started = Clock::now();
-        m_store.load();
+        try {
+            m_store.load();
+            loadSettings();
+        } catch (const std::exception &) {
+            // Parsing exceptions may contain input text; do not log configuration
+            // values. In particular never fall back to a direct session on failure.
+            log("[Core] invalid or unreadable settings; refusing network startup");
+            return false;
+        }
         m_mesh.load(m_store.dir(), [this](const std::string &line) { log("%s", line.c_str()); });
         m_auth.load(m_store.dir());
-        loadSettings();
         // one BitTorrent port for every socket, chosen once and kept (0: a random port per
         // socket, which the DHT cannot announce)
         if (m_settings.listenPort == 0) {
@@ -314,6 +387,15 @@ namespace p2p {
             sp.set_int(lt::settings_pack::max_peerlist_size, 500);
         }
 
+        // DHT defaults include a hostname, which bypasses SOCKS5 resolution in
+        // this libtorrent version. Clear it before the session starts. Explicit
+        // proxied bootstrap entries have already been validated as numeric.
+        const PublisherProxy proxy = m_store.publisherProxy();
+        sp.set_bool(lt::settings_pack::enable_dht, !m_settings.disableDht);
+        if (proxy.enabled || !m_settings.dhtBootstrap.empty()) {
+            sp.set_str(lt::settings_pack::dht_bootstrap_nodes, m_settings.dhtBootstrap);
+        }
+        proxySettings(sp, proxy);
         lt::session_params params(std::move(sp));
         if (m_settings.useDisk) {
             params.disk_io_constructor = lt::posix_disk_io_constructor;
@@ -329,6 +411,9 @@ namespace p2p {
             return false;
         }
         applySettings();
+        if (proxy.enabled) {
+            log("[Core] publisher SOCKS5 enabled (UDP ASSOCIATE required); no direct fallback; transport changes require restart");
+        }
 
         // the library: closed torrents, opened when used
         for (TorrentRecord r : m_store.torrents()) {
@@ -430,6 +515,11 @@ namespace p2p {
             sp.set_int(lt::settings_pack::dht_block_ratelimit, 100000);
             sp.set_int(lt::settings_pack::dht_block_timeout, 0);
         }
+        const PublisherProxy proxy = m_store.publisherProxy();
+        proxySettings(sp, proxy);
+        if (proxy.enabled) {
+            sp.set_str(lt::settings_pack::dht_bootstrap_nodes, m_settings.dhtBootstrap);
+        }
         m_session->apply_settings(sp);
         // the nodes given known at once (the bootstrap list is read when the DHT starts)
         size_t pos = 0;
@@ -438,7 +528,11 @@ namespace p2p {
             const std::string node = m_settings.dhtBootstrap.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
             const size_t colon = node.rfind(':');
             if (colon != std::string::npos) {
-                m_session->add_dht_node({node.substr(0, colon), std::atoi(node.c_str() + colon + 1)});
+                std::string host = node.substr(0, colon);
+                if (host.size() > 2 && host.front() == '[' && host.back() == ']') {
+                    host = host.substr(1, host.size() - 2);
+                }
+                m_session->add_dht_node({host, std::atoi(node.c_str() + colon + 1)});
             }
             pos = end == std::string::npos ? m_settings.dhtBootstrap.size() : end + 1;
         }
@@ -480,7 +574,7 @@ namespace p2p {
                 "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
                 "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
                 "DisableUpload", "DisableDHT", "DisableUPNP", "PeersListenPort"};
-        json stored = m_store.settings();
+        json stored = m_store.publicSettings();
         for (auto it = stored.begin(); it != stored.end(); ++it) {
             if (!used.count(it.key())) {
                 s[it.key()] = it.value();
@@ -636,6 +730,10 @@ namespace p2p {
             link.replace(amp, 5, "&");
         }
         if (link.rfind("http://", 0) == 0 || link.rfind("https://", 0) == 0) {
+            if (m_store.publisherProxy().enabled) {
+                error = "HTTP torrent fetch is disabled with PublisherProxy; upload metadata or use a magnet";
+                return nullptr;
+            }
             std::string body;
             if (!httpGet(link, body, error)) {
                 return nullptr;
@@ -852,6 +950,9 @@ namespace p2p {
                 error = "bad magnet: " + ec.message();
                 return false;
             }
+        }
+        if (m_store.publisherProxy().enabled && !proxyTorrent(atp, error)) {
+            return false;
         }
         atp.save_path = m_settings.savePath.empty() ? m_store.dir() + "/downloads" : m_settings.savePath;
         // opened at once, never queued or paused by the session

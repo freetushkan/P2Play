@@ -48,6 +48,16 @@ namespace p2p {
         int64_t updated = 0;  // unix time
     };
 
+    // Publisher transport policy. Kept outside Core's live BTSets: changing transport
+    // requires a stopped process, never a partially reconfigured libtorrent session.
+    struct PublisherProxy {
+        bool enabled = false;
+        std::string host;
+        int port = 0;
+        std::string username;
+        std::string password;
+    };
+
     class Store {
     public:
         explicit Store(std::string dir);
@@ -90,6 +100,12 @@ namespace p2p {
 
         nlohmann::json settings() const;
 
+        // Safe for API responses; credentials are never returned. setSettings preserves
+        // omitted credentials during a read/modify/write of this representation.
+        nlohmann::json publicSettings() const;
+        PublisherProxy publisherProxy() const;
+
+        // Throws without persisting on invalid settings or a transport-policy change.
         void setSettings(const nlohmann::json &settings);
 
     private:
@@ -104,6 +120,7 @@ namespace p2p {
         std::vector<TorrentRecord> m_torrents;
         std::vector<ViewedRecord> m_viewed;
         nlohmann::json m_settings = nlohmann::json::object();
+        PublisherProxy m_publisherProxy; // immutable between load() calls
     };
 
 }
