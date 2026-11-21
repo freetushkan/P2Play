@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
@@ -21,26 +20,30 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileReader;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.Collections;
 
 /**
- * Test screen of p2spike: a link, start/stop, the stream URLs, the status and the log tail.
- * Usable with a remote (Android TV): every control is a focusable button or field.
+ * The P2Play server screen: start / stop, its addresses, the torrents, the log tail; a link
+ * (typed, pasted, a magnet opened or shared with the app) is added to the library and its
+ * largest media file opened in a player. Players and Lampa use the server at
+ * http://127.0.0.1:8090 as a TorrServer. Usable with a remote (Android TV).
  */
 public class MainActivity extends Activity {
+    private static final String LOCAL = "http://127.0.0.1:" + ServerService.PORT;
     private static final int LOG_TAIL = 6 * 1024;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
@@ -55,7 +58,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             refresh();
-            mHandler.postDelayed(this, 1000);
+            mHandler.postDelayed(this, 1500);
         }
     };
 
@@ -63,8 +66,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
-        mLink.setText(prefs().getString("link", ""));
         askPermissions();
+        startServer();
         handleIntent(getIntent());
     }
 
@@ -86,7 +89,7 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
-    // magnet from VIEW or SEND: started at once
+    // a magnet from VIEW or SEND: added and played
     private void handleIntent(Intent intent) {
         if (intent == null) {
             return;
@@ -99,7 +102,7 @@ public class MainActivity extends Activity {
         }
         if (link != null && !link.trim().isEmpty()) {
             mLink.setText(link.trim());
-            start();
+            addAndPlay();
         }
     }
 
@@ -108,7 +111,7 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
-        if (SpikeService.hasStorage(this)) {
+        if (ServerService.hasStorage(this)) {
             return;
         }
         if (Build.VERSION.SDK_INT >= 30) {
@@ -128,53 +131,33 @@ public class MainActivity extends Activity {
         }
     }
 
-    // "http <port>" of magnet.txt, else 8095
-    private int httpPort() {
-        File f = new File(SpikeService.dataDir(this), "magnet.txt");
-        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                String[] kv = line.trim().split("\\s+");
-                if (kv.length == 2 && kv[0].equals("http")) {
-                    return Integer.parseInt(kv[1]);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return 8095;
-    }
-
-    private String streamUrl() {
-        return "http://127.0.0.1:" + httpPort() + "/stream";
-    }
-
-    private SharedPreferences prefs() {
-        return getSharedPreferences("spike", MODE_PRIVATE);
-    }
-
     private void buildUi() {
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad, pad, pad);
 
+        mUrls = new TextView(this);
+        mUrls.setTextIsSelectable(true);
+        root.addView(mUrls, matchWrap());
+
+        LinearLayout server = new LinearLayout(this);
+        server.setOrientation(LinearLayout.HORIZONTAL);
+        server.addView(button("Start", v -> startServer()));
+        server.addView(button("Stop", v -> stopServer()));
+        root.addView(server, matchWrap());
+
         mLink = new EditText(this);
-        mLink.setHint("magnet:?xt=urn:btih:... (empty: the link of magnet.txt)");
+        mLink.setHint("magnet:?xt=urn:btih:... or an infohash");
         mLink.setSingleLine(true);
         mLink.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         root.addView(mLink, matchWrap());
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.addView(button("Start", v -> start()));
-        buttons.addView(button("Stop", v -> stop()));
-        buttons.addView(button("Play", v -> play()));
+        buttons.addView(button("Add & play", v -> addAndPlay()));
         buttons.addView(button("Paste", v -> paste()));
         root.addView(buttons, matchWrap());
-
-        mUrls = new TextView(this);
-        mUrls.setTextIsSelectable(true);
-        root.addView(mUrls, matchWrap());
 
         mStatus = new TextView(this);
         mStatus.setPadding(0, dp(8), 0, dp(8));
@@ -188,7 +171,6 @@ public class MainActivity extends Activity {
         root.addView(mLogScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
-        mLink.requestFocus();
     }
 
     private Button button(String text, View.OnClickListener listener) {
@@ -206,11 +188,8 @@ public class MainActivity extends Activity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
-    private void start() {
-        String link = mLink.getText().toString().trim();
-        prefs().edit().putString("link", link).apply();
-        Intent i = new Intent(this, SpikeService.class).setAction(SpikeService.ACTION_START)
-                .putExtra(SpikeService.EXTRA_LINK, link);
+    private void startServer() {
+        Intent i = new Intent(this, ServerService.class).setAction(ServerService.ACTION_START);
         if (Build.VERSION.SDK_INT >= 26) {
             startForegroundService(i);
         } else {
@@ -218,18 +197,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void stop() {
-        startService(new Intent(this, SpikeService.class).setAction(SpikeService.ACTION_STOP));
-    }
-
-    private void play() {
-        Intent i = new Intent(Intent.ACTION_VIEW);
-        i.setDataAndType(Uri.parse(streamUrl()), "video/*");
-        try {
-            startActivity(Intent.createChooser(i, "Play with"));
-        } catch (Exception e) {
-            mStatus.setText("No player: " + e.getMessage());
-        }
+    private void stopServer() {
+        startService(new Intent(this, ServerService.class).setAction(ServerService.ACTION_STOP));
     }
 
     private void paste() {
@@ -242,26 +211,90 @@ public class MainActivity extends Activity {
         }
     }
 
+    // POST /torrents add (into the library), wait for the file list, open the largest media file
+    private void addAndPlay() {
+        final String link = mLink.getText().toString().trim();
+        if (link.isEmpty()) {
+            mStatus.setText("No link");
+            return;
+        }
+        startServer();
+        mStatus.setText("Adding...");
+        new Thread(() -> {
+            String error = null;
+            String url = null;
+            try {
+                JSONObject add = new JSONObject().put("action", "add").put("link", link).put("save_to_db", true);
+                JSONObject st = null;
+                // the server may be starting
+                for (int i = 0; i < 20 && st == null; i++) {
+                    try {
+                        st = new JSONObject(post("/torrents", add.toString()));
+                    } catch (Exception e) {
+                        Thread.sleep(500);
+                    }
+                }
+                if (st == null) {
+                    throw new Exception("the server does not answer");
+                }
+                String hash = st.getString("hash");
+                JSONObject get = new JSONObject().put("action", "get").put("hash", hash);
+                for (int i = 0; i < 120 && !st.has("file_stats"); i++) {
+                    Thread.sleep(500);
+                    st = new JSONObject(post("/torrents", get.toString()));
+                }
+                if (!st.has("file_stats")) {
+                    throw new Exception("no metadata in 60 s (no peers?)");
+                }
+                JSONArray files = st.getJSONArray("file_stats");
+                JSONObject best = null;
+                for (int i = 0; i < files.length(); i++) {
+                    JSONObject f = files.getJSONObject(i);
+                    if (best == null || f.optLong("length") > best.optLong("length")) {
+                        best = f;
+                    }
+                }
+                String path = best.getString("path");
+                String name = path.substring(path.lastIndexOf('/') + 1);
+                url = LOCAL + "/stream/" + URLEncoder.encode(name, "UTF-8").replace("+", "%20") + "?link=" + hash
+                        + "&index=" + best.getInt("id") + "&play";
+            } catch (Exception e) {
+                error = e.getMessage();
+            }
+            final String fError = error;
+            final String fUrl = url;
+            mHandler.post(() -> {
+                if (fError != null) {
+                    mStatus.setText("Failed: " + fError);
+                    return;
+                }
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(Uri.parse(fUrl), "video/*");
+                try {
+                    startActivity(Intent.createChooser(i, "Play with"));
+                } catch (Exception e) {
+                    mStatus.setText("No player: " + e.getMessage());
+                }
+            });
+        }, "add").start();
+    }
+
     private void refresh() {
-        boolean running = SpikeService.isRunning();
-        int port = httpPort();
-        StringBuilder urls = new StringBuilder("Stream: ").append(streamUrl());
+        StringBuilder urls = new StringBuilder("Server: ").append(LOCAL);
         String ip = lanAddress();
         if (ip != null) {
-            urls.append("\nLAN: http://").append(ip).append(':').append(port).append("/stream");
+            urls.append("\nLAN: http://").append(ip).append(':').append(ServerService.PORT);
         }
-        urls.append("\nData: ").append(SpikeService.dataDir(this).getPath())
-                .append(" (magnet.txt, spike.log, downloads)");
+        urls.append("\nData: ").append(ServerService.dataDir(this).getPath());
         mUrls.setText(urls);
-        if (!running) {
-            mStatus.setText("Stopped");
+        if (!ServerService.isRunning()) {
+            mStatus.setText("Server stopped");
         } else if (!mPolling) {
             mPolling = true;
-            final String statusUrl = "http://127.0.0.1:" + port + "/status";
             new Thread(() -> {
-                String text = fetchStatus(statusUrl);
+                String text = torrents();
                 mHandler.post(() -> {
-                    if (SpikeService.isRunning()) {
+                    if (ServerService.isRunning() && !mStatus.getText().toString().startsWith("Adding")) {
                         mStatus.setText(text);
                     }
                 });
@@ -275,39 +308,59 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static String fetchStatus(String url) {
-        HttpURLConnection c = null;
+    // a line a torrent: title, state, peers, speed
+    private static String torrents() {
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(800);
-            c.setReadTimeout(800);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try (InputStream in = c.getInputStream()) {
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                }
+            JSONArray list = new JSONArray(post("/torrents", "{\"action\":\"list\"}"));
+            if (list.length() == 0) {
+                return "Server running, no torrents";
             }
-            JSONObject j = new JSONObject(out.toString("UTF-8"));
             StringBuilder sb = new StringBuilder();
-            java.util.Iterator<String> keys = j.keys();
-            while (keys.hasNext()) {
-                String k = keys.next();
-                sb.append(k).append(": ").append(j.opt(k)).append(keys.hasNext() ? "   " : "");
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject t = list.getJSONObject(i);
+                sb.append(t.optString("title")).append(" - ").append(t.optString("stat_string"));
+                if (t.has("active_peers")) {
+                    sb.append(", ").append(t.optInt("active_peers")).append(" peers, ")
+                            .append(Math.round(t.optDouble("download_speed") / 1024)).append(" KB/s");
+                }
+                sb.append('\n');
             }
-            return sb.toString();
+            return sb.toString().trim();
         } catch (Exception e) {
-            return "Starting...";
-        } finally {
-            if (c != null) {
-                c.disconnect();
+            return "Server starting...";
+        }
+    }
+
+    private static String post(String path, String body) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(LOCAL + path).openConnection();
+        try {
+            c.setConnectTimeout(1500);
+            c.setReadTimeout(10000);
+            c.setDoOutput(true);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json");
+            try (OutputStream out = c.getOutputStream()) {
+                out.write(body.getBytes("UTF-8"));
             }
+            InputStream in = c.getResponseCode() < 400 ? c.getInputStream() : c.getErrorStream();
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            int n;
+            while (in != null && (n = in.read(b)) > 0) {
+                buf.write(b, 0, n);
+            }
+            String text = buf.toString("UTF-8");
+            if (c.getResponseCode() >= 400) {
+                throw new Exception(text);
+            }
+            return text;
+        } finally {
+            c.disconnect();
         }
     }
 
     private String logTail() {
-        File f = new File(SpikeService.dataDir(this), "spike.log");
+        File f = new File(ServerService.dataDir(this), "p2play.log");
         if (!f.exists()) {
             return "";
         }

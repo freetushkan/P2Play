@@ -46,6 +46,12 @@ namespace p2p {
 
         Stats stats() const;
 
+        // bytes of a torrent in memory
+        int64_t bytesOf(const lt::sha1_hash &infoHash) const;
+
+        // the budget; a smaller one drops pieces at the next write
+        void setCapacity(int64_t capacity);
+
         struct State;
 
     private:

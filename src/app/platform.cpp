@@ -109,7 +109,7 @@ std::string p2p::platformName() { return "ps4"; }
 std::string p2p::dataDir() { return "/data/p2play"; }
 
 void p2p::platformPrint(const std::string &line) {
-    sceKernelDebugOutText(0, ("[p2spike] " + line + "\n").c_str());
+    sceKernelDebugOutText(0, ("[p2play] " + line + "\n").c_str());
 }
 
 void p2p::platformNotify(const std::string &) {}
@@ -147,7 +147,7 @@ std::string p2p::platformName() { return "ps5"; }
 std::string p2p::dataDir() { return "/data/p2play"; }
 
 void p2p::platformPrint(const std::string &line) {
-    klog_printf("[p2spike] %s\n", line.c_str());
+    klog_printf("[p2play] %s\n", line.c_str());
 }
 
 void p2p::platformNotify(const std::string &text) {
@@ -164,6 +164,7 @@ bool p2p::platformIsConsole() { return true; }
 #else
 
 #include <csignal>
+#include <cstdlib>
 
 namespace {
     std::atomic<bool> g_quit{false};
@@ -175,7 +176,6 @@ bool p2p::platformInit() {
     signal(SIGINT, onSignal);
     signal(SIGTERM, onSignal);
     signal(SIGPIPE, SIG_IGN);
-    mkdir(dataDir().c_str(), 0777);
     return true;
 }
 
@@ -195,8 +195,16 @@ std::string p2p::platformName() {
 }
 
 std::string p2p::dataDir() {
-    const char *env = getenv("P2SPIKE_DATA");
-    return env ? env : "p2play-data";
+    if (const char *d = getenv("P2PLAY_DATA")) {
+        return d;
+    }
+    if (const char *x = getenv("XDG_DATA_HOME")) {
+        return std::string(x) + "/p2play";
+    }
+    if (const char *h = getenv("HOME")) {
+        return std::string(h) + "/.local/share/p2play";
+    }
+    return "p2play-data";
 }
 
 void p2p::platformPrint(const std::string &line) {

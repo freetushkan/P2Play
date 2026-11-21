@@ -55,4 +55,5 @@ endif ()
 
 include(cmake/libtorrent.cmake)
 
-add_subdirectory(src/spike)
+add_subdirectory(src/core)
+add_subdirectory(src/app)

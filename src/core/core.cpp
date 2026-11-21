@@ -1,0 +1,789 @@
+#include "core.hpp"
+
+#include <algorithm>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <libtorrent/add_torrent_params.hpp>
+#include <libtorrent/alert_types.hpp>
+#include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/posix_disk_io.hpp>
+#include <libtorrent/session_params.hpp>
+#include <libtorrent/settings_pack.hpp>
+#include <libtorrent/torrent_info.hpp>
+#include <libtorrent/torrent_status.hpp>
+#include <libtorrent/version.hpp>
+
+#include "core_torrent.hpp"
+
+namespace p2p {
+
+    using nlohmann::json;
+    using Clock = std::chrono::steady_clock;
+
+    namespace {
+
+        std::string hexOf(const lt::info_hash_t &ih) {
+            std::ostringstream o;
+            o << (ih.has_v1() ? ih.v1 : ih.get_best());
+            return o.str();
+        }
+
+        bool isHex40(const std::string &s) {
+            return s.size() == 40 && std::all_of(s.begin(), s.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+        }
+
+        bool isBase32(const std::string &s) {
+            return s.size() == 32 && std::all_of(s.begin(), s.end(), [](char c) {
+                return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7');
+            });
+        }
+
+        std::string lower(std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+            return s;
+        }
+
+        bool readFile(const std::string &path, std::string &out) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                return false;
+            }
+            std::stringstream ss;
+            ss << in.rdbuf();
+            out = ss.str();
+            return true;
+        }
+
+        bool fileExists(const std::string &path) {
+            struct stat st{};
+            return stat(path.c_str(), &st) == 0;
+        }
+
+        // http:// only (no TLS in the core); a few redirects
+        bool httpGet(std::string url, std::string &body, std::string &error) {
+            for (int hop = 0; hop < 4; hop++) {
+                if (url.rfind("http://", 0) != 0) {
+                    error = "only http:// links can be fetched";
+                    return false;
+                }
+                std::string rest = url.substr(7);
+                size_t slash = rest.find('/');
+                std::string hostPort = rest.substr(0, slash);
+                std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+                std::string host = hostPort, port = "80";
+                size_t colon = hostPort.rfind(':');
+                if (colon != std::string::npos) {
+                    host = hostPort.substr(0, colon);
+                    port = hostPort.substr(colon + 1);
+                }
+                addrinfo hints{};
+                hints.ai_family = AF_INET;
+                hints.ai_socktype = SOCK_STREAM;
+                addrinfo *res = nullptr;
+                if (getaddrinfo(host.c_str(), port.c_str(), &hints, &res) != 0 || !res) {
+                    error = "cannot resolve " + host;
+                    return false;
+                }
+                int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                bool connected = fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen) == 0;
+                freeaddrinfo(res);
+                if (!connected) {
+                    if (fd >= 0) {
+                        ::close(fd);
+                    }
+                    error = "cannot connect to " + hostPort;
+                    return false;
+                }
+                std::string req = "GET " + path + " HTTP/1.0\r\nHost: " + hostPort +
+                                  "\r\nUser-Agent: P2Play\r\nConnection: close\r\n\r\n";
+                ::send(fd, req.data(), req.size(), 0);
+                std::string data;
+                char buf[8192];
+                ssize_t n;
+                while ((n = recv(fd, buf, sizeof(buf), 0)) > 0 && data.size() < 32 * 1024 * 1024) {
+                    data.append(buf, static_cast<size_t>(n));
+                }
+                ::close(fd);
+                size_t headEnd = data.find("\r\n\r\n");
+                if (headEnd == std::string::npos) {
+                    error = "bad answer from " + hostPort;
+                    return false;
+                }
+                std::string head = data.substr(0, headEnd);
+                int status = std::atoi(head.substr(head.find(' ') + 1, 3).c_str());
+                if (status >= 300 && status < 400) {
+                    std::string lh = lower(head);
+                    size_t loc = lh.find("\r\nlocation:");
+                    if (loc == std::string::npos) {
+                        error = "redirect without a location";
+                        return false;
+                    }
+                    size_t end = head.find("\r\n", loc + 2);
+                    std::string target = head.substr(loc + 11, end == std::string::npos ? std::string::npos : end - loc - 11);
+                    target.erase(0, target.find_first_not_of(' '));
+                    url = target.rfind("http", 0) == 0 ? target : "http://" + hostPort + target;
+                    continue;
+                }
+                if (status != 200) {
+                    error = "http status " + std::to_string(status);
+                    return false;
+                }
+                body = data.substr(headEnd + 4);
+                return true;
+            }
+            error = "too many redirects";
+            return false;
+        }
+    }
+
+    const char *Core::version() {
+        return "MatriX.141 P2Play/0.1";
+    }
+
+    Core::Core(CoreConfig config) : m_config(std::move(config)), m_store(m_config.dataDir) {}
+
+    Core::~Core() {
+        stop();
+    }
+
+    void Core::log(const char *fmt, ...) {
+        char line[2048];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(line, sizeof(line), fmt, args);
+        va_end(args);
+        std::lock_guard<std::mutex> lock(m_logMutex);
+        if (m_config.log) {
+            m_config.log(line);
+        }
+    }
+
+    bool Core::start() {
+        m_store.load();
+        loadSettings();
+
+        lt::settings_pack sp;
+        const std::string port = std::to_string(m_settings.listenPort);
+        sp.set_str(lt::settings_pack::listen_interfaces,
+                   m_config.console ? "0.0.0.0:" + port : "0.0.0.0:" + port + ",[::]:" + port);
+        sp.set_int(lt::settings_pack::alert_mask, lt::alert_category::status | lt::alert_category::error |
+                                                  lt::alert_category::storage);
+        sp.set_bool(lt::settings_pack::enable_lsd, !m_config.console);
+        sp.set_bool(lt::settings_pack::enable_upnp, !m_config.console && !m_settings.disableUpnp);
+        sp.set_bool(lt::settings_pack::enable_natpmp, !m_config.console && !m_settings.disableUpnp);
+        // only the readers' windows are wanted: a torrent is "finished" between them and its
+        // seeds must stay connected
+        sp.set_bool(lt::settings_pack::close_redundant_connections, false);
+        // torrents are opened on demand, none waits in a queue
+        sp.set_int(lt::settings_pack::active_downloads, -1);
+        sp.set_int(lt::settings_pack::active_seeds, -1);
+        sp.set_int(lt::settings_pack::active_limit, -1);
+        sp.set_str(lt::settings_pack::user_agent, std::string("P2Play/0.1 libtorrent/") + LIBTORRENT_VERSION);
+        if (m_config.console) {
+            sp.set_int(lt::settings_pack::max_peerlist_size, 500);
+        }
+
+        lt::session_params params(std::move(sp));
+        if (m_settings.useDisk) {
+            params.disk_io_constructor = lt::posix_disk_io_constructor;
+        } else {
+            m_cache = std::make_unique<RamCache>(m_settings.cacheSize);
+            params.disk_io_constructor = m_cache->constructor();
+        }
+        try {
+            m_session = std::make_unique<lt::session>(std::move(params));
+        } catch (const std::exception &e) {
+            log("[Core] session failed: %s", e.what());
+            return false;
+        }
+        applySettings();
+
+        // the library: closed torrents, opened when used
+        for (const TorrentRecord &r : m_store.torrents()) {
+            auto t = std::make_shared<Torrent>();
+            t->rec = r;
+            t->saved = true;
+            m_torrents[r.hash] = t;
+        }
+
+        m_alertThread = std::thread(&Core::alertLoop, this);
+        m_idleThread = std::thread(&Core::idleLoop, this);
+
+        if (!m_http.start(m_config.httpPort, [this](const HttpRequest &req, HttpResponse &res) { handle(req, res); })) {
+            log("[Web] cannot listen on port %d", m_config.httpPort);
+            stop();
+            return false;
+        }
+        log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library", version(),
+            LIBTORRENT_VERSION, m_cache ? ("ram " + std::to_string(m_settings.cacheSize >> 20) + " MB").c_str() : "disk",
+            m_http.port(), static_cast<int>(m_torrents.size()));
+        return true;
+    }
+
+    void Core::stop() {
+        if (m_stopping.exchange(true)) {
+            return;
+        }
+        m_changed.notify_all();
+        m_http.stop();
+        if (m_alertThread.joinable()) {
+            m_alertThread.join();
+        }
+        if (m_idleThread.joinable()) {
+            m_idleThread.join();
+        }
+        m_session.reset();
+        log("[Core] stopped");
+    }
+
+    // --- settings ---
+
+    void Core::loadSettings() {
+        json s = m_store.settings();
+        auto i = [&](const char *k, int &v) { if (s.contains(k) && s[k].is_number()) v = s[k].get<int>(); };
+        auto b = [&](const char *k, bool &v) { if (s.contains(k) && s[k].is_boolean()) v = s[k].get<bool>(); };
+        if (s.contains("CacheSize") && s["CacheSize"].is_number()) {
+            m_settings.cacheSize = std::max<int64_t>(16LL << 20, s["CacheSize"].get<int64_t>());
+        }
+        i("ReaderReadAHead", m_settings.readAhead);
+        i("PreloadCache", m_settings.preloadCache);
+        b("UseDisk", m_settings.useDisk);
+        if (s.contains("TorrentsSavePath") && s["TorrentsSavePath"].is_string()) {
+            m_settings.savePath = s["TorrentsSavePath"].get<std::string>();
+        }
+        i("TorrentDisconnectTimeout", m_settings.disconnectTimeout);
+        i("ConnectionsLimit", m_settings.connectionsLimit);
+        i("DownloadRateLimit", m_settings.downloadRateLimit);
+        i("UploadRateLimit", m_settings.uploadRateLimit);
+        b("DisableUpload", m_settings.disableUpload);
+        b("DisableDHT", m_settings.disableDht);
+        b("DisableUPNP", m_settings.disableUpnp);
+        i("PeersListenPort", m_settings.listenPort);
+        m_settings.readAhead = std::min(100, std::max(5, m_settings.readAhead));
+        m_settings.preloadCache = std::min(100, std::max(0, m_settings.preloadCache));
+        m_settings.disconnectTimeout = std::max(5, m_settings.disconnectTimeout);
+        m_settings.connectionsLimit = std::max(5, m_settings.connectionsLimit);
+    }
+
+    void Core::applySettings() {
+        if (m_cache) {
+            m_cache->setCapacity(m_settings.cacheSize);
+        }
+        if (!m_session) {
+            return;
+        }
+        lt::settings_pack sp;
+        sp.set_int(lt::settings_pack::connections_limit, m_settings.connectionsLimit * (m_config.console ? 2 : 4));
+        sp.set_int(lt::settings_pack::download_rate_limit, m_settings.downloadRateLimit * 1024);
+        sp.set_int(lt::settings_pack::upload_rate_limit,
+                   m_settings.disableUpload ? 1 : m_settings.uploadRateLimit * 1024);
+        sp.set_bool(lt::settings_pack::enable_dht, !m_settings.disableDht);
+        m_session->apply_settings(sp);
+    }
+
+    json Core::settingsJson() {
+        // TorrServer's BTSets; the stored ones on top of the defaults
+        json s = {
+                {"CacheSize", m_settings.cacheSize},
+                {"ReaderReadAHead", m_settings.readAhead},
+                {"PreloadCache", m_settings.preloadCache},
+                {"UseDisk", m_settings.useDisk},
+                {"TorrentsSavePath", m_settings.savePath},
+                {"RemoveCacheOnDrop", false},
+                {"ForceEncrypt", false},
+                {"RetrackersMode", 1},
+                {"TorrentDisconnectTimeout", m_settings.disconnectTimeout},
+                {"EnableDebug", false},
+                {"EnableDLNA", false},
+                {"FriendlyName", ""},
+                {"EnableRutorSearch", false},
+                {"EnableIPv6", !m_config.console},
+                {"DisableTCP", false},
+                {"DisableUTP", false},
+                {"DisableUPNP", m_settings.disableUpnp},
+                {"DisableDHT", m_settings.disableDht},
+                {"DisablePEX", false},
+                {"DisableUpload", m_settings.disableUpload},
+                {"DownloadRateLimit", m_settings.downloadRateLimit},
+                {"UploadRateLimit", m_settings.uploadRateLimit},
+                {"ConnectionsLimit", m_settings.connectionsLimit},
+                {"PeersListenPort", m_settings.listenPort},
+                {"ResponsiveMode", false},
+                {"StoreSettingsInJson", true},
+                {"StoreViewedInJson", true},
+        };
+        // the ones the core uses come from m_settings (checked values), the others as stored
+        static const std::set<std::string> used = {
+                "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
+                "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
+                "DisableUpload", "DisableDHT", "DisableUPNP", "PeersListenPort"};
+        json stored = m_store.settings();
+        for (auto it = stored.begin(); it != stored.end(); ++it) {
+            if (!used.count(it.key())) {
+                s[it.key()] = it.value();
+            }
+        }
+        return s;
+    }
+
+    // --- torrents ---
+
+    std::vector<Core::TorrentPtr> Core::list() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::vector<TorrentPtr> out;
+        for (const auto &t : m_torrents) {
+            out.push_back(t.second);
+        }
+        std::sort(out.begin(), out.end(), [](const TorrentPtr &a, const TorrentPtr &b) {
+            return a->rec.timestamp > b->rec.timestamp;
+        });
+        return out;
+    }
+
+    Core::TorrentPtr Core::find(const std::string &hash) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_torrents.find(lower(hash));
+        return it == m_torrents.end() ? nullptr : it->second;
+    }
+
+    Core::TorrentPtr Core::add(const std::string &linkIn, const std::string &title, const std::string &poster,
+                               const std::string &category, const std::string &data, bool save, std::string &error) {
+        std::string link = linkIn;
+        size_t amp;
+        while ((amp = link.find("&amp;")) != std::string::npos) {
+            link.replace(amp, 5, "&");
+        }
+        if (link.rfind("http://", 0) == 0 || link.rfind("https://", 0) == 0) {
+            std::string body;
+            if (!httpGet(link, body, error)) {
+                return nullptr;
+            }
+            return addMetadata(body, title, poster, category, data, save, error);
+        }
+        if (link.rfind("file://", 0) == 0 || (!link.empty() && link[0] == '/')) {
+            std::string body;
+            if (!readFile(link.rfind("file://", 0) == 0 ? link.substr(7) : link, body)) {
+                error = "cannot read " + link;
+                return nullptr;
+            }
+            return addMetadata(body, title, poster, category, data, save, error);
+        }
+        std::string magnet = link;
+        if (isHex40(link) || isBase32(link)) {
+            magnet = "magnet:?xt=urn:btih:" + link;
+        }
+        if (magnet.rfind("magnet:", 0) != 0) {
+            error = "unknown link: a magnet, an infohash or a .torrent link is expected";
+            return nullptr;
+        }
+        lt::error_code ec;
+        lt::add_torrent_params atp = lt::parse_magnet_uri(magnet, ec);
+        if (ec) {
+            error = "bad magnet: " + ec.message();
+            return nullptr;
+        }
+        const std::string hash = hexOf(atp.info_hashes);
+
+        TorrentPtr t;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_torrents.find(hash);
+            if (it != m_torrents.end()) {
+                t = it->second;
+            } else {
+                t = std::make_shared<Torrent>();
+                t->rec.hash = hash;
+                t->rec.link = magnet;
+                t->rec.timestamp = static_cast<int64_t>(time(nullptr));
+                if (!atp.name.empty()) {
+                    t->rec.title = atp.name;
+                }
+                m_torrents[hash] = t;
+            }
+            if (!title.empty()) t->rec.title = title;
+            if (!poster.empty()) t->rec.poster = poster;
+            if (!category.empty()) t->rec.category = category;
+            if (!data.empty()) t->rec.data = data;
+            t->lastUse = Clock::now();
+        }
+        if (!activate(t, error)) {
+            return nullptr;
+        }
+        if (save) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                t->saved = true;
+            }
+            this->save(t);
+        }
+        return t;
+    }
+
+    Core::TorrentPtr Core::addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
+                                       const std::string &category, const std::string &data, bool save,
+                                       std::string &error) {
+        lt::error_code ec;
+        auto ti = std::make_shared<lt::torrent_info>(torrentFile.data(), static_cast<int>(torrentFile.size()), ec);
+        if (ec) {
+            error = "bad .torrent: " + ec.message();
+            return nullptr;
+        }
+        const std::string hash = hexOf(ti->info_hashes());
+        // the metadata kept: the torrent opens again without peers for it
+        {
+            std::string path = m_store.metadataPath(hash);
+            if (!fileExists(path)) {
+                FILE *f = std::fopen(path.c_str(), "wb");
+                if (f) {
+                    std::fwrite(torrentFile.data(), 1, torrentFile.size(), f);
+                    std::fclose(f);
+                }
+            }
+        }
+        std::string magnet = lt::make_magnet_uri(*ti);
+        return add(magnet, title.empty() ? ti->name() : title, poster, category, data, save, error);
+    }
+
+    bool Core::activate(const TorrentPtr &t, std::string &error) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (t->active) {
+                return true;
+            }
+        }
+        lt::add_torrent_params atp;
+        lt::error_code ec;
+        std::string meta = m_store.metadataPath(t->rec.hash);
+        if (fileExists(meta)) {
+            auto ti = std::make_shared<lt::torrent_info>(meta, ec);
+            if (!ec) {
+                atp.ti = ti;
+                atp.file_priorities.assign(static_cast<size_t>(ti->num_files()), lt::dont_download);
+                // the trackers and peers of the link it was added with
+                lt::error_code mec;
+                lt::add_torrent_params m = lt::parse_magnet_uri(t->rec.link, mec);
+                if (!mec) {
+                    atp.trackers = m.trackers;
+                    atp.tracker_tiers = m.tracker_tiers;
+                    atp.peers = m.peers;
+                }
+            }
+            ec.clear();
+        }
+        if (!atp.ti) {
+            atp = lt::parse_magnet_uri(t->rec.link.empty() ? "magnet:?xt=urn:btih:" + t->rec.hash : t->rec.link, ec);
+            if (ec) {
+                error = "bad magnet: " + ec.message();
+                return false;
+            }
+        }
+        atp.save_path = m_settings.savePath.empty() ? m_store.dir() + "/downloads" : m_settings.savePath;
+        // opened at once, never queued or paused by the session
+        atp.flags &= ~(lt::torrent_flags::auto_managed | lt::torrent_flags::paused);
+        lt::torrent_handle h = m_session->add_torrent(std::move(atp), ec);
+        if (ec) {
+            error = "cannot add the torrent: " + ec.message();
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->handle = h;
+            t->active = true;
+            t->lastUse = Clock::now();
+        }
+        log("[Torrent:%s] opened", t->rec.hash.c_str());
+        if (h.torrent_file()) {
+            onMetadata(t);
+        }
+        return true;
+    }
+
+    void Core::onMetadata(const TorrentPtr &t) {
+        lt::torrent_handle h;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!t->active || t->gotInfo) {
+                return;
+            }
+            h = t->handle;
+        }
+        std::shared_ptr<const lt::torrent_info> ti = h.torrent_file();
+        if (!ti) {
+            return;
+        }
+        const lt::file_storage &fs = ti->files();
+        std::vector<FileInfo> files;
+        std::vector<lt::file_index_t> index;
+        int64_t size = 0;
+        for (lt::file_index_t i : fs.file_range()) {
+            if (fs.pad_file_at(i)) {
+                continue;
+            }
+            std::string path = fs.file_path(i);
+            std::replace(path.begin(), path.end(), '\\', '/');
+            files.push_back({static_cast<int>(files.size()) + 1, path, fs.file_size(i)});
+            index.push_back(i);
+            size += fs.file_size(i);
+        }
+        // nothing is downloaded but the readers' windows
+        h.prioritize_files(std::vector<lt::download_priority_t>(static_cast<size_t>(fs.num_files()), lt::dont_download));
+
+        // the metadata kept for the next opening
+        std::string path = m_store.metadataPath(t->rec.hash);
+        if (!fileExists(path)) {
+            lt::span<char const> info = ti->info_section();
+            std::string file = "d4:info" + std::string(info.data(), static_cast<size_t>(info.size())) + "e";
+            FILE *f = std::fopen(path.c_str(), "wb");
+            if (f) {
+                std::fwrite(file.data(), 1, file.size(), f);
+                std::fclose(f);
+            }
+        }
+        bool saved;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->rec.files = files;
+            t->rec.name = ti->name();
+            t->rec.size = size;
+            if (t->rec.title.empty()) {
+                t->rec.title = ti->name();
+            }
+            t->fileIndex = index;
+            t->pieceLength = ti->piece_length();
+            t->numPieces = ti->num_pieces();
+            t->cacheKey = h.info_hashes().get_best();
+            t->gotInfo = true;
+            saved = t->saved;
+        }
+        if (saved) {
+            save(t);
+        }
+        log("[Torrent:%s] metadata: %s, %d files, %.1f MB", t->rec.hash.c_str(), ti->name().c_str(),
+            static_cast<int>(files.size()), static_cast<double>(size) / 1048576.0);
+        m_changed.notify_all();
+    }
+
+    bool Core::waitInfo(const TorrentPtr &t, std::chrono::seconds timeout) {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(lock, timeout, [&] { return m_stopping || t->gotInfo || !t->active; }) &&
+               t->gotInfo && !m_stopping;
+    }
+
+    void Core::save(const TorrentPtr &t) {
+        TorrentRecord rec;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!t->saved) {
+                return;
+            }
+            rec = t->rec;
+        }
+        m_store.putTorrent(rec);
+    }
+
+    void Core::close(const TorrentPtr &t) {
+        lt::torrent_handle h;
+        bool saved;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!t->active) {
+                return;
+            }
+            h = t->handle;
+            t->active = false;
+            t->gotInfo = false;
+            t->handle = lt::torrent_handle();
+            t->windows.clear();
+            t->wanted.clear();
+            t->pinned.clear();
+            saved = t->saved;
+            if (!saved) {
+                m_torrents.erase(t->rec.hash);
+            }
+        }
+        m_session->remove_torrent(h);
+        if (!saved) {
+            std::remove(m_store.metadataPath(t->rec.hash).c_str());
+        }
+        log("[Torrent:%s] closed%s", t->rec.hash.c_str(), saved ? "" : " and forgotten (not in the library)");
+        m_changed.notify_all();
+    }
+
+    void Core::remove(const TorrentPtr &t) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->saved = false;
+        }
+        close(t);
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_torrents.erase(t->rec.hash);
+        }
+        m_store.removeTorrent(t->rec.hash);
+        std::remove(m_store.metadataPath(t->rec.hash).c_str());
+    }
+
+    json Core::filesData(const TorrentPtr &t) {
+        json files = json::array();
+        for (const FileInfo &f : t->rec.files) {
+            files.push_back({{"id", f.id}, {"path", f.path}, {"length", f.length}});
+        }
+        return files;
+    }
+
+    json Core::status(const TorrentPtr &t) {
+        lt::torrent_handle h;
+        bool active, gotInfo, preloading, saved;
+        TorrentRecord rec;
+        int64_t preloadSize, preloadedBytes;
+        lt::sha1_hash key;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            h = t->handle;
+            active = t->active;
+            gotInfo = t->gotInfo;
+            preloading = t->preloading;
+            saved = t->saved;
+            rec = t->rec;
+            preloadSize = t->preloadSize;
+            preloadedBytes = t->preloadedBytes;
+            key = t->cacheKey;
+        }
+        int stat = !active ? (saved ? 5 : 4) : !gotInfo ? 1 : preloading ? 2 : 3;
+        static const char *statNames[] = {"Torrent added", "Torrent getting info", "Torrent preload",
+                                          "Torrent working", "Torrent closed", "Torrent in db"};
+        // data: the client's JSON with the files added, as TorrServer keeps it
+        std::string data = rec.data;
+        if (!rec.files.empty()) {
+            json d = rec.data.empty() ? json::object() : json::parse(rec.data, nullptr, false);
+            if (d.is_object()) {
+                d["TorrServer"]["Files"] = filesData(t);
+                data = d.dump();
+            }
+        }
+        json j = {
+                {"title", rec.title},
+                {"category", rec.category},
+                {"poster", rec.poster},
+                {"data", data},
+                {"timestamp", rec.timestamp},
+                {"name", rec.name},
+                {"hash", rec.hash},
+                {"stat", stat},
+                {"stat_string", statNames[stat]},
+                {"torrent_size", rec.size},
+                {"preloaded_bytes", preloadedBytes},
+                {"preload_size", preloadSize},
+        };
+        if (active) {
+            lt::torrent_status st = h.status();
+            j["download_speed"] = static_cast<double>(st.download_payload_rate);
+            j["upload_speed"] = static_cast<double>(st.upload_payload_rate);
+            j["total_peers"] = st.list_peers;
+            j["pending_peers"] = std::max(0, st.list_peers - st.num_peers);
+            j["active_peers"] = st.num_peers;
+            j["connected_seeders"] = st.num_seeds;
+            j["half_open_peers"] = st.num_connections - st.num_peers > 0 ? st.num_connections - st.num_peers : 0;
+            j["bytes_read"] = st.total_payload_download;
+            j["bytes_read_data"] = st.total_payload_download;
+            j["bytes_written"] = st.total_payload_upload;
+            j["bytes_written_data"] = st.total_payload_upload;
+            j["loaded_size"] = m_cache ? m_cache->bytesOf(key) : st.total_wanted_done;
+        }
+        if (!rec.files.empty()) {
+            j["file_stats"] = filesData(t);
+        }
+        return j;
+    }
+
+    // --- loops ---
+
+    void Core::alertLoop() {
+        while (!m_stopping) {
+            if (!m_session->wait_for_alert(lt::milliseconds(200))) {
+                continue;
+            }
+            std::vector<lt::alert *> alerts;
+            m_session->pop_alerts(&alerts);
+            for (lt::alert *a : alerts) {
+                if (auto *rp = lt::alert_cast<lt::read_piece_alert>(a)) {
+                    TorrentPtr t;
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        for (const auto &e : m_torrents) {
+                            if (e.second->active && e.second->handle == rp->handle) {
+                                t = e.second;
+                            }
+                        }
+                    }
+                    if (t) {
+                        std::lock_guard<std::mutex> lock(m_readsMutex);
+                        auto key = std::make_pair(t->rec.hash, static_cast<int>(rp->piece));
+                        if (rp->error) {
+                            m_readsFailed.insert(key);
+                        } else {
+                            m_reads[key] = std::make_shared<const std::vector<char>>(rp->buffer.get(),
+                                                                                     rp->buffer.get() + rp->size);
+                        }
+                    }
+                    m_changed.notify_all();
+                } else if (auto *mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
+                    TorrentPtr t;
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        for (const auto &e : m_torrents) {
+                            if (e.second->active && e.second->handle == mr->handle) {
+                                t = e.second;
+                            }
+                        }
+                    }
+                    if (t) {
+                        onMetadata(t);
+                    }
+                } else if (lt::alert_cast<lt::torrent_error_alert>(a) || lt::alert_cast<lt::file_error_alert>(a) ||
+                           lt::alert_cast<lt::listen_failed_alert>(a) || lt::alert_cast<lt::listen_succeeded_alert>(a) ||
+                           lt::alert_cast<lt::metadata_failed_alert>(a)) {
+                    log("[Torrent] %s", a->message().c_str());
+                }
+            }
+        }
+    }
+
+    // torrents without readers closed after the timeout; read_piece results dropped
+    void Core::idleLoop() {
+        while (!m_stopping) {
+            for (int i = 0; i < 10 && !m_stopping; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            std::vector<TorrentPtr> idle;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                for (const auto &e : m_torrents) {
+                    const Torrent &t = *e.second;
+                    if (t.active && t.readers == 0 && !t.preloading &&
+                        Clock::now() - t.lastUse > std::chrono::seconds(m_settings.disconnectTimeout)) {
+                        idle.push_back(e.second);
+                    }
+                }
+            }
+            for (const auto &t : idle) {
+                close(t);
+            }
+            std::lock_guard<std::mutex> lock(m_readsMutex);
+            if (m_reads.size() > 16) {
+                m_reads.clear();
+            }
+            m_readsFailed.clear();
+        }
+    }
+
+}

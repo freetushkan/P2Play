@@ -21,16 +21,17 @@ import java.io.InputStream;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Runs the p2spike executable (lib/<abi>/libp2spike.so) as a foreground service, so that
- * it keeps serving while a player is in front. Stop: SIGTERM, then SIGKILL after 5 s.
+ * Runs the P2Play server (p2playd, packaged as lib/<abi>/libp2playd.so) as a foreground
+ * service: the TorrServer API and the streams on port 8090 while a player is in front, as
+ * TorrServe does. Stop: SIGTERM, then SIGKILL after 5 s.
  */
-public class SpikeService extends Service {
+public class ServerService extends Service {
     static final String ACTION_START = "com.freetushkan.p2play.START";
     static final String ACTION_STOP = "com.freetushkan.p2play.STOP";
-    static final String EXTRA_LINK = "link";
+    static final int PORT = 8090;
 
-    private static final String TAG = "P2Spike";
-    private static final String CHANNEL = "spike";
+    private static final String TAG = "P2Play";
+    private static final String CHANNEL = "server";
     private static final int NOTIFICATION_ID = 1;
 
     private static volatile boolean sRunning = false;
@@ -55,7 +56,7 @@ public class SpikeService extends Service {
         return true;
     }
 
-    // /sdcard/.p2play (magnet.txt, spike.log, downloads) as pPlay's .pplay; without the
+    // /sdcard/.p2play (the library, settings, p2play.log, disk storage) as pPlay's .pplay; without the
     // access: Android/data/<package>/files
     static File dataDir(Context context) {
         if (hasStorage(context)) {
@@ -69,7 +70,7 @@ public class SpikeService extends Service {
     }
 
     static File executable(Context context) {
-        return new File(context.getApplicationInfo().nativeLibraryDir, "libp2spike.so");
+        return new File(context.getApplicationInfo().nativeLibraryDir, "libp2playd.so");
     }
 
     @Override
@@ -81,21 +82,21 @@ public class SpikeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            stopSpike();
+            stopServer();
             stopSelf();
             return START_NOT_STICKY;
         }
-        // no link: the one of magnet.txt
-        String link = intent != null ? intent.getStringExtra(EXTRA_LINK) : null;
+        if (sRunning) {
+            return START_NOT_STICKY;
+        }
         goForeground();
-        stopSpike();
-        startSpike(link != null ? link.trim() : "");
+        startServer();
         return START_NOT_STICKY;
     }
 
     @Override
     public void onDestroy() {
-        stopSpike();
+        stopServer();
         super.onDestroy();
     }
 
@@ -103,7 +104,7 @@ public class SpikeService extends Service {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(new NotificationChannel(CHANNEL, "p2spike", NotificationManager.IMPORTANCE_LOW));
+            nm.createNotificationChannel(new NotificationChannel(CHANNEL, "P2Play", NotificationManager.IMPORTANCE_LOW));
             builder = new Notification.Builder(this, CHANNEL);
         } else {
             builder = new Notification.Builder(this);
@@ -112,8 +113,8 @@ public class SpikeService extends Service {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), piFlags);
         Notification notification = builder
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("P2Play spike")
-                .setContentText("Streaming")
+                .setContentTitle("P2Play")
+                .setContentText("Server on port " + PORT)
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build();
@@ -124,21 +125,19 @@ public class SpikeService extends Service {
         }
     }
 
-    private void startSpike(String link) {
+    private void startServer() {
         File dir = dataDir(this);
         dir.mkdirs();
         try {
-            ProcessBuilder pb = link.isEmpty()
-                    ? new ProcessBuilder(executable(this).getPath())
-                    : new ProcessBuilder(executable(this).getPath(), link);
+            ProcessBuilder pb = new ProcessBuilder(executable(this).getPath(),
+                    "--data", dir.getPath(), "--port", String.valueOf(PORT));
             pb.directory(dir);
-            pb.environment().put("P2SPIKE_DATA", dir.getPath());
             pb.redirectErrorStream(true);
             final Process process = pb.start();
             mProcess = process;
             sRunning = true;
             acquireLocks();
-            // the output is in spike.log too: the pipe only has to be drained
+            // the output is in p2play.log too: the pipe only has to be drained
             Thread drain = new Thread(() -> {
                 byte[] buf = new byte[4096];
                 try (InputStream in = process.getInputStream()) {
@@ -149,14 +148,14 @@ public class SpikeService extends Service {
                 }
                 try {
                     int code = process.waitFor();
-                    Log.i(TAG, "p2spike exited: " + code);
+                    Log.i(TAG, "p2playd exited: " + code);
                 } catch (InterruptedException ignored) {
                 }
                 onExited(process);
-            }, "p2spike-drain");
+            }, "p2play-drain");
             drain.start();
         } catch (Exception e) {
-            Log.e(TAG, "can't start p2spike", e);
+            Log.e(TAG, "can't start p2playd", e);
             sRunning = false;
             stopForegroundCompat();
             stopSelf();
@@ -174,7 +173,7 @@ public class SpikeService extends Service {
         stopSelf();
     }
 
-    private synchronized void stopSpike() {
+    private synchronized void stopServer() {
         Process process = mProcess;
         mProcess = null;
         if (process != null) {
@@ -197,13 +196,13 @@ public class SpikeService extends Service {
     private void acquireLocks() {
         if (mWakeLock == null) {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "p2play:spike");
+            mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "p2play:server");
             mWakeLock.setReferenceCounted(false);
         }
         if (mWifiLock == null) {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wm != null) {
-                mWifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "p2play:spike");
+                mWifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "p2play:server");
                 mWifiLock.setReferenceCounted(false);
             }
         }

@@ -1,0 +1,14 @@
+# /etc/systemd/system/p2playd.service (the binary in /usr/local/bin)
+[Unit]
+Description=P2Play (TorrServer-compatible streamer, MediaMesh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/p2playd --data /var/lib/p2play
+Restart=on-failure
+DynamicUser=yes
+StateDirectory=p2play
+
+[Install]
+WantedBy=multi-user.target

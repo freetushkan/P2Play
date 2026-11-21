@@ -495,6 +495,23 @@ namespace p2p {
         }
     }
 
+    int64_t RamCache::bytesOf(const lt::sha1_hash &infoHash) const {
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        auto store = m_state->find(infoHash);
+        int64_t bytes = 0;
+        if (store) {
+            for (const auto &p : store->pieces) {
+                bytes += static_cast<int64_t>(p.second.data->size());
+            }
+        }
+        return bytes;
+    }
+
+    void RamCache::setCapacity(int64_t capacity) {
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->capacity = capacity;
+    }
+
     RamCache::Stats RamCache::stats() const {
         std::lock_guard<std::mutex> lock(m_state->mutex);
         Stats s;

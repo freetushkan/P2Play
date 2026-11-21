@@ -50,7 +50,7 @@
         </activity>
 
         <service
-            android:name=".SpikeService"
+            android:name=".ServerService"
             android:foregroundServiceType="specialUse"
             android:exported="false">
             <property

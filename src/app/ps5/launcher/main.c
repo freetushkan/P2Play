@@ -1,6 +1,6 @@
 /*
- * p2spike PS5 launcher: a PS4 package which sends /app0/ps5/p2spike.elf to elfldr and
- * closes. p2spike is a background payload (no BigApp: it draws nothing); it reports its
+ * P2Play PS5 launcher: a PS4 package which sends /app0/ps5/p2play.elf to elfldr and
+ * closes. P2Play is a background payload (no BigApp: it draws nothing); it reports its
  * URL with a notification itself. Errors of the launcher are notifications too.
  * Taken from pPlay's ps5/launcher, without its loader.
  */
@@ -21,7 +21,7 @@
 #include <orbis/libkernel.h>
 #include <orbis/Sysmodule.h>
 
-#define PAYLOAD_PATH    "/app0/ps5/p2spike.elf"
+#define PAYLOAD_PATH    "/app0/ps5/p2play.elf"
 #define ELFLDR_PORT     9021
 #define REPLY_TIMEOUT   3 /* seconds: elfldr answers at once when it refuses the ELF */
 
@@ -155,7 +155,7 @@ static int wait_elfldr(int sock) {
         line[len] = 0;
         len = 0;
         if (!strncmp(line, "[elfldr", 7)) {
-            notify("p2spike: %s", line);
+            notify("P2Play: %s", line);
             return -1;
         }
     }
@@ -168,12 +168,12 @@ static int launch(void) {
     int fd, sock, ret;
 
     if ((fd = open(PAYLOAD_PATH, O_RDONLY)) < 0) {
-        notify("p2spike: can't open %s (%d)", PAYLOAD_PATH, errno);
+        notify("P2Play: can't open %s (%d)", PAYLOAD_PATH, errno);
         return -1;
     }
 
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        notify("p2spike: socket error (%d)", errno);
+        notify("P2Play: socket error (%d)", errno);
         close(fd);
         return -1;
     }
@@ -184,7 +184,7 @@ static int launch(void) {
     addr.sin_port = htons(ELFLDR_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(sock, (struct sockaddr *) &addr, sizeof(addr)) != 0) {
-        notify("p2spike: ELF loader is not running (port %d).\nLoad elfldr / etaHEN first.", ELFLDR_PORT);
+        notify("P2Play: ELF loader is not running (port %d).\nLoad elfldr / etaHEN first.", ELFLDR_PORT);
         close(sock);
         close(fd);
         return -1;
@@ -193,7 +193,7 @@ static int launch(void) {
     ret = send_file(sock, fd, &sent);
     close(fd);
     if (ret != 0 || sent == 0) {
-        notify("p2spike: can't send the payload to elfldr (%d, %zu bytes)", errno, sent);
+        notify("P2Play: can't send the payload to elfldr (%d, %zu bytes)", errno, sent);
         close(sock);
         return -1;
     }

@@ -98,7 +98,7 @@ static void fatal_signal(int sig) {
  **/
 static void __attribute__((constructor)) init_signal(void) {
     mkdir("/data/p2play", 0777);
-    sceKernelDebugOutText(0, "<118>[p2spike] process started\n");
+    sceKernelDebugOutText(0, "<118>[p2play] process started\n");
     // FreeBSD signal numbers
     signal(4, fatal_signal);  // SIGILL
     signal(5, fatal_signal);  // SIGTRAP
