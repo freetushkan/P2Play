@@ -96,4 +96,7 @@ namespace p2p {
 
     const char *httpReason(int status);
 
+    // multipart/form-data: name -> (filename, content)
+    std::map<std::string, std::pair<std::string, std::string>> parseMultipart(const HttpRequest &req);
+
 }

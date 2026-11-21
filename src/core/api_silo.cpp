@@ -1,0 +1,607 @@
+// The native API: the REST scheme of TorrServer's silo branch under /api, with the viewing
+// progress added (PUT .../progress, file_progress, GET /api/progress). File indexes from 0
+// (MatriX's id - 1), in TorrServer's order. Errors: {"error": "..."}. Every route needs a
+// token (api_auth.cpp); without users set every request is the owner's.
+// Not here yet: torrs:// and the library in .torrs (stage 3), /api/events (SSE), Silo's
+// transcoding, plugins and engine settings (the settings are MatriX's /settings).
+
+#include <algorithm>
+#include <cmath>
+
+#include <libtorrent/hasher.hpp>
+#include <libtorrent/peer_info.hpp>
+#include <libtorrent/version.hpp>
+
+#include "core_torrent.hpp"
+
+namespace p2p {
+
+    using nlohmann::json;
+    using Clock = std::chrono::steady_clock;
+
+    namespace {
+        constexpr auto kInfoTimeout = std::chrono::seconds(60);
+        constexpr double kViewedAt = 0.9;   // position / duration that marks a file viewed
+
+        bool error(HttpResponse &res, int status, const std::string &message) {
+            return res.json(status, json{{"error", message}}.dump());
+        }
+
+        bool ok(HttpResponse &res, int status, const json &j) {
+            return res.json(status, j.dump());
+        }
+
+        std::vector<std::string> split(const std::string &path) {
+            std::vector<std::string> parts;
+            size_t pos = 0;
+            while (pos < path.size()) {
+                size_t end = path.find('/', pos);
+                if (end == std::string::npos) {
+                    end = path.size();
+                }
+                if (end > pos) {
+                    parts.push_back(path.substr(pos, end - pos));
+                }
+                pos = end + 1;
+            }
+            return parts;
+        }
+
+        bool number(const std::string &s, int &out) {
+            if (s.empty() || s.size() > 9 || !std::all_of(s.begin(), s.end(), ::isdigit)) {
+                return false;
+            }
+            out = std::atoi(s.c_str());
+            return true;
+        }
+
+        std::string lower(std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+            return s;
+        }
+
+        std::string baseName(const std::string &path) {
+            size_t slash = path.rfind('/');
+            return slash == std::string::npos ? path : path.substr(slash + 1);
+        }
+
+        // Silo's file_hash: sha256 of "<file name>:<length>"
+        std::string fileHash(const std::string &path, int64_t length) {
+            lt::sha256_hash h = lt::hasher256(baseName(path) + ":" + std::to_string(length)).final();
+            static const char *digits = "0123456789abcdef";
+            std::string out;
+            for (char c : h) {
+                out += digits[(static_cast<unsigned char>(c) >> 4) & 15];
+                out += digits[static_cast<unsigned char>(c) & 15];
+            }
+            return out;
+        }
+
+        std::string isoTime(int64_t t) {
+            char buf[32];
+            time_t tt = static_cast<time_t>(t);
+            struct tm tm{};
+            gmtime_r(&tt, &tm);
+            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+            return buf;
+        }
+
+        int statusOf(const std::string &err) {
+            if (err == "user not found") return 404;
+            if (err == "user already exists") return 409;
+            if (err == "permission denied" || err.find("owner") != std::string::npos) return 403;
+            return 400;
+        }
+
+        json body(const HttpRequest &req) {
+            json j = json::parse(req.body, nullptr, false);
+            return j.is_object() ? j : json();
+        }
+    }
+
+    void Core::setPosition(const std::string &user, const std::string &hash, int fileIndex, double position,
+                           double duration, bool keepViewed) {
+        ViewedRecord r = m_store.viewedFile(user, hash, fileIndex);
+        r.timecode = std::max(0.0, position);
+        if (duration > 0) {
+            r.duration = duration;
+        }
+        const bool past = r.duration > 0 && r.timecode / r.duration >= kViewedAt;
+        r.viewed = past || (keepViewed && r.viewed);
+        r.updated = static_cast<int64_t>(time(nullptr));
+        m_store.setViewed(r);
+    }
+
+    json Core::siloStatus(const TorrentPtr &t, const std::string &user) {
+        json j = status(t);
+        std::vector<FileInfo> files;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            files = t->rec.files;
+        }
+        json stats = json::array();
+        for (const FileInfo &f : files) {
+            stats.push_back({{"id", f.id - 1},
+                             {"path", f.path},
+                             {"name", baseName(f.path)},
+                             {"length", f.length},
+                             {"file_hash", fileHash(f.path, f.length)}});
+        }
+        if (!files.empty()) {
+            j["file_stats"] = stats;
+        }
+        json viewed = json::array(), progress = json::array();
+        for (const ViewedRecord &r : m_store.viewed(user, t->rec.hash)) {
+            if (r.viewed) {
+                viewed.push_back(r.fileIndex - 1);
+            }
+            progress.push_back({{"id", r.fileIndex - 1},
+                                {"position", r.timecode},
+                                {"duration", r.duration},
+                                {"viewed", r.viewed},
+                                {"updated_at", isoTime(r.updated)}});
+        }
+        j["viewed_files"] = viewed;
+        j["file_progress"] = progress;
+        return j;
+    }
+
+    // "continue watching": the files of a user with a position, the latest first
+    json Core::siloProgress(const std::string &user, int64_t since) {
+        std::vector<ViewedRecord> all = m_store.viewed(user, "");
+        std::sort(all.begin(), all.end(), [](const ViewedRecord &a, const ViewedRecord &b) { return a.updated > b.updated; });
+        json out = json::array();
+        for (const ViewedRecord &r : all) {
+            if (r.updated < since || r.updated == 0) {
+                continue;
+            }
+            TorrentPtr t = find(r.hash);
+            TorrentRecord rec;
+            if (t) {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                rec = t->rec;
+            }
+            std::string path;
+            for (const FileInfo &f : rec.files) {
+                if (f.id == r.fileIndex) {
+                    path = f.path;
+                }
+            }
+            out.push_back({{"hash", r.hash},
+                           {"title", rec.title},
+                           {"poster", rec.poster},
+                           {"file_id", r.fileIndex - 1},
+                           {"file_name", baseName(path)},
+                           {"position", r.timecode},
+                           {"duration", r.duration},
+                           {"viewed", r.viewed},
+                           {"updated_at", isoTime(r.updated)}});
+        }
+        return out;
+    }
+
+    void Core::routeSilo(const HttpRequest &req, HttpResponse &res, const User &user) {
+        const std::string &m = req.method;
+        const bool get = m == "GET" || m == "HEAD";
+        const std::vector<std::string> parts = split(req.path);  // "api", ...
+        const size_t n = parts.size();
+        auto at = [&](size_t i) { return i < n ? parts[i] : std::string(); };
+
+        if (get && n == 3 && at(1) == "auth" && at(2) == "me") {
+            ok(res, 200, user.json(true));
+            return;
+        }
+
+        // system
+        if (at(1) == "system") {
+            if (get && at(2) == "version") {
+                ok(res, 200, {{"version", version()}, {"torrent", std::string("libtorrent ") + LIBTORRENT_VERSION}});
+            } else if (get && at(2) == "stats") {
+                int sessions = 0;
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    for (const auto &t : m_torrents) {
+                        sessions += t.second->active ? 1 : 0;
+                    }
+                }
+                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - m_started).count();
+                ok(res, 200, {{"stats", {{"active_sessions", sessions}, {"active_readers", activeStreams()}}},
+                              {"uptime_sec", uptime},
+                              {"version", version()},
+                              {"torrent", std::string("libtorrent ") + LIBTORRENT_VERSION}});
+            } else if (m == "POST" && at(2) == "shutdown") {
+                if (user.rank < 100) {
+                    error(res, 403, "owner access required");
+                    return;
+                }
+                log("[Web] shutdown asked by %s", user.name.c_str());
+                m_shutdownRequested = true;
+                ok(res, 200, {{"status", "shutting down"}});
+            } else {
+                error(res, 404, "not found");
+            }
+            return;
+        }
+
+        if (at(1) == "users") {
+            siloUsers(req, res, user, parts);
+            return;
+        }
+
+        // continue watching
+        if (get && n == 2 && at(1) == "progress") {
+            ok(res, 200, {{"progress", siloProgress(user.id, std::atoll(req.param("since").c_str()))}});
+            return;
+        }
+
+        if (at(1) == "torrents" && n == 2) {
+            if (get) {
+                json list = json::array();
+                for (const TorrentPtr &t : listOf(user.id, false)) {
+                    list.push_back(siloStatus(t, user.id));
+                }
+                ok(res, 200, {{"torrents", list}});
+            } else if (m == "POST") {
+                siloAdd(req, res, user);
+            } else {
+                error(res, 405, "method not allowed");
+            }
+            return;
+        }
+
+        // /api/torrents/:hash/... and /api/stream/:hash/:idx: a torrent of the user's library
+        // (or open, in no library)
+        if ((at(1) == "torrents" || at(1) == "stream") && n >= 3) {
+            TorrentPtr t = find(lower(at(2)));
+            bool mine = false;
+            if (t) {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                mine = t->rec.users.count(user.id) || (t->rec.users.empty() && t->active);
+            }
+            if (!mine) {
+                error(res, 404, "torrent not found in your library");
+                return;
+            }
+            const std::string hash = t->rec.hash;
+            int idx = -1;
+            const bool file = (at(1) == "stream" && n == 4 && number(at(3), idx)) ||
+                              (at(1) == "torrents" && at(3) == "files" && n == 6 && number(at(4), idx));
+            int files;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                files = static_cast<int>(t->rec.files.size());
+            }
+            const std::string action = at(1) == "stream" ? "stream" : file ? at(5) : at(3);
+
+            if (action == "stream" || action == "preload") {
+                if (!file) {
+                    error(res, 400, "invalid file index");
+                    return;
+                }
+                std::string err;
+                if (!add(hash, "", "", "", "", "", err)) {
+                    error(res, 500, err);
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    t->lastUse = Clock::now();
+                }
+                if (!waitInfo(t, kInfoTimeout)) {
+                    error(res, 500, "torrent connection timeout");
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    files = static_cast<int>(t->fileIndex.size());
+                }
+                if (idx >= files) {
+                    error(res, 404, "torrent or file not found");
+                    return;
+                }
+                if (action == "stream") {
+                    if (get) {
+                        stream(t, idx + 1, req, res);
+                    } else {
+                        error(res, 405, "method not allowed");
+                    }
+                } else {
+                    preload(t, idx + 1);
+                    ok(res, 200, {{"status", "preloaded"}});
+                }
+                return;
+            }
+            if (file && idx >= files && files > 0) {
+                error(res, 404, "file not found");
+                return;
+            }
+            if (get && n == 3) {
+                ok(res, 200, siloStatus(t, user.id));
+            } else if (m == "DELETE" && n == 3) {
+                unlink(t, user.id);
+                ok(res, 200, {{"status", "removed"}});
+            } else if (m == "POST" && action == "wake" && n == 4) {
+                std::string err;
+                if (!add(hash, "", "", "", "", "", err)) {
+                    error(res, 404, err);
+                    return;
+                }
+                ok(res, 200, {{"status", "wakeup"}});
+            } else if (m == "PUT" && action == "meta" && n == 4) {
+                json b = body(req);
+                if (b.is_null()) {
+                    error(res, 400, "invalid request format");
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    if (b.value("title", json()).is_string()) t->rec.title = b["title"].get<std::string>();
+                    if (b.value("poster", json()).is_string()) t->rec.poster = b["poster"].get<std::string>();
+                    if (b.value("category", json()).is_string()) t->rec.category = b["category"].get<std::string>();
+                }
+                save(t);
+                ok(res, 200, {{"status", "updated"}});
+            } else if (m == "POST" && action == "viewed") {
+                json b = body(req);
+                if (b.is_null() || !b.value("viewed", json()).is_boolean()) {
+                    error(res, 400, "invalid request format");
+                    return;
+                }
+                const bool viewed = b["viewed"].get<bool>();
+                for (int i = file ? idx : 0; i < (file ? idx + 1 : files); i++) {
+                    ViewedRecord r = m_store.viewedFile(user.id, hash, i + 1);
+                    r.viewed = viewed;
+                    r.updated = static_cast<int64_t>(time(nullptr));
+                    m_store.setViewed(r);
+                }
+                if (file) {
+                    ok(res, 200, {{"status", "updated"}});
+                } else {
+                    ok(res, 200, {{"status", "updated"}, {"viewed", viewed}});
+                }
+            } else if (m == "PUT" && file && action == "progress") {
+                json b = body(req);
+                if (b.is_null() || !b.value("position", json()).is_number()) {
+                    error(res, 400, "invalid request format");
+                    return;
+                }
+                const double duration = b.value("duration", json()).is_number() ? b["duration"].get<double>() : 0;
+                setPosition(user.id, hash, idx + 1, b["position"].get<double>(), duration, true);
+                ViewedRecord r = m_store.viewedFile(user.id, hash, idx + 1);
+                ok(res, 200, {{"id", idx}, {"position", r.timecode}, {"duration", r.duration}, {"viewed", r.viewed},
+                              {"updated_at", isoTime(r.updated)}});
+            } else if (get && action == "cache" && n == 4) {
+                int pieceLength, numPieces;
+                bool active;
+                lt::sha1_hash key;
+                json readers = json::array();
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    active = t->active;
+                    pieceLength = t->pieceLength;
+                    numPieces = t->numPieces;
+                    key = t->cacheKey;
+                    for (const auto &w : t->windows) {
+                        readers.push_back({{"start", w.second.first}, {"end", w.second.second}, {"reader", w.first}});
+                    }
+                }
+                if (!active) {
+                    res.json(204, "");
+                    return;
+                }
+                ok(res, 200, {{"hash", hash},
+                              {"capacity", m_settings.cacheSize},
+                              {"filled", m_cache ? m_cache->bytesOf(key) : 0},
+                              {"piece_length", pieceLength},
+                              {"piece_count", numPieces},
+                              {"ids", json::array()},
+                              {"sizes", json::array()},
+                              {"priorities", json::array()},
+                              {"readers", readers}});
+            } else if (get && action == "peers" && n == 4) {
+                lt::torrent_handle h;
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    h = t->active ? t->handle : lt::torrent_handle();
+                }
+                std::vector<lt::peer_info> peers;
+                if (!h.is_valid()) {
+                    res.json(204, "");
+                    return;
+                }
+                h.get_peer_info(peers);
+                json list = json::array();
+                for (const lt::peer_info &p : peers) {
+                    list.push_back({{"addr", p.ip.address().to_string() + ":" + std::to_string(p.ip.port())},
+                                    {"client", p.client},
+                                    {"download_speed", p.payload_down_speed},
+                                    {"upload_speed", p.payload_up_speed},
+                                    {"progress", p.progress},
+                                    {"seed", static_cast<bool>(p.flags & lt::peer_info::seed)}});
+                }
+                ok(res, 200, {{"hash", hash}, {"peers", list}});
+            } else {
+                error(res, 404, "not found");
+            }
+            return;
+        }
+
+        error(res, 404, "not found");
+    }
+
+    // POST /api/torrents: JSON {link, title, poster, category, save_to_db} or multipart with a
+    // .torrent "file"; saved to the library by default, as Silo
+    void Core::siloAdd(const HttpRequest &req, HttpResponse &res, const User &user) {
+        std::string link, title, poster, category, file;
+        bool save = true;
+        if (req.header("content-type").rfind("multipart/form-data", 0) == 0) {
+            auto parts = parseMultipart(req);
+            auto field = [&](const char *name) {
+                auto it = parts.find(name);
+                return it == parts.end() ? std::string() : it->second.second;
+            };
+            link = field("link");
+            title = field("title");
+            poster = field("poster");
+            category = field("category");
+            file = field("file");
+            if (parts.count("save_to_db")) {
+                save = field("save_to_db") == "true";
+            }
+        } else {
+            json b = body(req);
+            if (b.is_null()) {
+                error(res, 400, "invalid request format");
+                return;
+            }
+            auto s = [&](const char *key) { return b.value(key, json()).is_string() ? b[key].get<std::string>() : ""; };
+            link = s("link");
+            title = s("title");
+            poster = s("poster");
+            category = s("category");
+            if (b.value("save_to_db", json()).is_boolean()) {
+                save = b["save_to_db"].get<bool>();
+            }
+        }
+        link.erase(0, link.find_first_not_of(" \t\r\n"));
+        link.erase(link.find_last_not_of(" \t\r\n") + 1);
+        if (file.empty() && link.empty()) {
+            error(res, 400, "torrent file or link is required");
+            return;
+        }
+        if (link.rfind("torrs://", 0) == 0) {
+            error(res, 400, "torrs:// links come with the catalog (not yet)");
+            return;
+        }
+        std::string err;
+        const std::string saveFor = save ? user.id : "";
+        TorrentPtr t = file.empty() ? add(link, title, poster, category, "", saveFor, err)
+                                    : addMetadata(file, title, poster, category, "", saveFor, err);
+        if (!t) {
+            error(res, 400, err);
+            return;
+        }
+        log("[Web] torrent added by %s: %s (%s)", user.name.c_str(), t->rec.hash.c_str(),
+            save ? "to the library" : "not saved");
+        ok(res, 201, siloStatus(t, user.id));
+    }
+
+    void Core::siloUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts) {
+        const std::string &m = req.method;
+        const size_t n = parts.size();
+        const std::string id = n > 2 ? parts[2] : "";
+        const std::string action = n > 3 ? parts[3] : "";
+        json b = body(req);
+
+        if (n == 2 && (m == "GET" || m == "HEAD")) {
+            if (user.rank < 50) {
+                error(res, 403, "insufficient permissions");
+                return;
+            }
+            json list = json::array();
+            for (const User &u : m_auth.list()) {
+                list.push_back(u.json(false));
+            }
+            ok(res, 200, {{"users", list}});
+        } else if (n == 2 && m == "POST") {
+            if (b.is_null() || !b.value("username", json()).is_string() || !b.value("password", json()).is_string()) {
+                error(res, 400, "invalid request format");
+                return;
+            }
+            int rank = b.value("rank", json()).is_number() ? b["rank"].get<int>() : 0;
+            User created;
+            std::string err = m_auth.create(user, b["username"].get<std::string>(), b["password"].get<std::string>(),
+                                            rank > 0 ? rank : 10, created);
+            if (!err.empty()) {
+                error(res, statusOf(err), err);
+                return;
+            }
+            log("[Web] user %s created by %s", created.name.c_str(), user.name.c_str());
+            ok(res, 201, created.json(true));
+        } else if (n == 3 && m == "PUT") {
+            if (b.is_null()) {
+                error(res, 400, "invalid request format");
+                return;
+            }
+            std::string password;
+            bool banned = false;
+            const bool hasPassword = b.value("password", json()).is_string();
+            const bool hasBanned = b.value("banned", json()).is_boolean();
+            if (hasPassword) password = b["password"].get<std::string>();
+            if (hasBanned) banned = b["banned"].get<bool>();
+            if (hasPassword && password.empty()) {
+                error(res, 400, "password should not be empty");
+                return;
+            }
+            std::string err = m_auth.update(user, id, hasPassword ? &password : nullptr, hasBanned ? &banned : nullptr);
+            if (!err.empty()) {
+                error(res, statusOf(err), err);
+                return;
+            }
+            ok(res, 200, {{"status", "updated"}});
+        } else if (n == 3 && m == "DELETE") {
+            std::string err = m_auth.remove(user, id);
+            if (!err.empty()) {
+                error(res, statusOf(err), err);
+                return;
+            }
+            removeUser(id);
+            log("[Web] user %s deleted by %s", id.c_str(), user.name.c_str());
+            ok(res, 200, {{"status", "deleted"}});
+        } else if (n == 4 && m == "POST" && action == "regenerate-token") {
+            std::string token;
+            std::string err = m_auth.regenerateToken(user, id, token);
+            if (!err.empty()) {
+                error(res, statusOf(err), err);
+                return;
+            }
+            ok(res, 200, {{"token", token}});
+        } else if (n == 4 && m == "POST" && action == "rank") {
+            if (b.is_null() || !b.value("rank", json()).is_number()) {
+                error(res, 400, "invalid request format");
+                return;
+            }
+            std::string err = m_auth.setRank(user, id, b["rank"].get<int>());
+            if (!err.empty()) {
+                error(res, statusOf(err), err);
+                return;
+            }
+            ok(res, 200, {{"status", "rank updated"}});
+        } else if (n == 4 && (m == "GET" || m == "HEAD") && action == "torrents") {
+            User target = m_auth.find(id);
+            if (!target.valid()) {
+                error(res, 404, "user not found");
+                return;
+            }
+            if (target.id != user.id && (user.rank < 50 || user.rank <= target.rank)) {
+                error(res, 403, "permission denied");
+                return;
+            }
+            json list = json::array();
+            for (const TorrentPtr &t : listOf(id, false)) {
+                TorrentRecord rec;
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    rec = t->rec;
+                }
+                json viewed = json::array();
+                for (const ViewedRecord &r : m_store.viewed(id, rec.hash)) {
+                    if (r.viewed) {
+                        viewed.push_back(r.fileIndex - 1);
+                    }
+                }
+                list.push_back({{"user_id", id},
+                                {"torrent_hash", rec.hash},
+                                {"title", rec.title},
+                                {"poster", rec.poster},
+                                {"category", rec.category},
+                                {"added_at", isoTime(rec.users.count(id) ? rec.users.at(id) : rec.timestamp)},
+                                {"viewed_files", viewed}});
+            }
+            ok(res, 200, {{"torrents", list}});
+        } else {
+            error(res, 404, "not found");
+        }
+    }
+
+}

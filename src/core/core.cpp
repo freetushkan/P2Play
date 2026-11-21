@@ -235,6 +235,7 @@ namespace p2p {
     }
 
     bool Core::start() {
+        m_started = Clock::now();
         m_store.load();
         m_auth.load(m_store.dir());
         loadSettings();
@@ -288,7 +289,7 @@ namespace p2p {
         for (const TorrentRecord &r : m_store.torrents()) {
             auto t = std::make_shared<Torrent>();
             t->rec = r;
-            t->saved = true;
+            t->saved = !r.users.empty();
             m_torrents[r.hash] = t;
         }
 
@@ -427,6 +428,60 @@ namespace p2p {
         return out;
     }
 
+    std::vector<Core::TorrentPtr> Core::listOf(const std::string &user, bool withOpen) {
+        std::vector<TorrentPtr> out;
+        for (const TorrentPtr &t : list()) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (t->rec.users.count(user) || (withOpen && t->rec.users.empty())) {
+                out.push_back(t);
+            }
+        }
+        return out;
+    }
+
+    bool Core::owns(const TorrentPtr &t, const std::string &user) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return t->rec.users.count(user) > 0;
+    }
+
+    void Core::keep(const TorrentPtr &t, const std::string &user) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!t->rec.users.emplace(user, static_cast<int64_t>(time(nullptr))).second && t->saved) {
+                return;
+            }
+            t->saved = true;
+        }
+        save(t);
+    }
+
+    void Core::unlink(const TorrentPtr &t, const std::string &user) {
+        bool last;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->rec.users.erase(user);
+            last = t->rec.users.empty();
+        }
+        m_store.removeViewed(user, t->rec.hash, 0);
+        if (last) {
+            remove(t);
+        } else {
+            save(t);
+        }
+    }
+
+    void Core::removeUser(const std::string &user) {
+        for (const TorrentPtr &t : listOf(user, false)) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->rec.users.erase(user);
+        }
+        for (const std::string &hash : m_store.removeUser(user)) {
+            if (TorrentPtr t = find(hash)) {
+                remove(t);
+            }
+        }
+    }
+
     Core::TorrentPtr Core::find(const std::string &hash) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_torrents.find(lower(hash));
@@ -434,7 +489,9 @@ namespace p2p {
     }
 
     Core::TorrentPtr Core::add(const std::string &linkIn, const std::string &title, const std::string &poster,
-                               const std::string &category, const std::string &data, bool save, std::string &error) {
+                               const std::string &category, const std::string &data, const std::string &saveFor,
+                               std::string &error) {
+        const bool save = !saveFor.empty();
         std::string link = linkIn;
         size_t amp;
         while ((amp = link.find("&amp;")) != std::string::npos) {
@@ -445,7 +502,7 @@ namespace p2p {
             if (!httpGet(link, body, error)) {
                 return nullptr;
             }
-            return addMetadata(body, title, poster, category, data, save, error);
+            return addMetadata(body, title, poster, category, data, saveFor, error);
         }
         if (link.rfind("file://", 0) == 0 || (!link.empty() && link[0] == '/')) {
             std::string body;
@@ -453,7 +510,7 @@ namespace p2p {
                 error = "cannot read " + link;
                 return nullptr;
             }
-            return addMetadata(body, title, poster, category, data, save, error);
+            return addMetadata(body, title, poster, category, data, saveFor, error);
         }
         std::string magnet = link;
         if (isHex40(link) || isBase32(link)) {
@@ -503,6 +560,7 @@ namespace p2p {
         }
         if (save) {
             std::lock_guard<std::mutex> lock(m_mutex);
+            t->rec.users.emplace(saveFor, static_cast<int64_t>(time(nullptr)));
             t->saved = true;
         }
         if (save || filled) {
@@ -512,8 +570,8 @@ namespace p2p {
     }
 
     Core::TorrentPtr Core::addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
-                                       const std::string &category, const std::string &data, bool save,
-                                       std::string &error) {
+                                       const std::string &category, const std::string &data,
+                                       const std::string &saveFor, std::string &error) {
         lt::error_code ec;
         auto ti = std::make_shared<lt::torrent_info>(torrentFile.data(), static_cast<int>(torrentFile.size()), ec);
         if (ec) {
@@ -533,7 +591,7 @@ namespace p2p {
             }
         }
         std::string magnet = lt::make_magnet_uri(*ti);
-        return add(magnet, title.empty() ? ti->name() : title, poster, category, data, save, error);
+        return add(magnet, title.empty() ? ti->name() : title, poster, category, data, saveFor, error);
     }
 
     bool Core::activate(const TorrentPtr &t, std::string &error) {

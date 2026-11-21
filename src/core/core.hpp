@@ -1,7 +1,8 @@
 #pragma once
 
 // The P2Play core: a libtorrent session, the torrents (active or only in the library),
-// streaming any file of a torrent over HTTP and the TorrServer MatriX API (api.cpp).
+// streaming any file of a torrent over HTTP; the native API of Silo's scheme (api_silo.cpp) and
+// the TorrServer MatriX API (api_matrix.cpp), one set of users (auth.hpp).
 // Torrents are downloaded only around what is read (the readers' windows), as in
 // TorrServer; with the RAM storage nothing else is kept.
 
@@ -84,30 +85,54 @@ namespace p2p {
         struct Torrent;
         using TorrentPtr = std::shared_ptr<Torrent>;
 
-        // api.cpp
+        // api_auth.cpp: every request, who sends it
         void handle(const HttpRequest &req, HttpResponse &res);
         void route(const HttpRequest &req, HttpResponse &res);
-        bool routeMatrix(const HttpRequest &req, HttpResponse &res);   // api_matrix.cpp
+
+        // api_silo.cpp: the native API, Silo's scheme under /api (file indexes from 0)
+        void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
+        void siloAdd(const HttpRequest &req, HttpResponse &res, const User &user);
+        void siloUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
+        nlohmann::json siloStatus(const TorrentPtr &t, const std::string &user);
+        nlohmann::json siloProgress(const std::string &user, int64_t since);
+        // a position: viewed set past the threshold
+        void setPosition(const std::string &user, const std::string &hash, int fileIndex, double position,
+                         double duration, bool keepViewed);
+
+        // api_matrix.cpp: the MatriX compatibility layer (file ids from 1)
+        bool routeMatrix(const HttpRequest &req, HttpResponse &res, const User &user);
         bool matrixPublic(const HttpRequest &req);
         void downloadTest(const HttpRequest &req, HttpResponse &res, int64_t megabytes);
-        // the hex infohash of a magnet, an infohash (hex or base32); empty otherwise
-        static std::string hashOfLink(const std::string &link);
-        void apiTorrents(const HttpRequest &req, HttpResponse &res);
-        void apiStream(const HttpRequest &req, HttpResponse &res, const std::string &hash, int index);
-        void apiViewed(const HttpRequest &req, HttpResponse &res);
+        void apiTorrents(const HttpRequest &req, HttpResponse &res, const User &user);
+        void apiStream(const HttpRequest &req, HttpResponse &res, const std::string &hash, int index, const User &user);
+        void apiViewed(const HttpRequest &req, HttpResponse &res, const User &user);
         void apiSettings(const HttpRequest &req, HttpResponse &res);
         void apiCache(const HttpRequest &req, HttpResponse &res);
-        void apiUpload(const HttpRequest &req, HttpResponse &res);
+        void apiUpload(const HttpRequest &req, HttpResponse &res, const User &user);
         std::string playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex,
-                             const std::string &user);
+                             const std::string &user, const std::string &query);
+
+        // the hex infohash of a magnet, an infohash (hex or base32); empty otherwise
+        static std::string hashOfLink(const std::string &link);
 
         // torrents
+        // saveFor: the user whose library takes it (empty: none, the torrent is forgotten
+        // once closed unless a library holds it)
         TorrentPtr add(const std::string &link, const std::string &title, const std::string &poster,
-                       const std::string &category, const std::string &data, bool save, std::string &error);
+                       const std::string &category, const std::string &data, const std::string &saveFor,
+                       std::string &error);
         TorrentPtr addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
-                               const std::string &category, const std::string &data, bool save, std::string &error);
+                               const std::string &category, const std::string &data, const std::string &saveFor,
+                               std::string &error);
         TorrentPtr find(const std::string &hash);
         std::vector<TorrentPtr> list();
+        // the torrents of a user's library; withOpen: and the open ones no library holds
+        std::vector<TorrentPtr> listOf(const std::string &user, bool withOpen);
+        bool owns(const TorrentPtr &t, const std::string &user);
+        void keep(const TorrentPtr &t, const std::string &user);
+        // out of a user's library; gone once no library holds it
+        void unlink(const TorrentPtr &t, const std::string &user);
+        void removeUser(const std::string &user);
         bool activate(const TorrentPtr &t, std::string &error);
         void close(const TorrentPtr &t);
         void remove(const TorrentPtr &t);
@@ -155,6 +180,7 @@ namespace p2p {
 
         std::atomic<bool> m_stopping{false};
         std::atomic<bool> m_shutdownRequested{false};
+        std::chrono::steady_clock::time_point m_started;
         std::atomic<int> m_nextReader{1};
         std::thread m_alertThread;
         std::thread m_idleThread;

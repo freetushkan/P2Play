@@ -58,6 +58,13 @@ namespace p2p {
                 r.name = str(item, "name");
                 r.timestamp = num(item, "timestamp");
                 r.size = num(item, "size");
+                if (item.contains("users") && item["users"].is_object()) {
+                    for (auto it = item["users"].begin(); it != item["users"].end(); ++it) {
+                        r.users[it.key()] = it.value().is_number() ? it.value().get<int64_t>() : r.timestamp;
+                    }
+                } else {
+                    r.users["owner"] = r.timestamp;  // before the users: the owner's
+                }
                 if (item.contains("files") && item["files"].is_array()) {
                     for (const auto &f : item["files"]) {
                         r.files.push_back({static_cast<int>(num(f, "id")), str(f, "path"), num(f, "length")});
@@ -73,7 +80,14 @@ namespace p2p {
                 r.user = str(item, "user");
                 r.hash = str(item, "hash");
                 r.fileIndex = static_cast<int>(num(item, "file_index"));
-                r.timecode = item.contains("timecode") && item["timecode"].is_number() ? item["timecode"].get<double>() : 0;
+                r.timecode = item.value("timecode", 0.0);
+                r.duration = item.value("duration", 0.0);
+                // before the users: MatriX's list, every file in it viewed
+                r.viewed = item.value("viewed", r.user.empty());
+                r.updated = num(item, "updated");
+                if (r.user.empty()) {
+                    r.user = "owner";
+                }
                 if (!r.hash.empty()) {
                     m_viewed.push_back(r);
                 }
@@ -142,6 +156,20 @@ namespace p2p {
         return out;
     }
 
+    ViewedRecord Store::viewedFile(const std::string &user, const std::string &hash, int fileIndex) const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto &r : m_viewed) {
+            if (r.user == user && r.hash == hash && r.fileIndex == fileIndex) {
+                return r;
+            }
+        }
+        ViewedRecord r;
+        r.user = user;
+        r.hash = hash;
+        r.fileIndex = fileIndex;
+        return r;
+    }
+
     void Store::setViewed(const ViewedRecord &record) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = std::find_if(m_viewed.begin(), m_viewed.end(), [&](const ViewedRecord &r) {
@@ -150,9 +178,25 @@ namespace p2p {
         if (it == m_viewed.end()) {
             m_viewed.push_back(record);
         } else {
-            it->timecode = record.timecode;
+            *it = record;
         }
         saveViewed();
+    }
+
+    std::vector<std::string> Store::removeUser(const std::string &user) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::vector<std::string> orphans;
+        for (auto &r : m_torrents) {
+            if (r.users.erase(user) && r.users.empty()) {
+                orphans.push_back(r.hash);
+            }
+        }
+        m_viewed.erase(std::remove_if(m_viewed.begin(), m_viewed.end(),
+                                      [&](const ViewedRecord &r) { return r.user == user; }),
+                       m_viewed.end());
+        saveTorrents();
+        saveViewed();
+        return orphans;
     }
 
     void Store::removeViewed(const std::string &user, const std::string &hash, int fileIndex) {
@@ -181,9 +225,13 @@ namespace p2p {
             for (const auto &f : r.files) {
                 files.push_back({{"id", f.id}, {"path", f.path}, {"length", f.length}});
             }
+            json users = json::object();
+            for (const auto &u : r.users) {
+                users[u.first] = u.second;
+            }
             t.push_back({{"hash", r.hash}, {"link", r.link}, {"title", r.title}, {"poster", r.poster},
                          {"category", r.category}, {"data", r.data}, {"name", r.name},
-                         {"timestamp", r.timestamp}, {"size", r.size}, {"files", files}});
+                         {"timestamp", r.timestamp}, {"size", r.size}, {"files", files}, {"users", users}});
         }
         writeFile("torrents.json", t.dump(1));
     }
@@ -191,11 +239,8 @@ namespace p2p {
     void Store::saveViewed() const {
         json v = json::array();
         for (const auto &r : m_viewed) {
-            json item = {{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}};
-            if (!r.user.empty()) {
-                item["user"] = r.user;
-            }
-            v.push_back(item);
+            v.push_back({{"user", r.user}, {"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode},
+                         {"duration", r.duration}, {"viewed", r.viewed}, {"updated", r.updated}});
         }
         writeFile("viewed.json", v.dump(1));
     }

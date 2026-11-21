@@ -1,5 +1,6 @@
-// The entry of every request: errors caught, who sends it (auth.hpp), the native routes
-// (/echo, the login of Silo's /api/auth), then the compatibility layers.
+// The entry of every request: errors caught, the public routes, who sends it (auth.hpp):
+// a token on /api (the native API, Silo's scheme, api_silo.cpp), Basic on the MatriX
+// routes (api_matrix.cpp, a compatibility layer). One set of users for both.
 
 #include "core_torrent.hpp"
 
@@ -14,7 +15,7 @@ namespace p2p {
         }
 
         std::string tokenCookie(const std::string &token, int maxAge) {
-            return "p2play_token=" + token + "; Path=/; Max-Age=" + std::to_string(maxAge) + "; HttpOnly; SameSite=Lax";
+            return "silo_token=" + token + "; Path=/; Max-Age=" + std::to_string(maxAge) + "; HttpOnly; SameSite=Lax";
         }
     }
 
@@ -45,48 +46,53 @@ namespace p2p {
             res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", m_auth.required()}}.dump());
             return;
         }
+        if (get && p == "/api/system/ping") {
+            res.json(200, json{{"status", "ok"}}.dump());
+            return;
+        }
         if (post && p == "/api/auth/login") {
             json body = json::parse(req.body, nullptr, false);
-            std::string name = body.is_object() ? body.value("username", "") : "";
-            std::string token = body.is_object() ? m_auth.login(name, body.value("password", "")) : "";
-            if (token.empty()) {
+            const std::string name = body.is_object() ? body.value("username", "") : "";
+            User u = body.is_object() && body.value("password", json()).is_string()
+                             ? m_auth.login(name, body.value("password", ""))
+                             : User();
+            if (!m_auth.required() && name == Auth::kOwner) {
+                u = m_auth.find(Auth::kOwner);
+            }
+            if (!u.valid()) {
                 log("[Web] failed login for \"%s\" from %s", name.c_str(), req.peer.c_str());
-                error(res, 401, "invalid username or password");
+                error(res, name.empty() ? 400 : 401, name.empty() ? "invalid request format" : "invalid username or password");
                 return;
             }
-            res.send(200, "application/json; charset=utf-8",
-                     json{{"user", {{"name", name}}}, {"token", token}}.dump(),
-                     {{"Set-Cookie", tokenCookie(token, 3600 * 24 * 30)}});
+            res.send(200, "application/json; charset=utf-8", json{{"user", u.json(true)}, {"token", u.token}}.dump(),
+                     {{"Set-Cookie", tokenCookie(u.token, 3600 * 24 * 30)}});
             return;
         }
         if (post && p == "/api/auth/logout") {
             res.send(200, "application/json; charset=utf-8", json{{"status", "logged out"}}.dump(),
-                     {{"Set-Cookie", tokenCookie("", 0)}});
+                     {{"Set-Cookie", tokenCookie("", -1)}});
             return;
         }
 
-        // the rest needs a user once users are set
-        const std::string user = m_auth.identify(req);
-        bool allowed = !m_auth.required() || !user.empty();
-#if P2P_COMPAT_MATRIX
-        allowed = allowed || matrixPublic(req);
-#endif
-        if (!allowed) {
-            std::map<std::string, std::string> headers;
-            if (m_auth.basicEnabled()) {
-                headers["WWW-Authenticate"] = "Basic realm=\"Authorization Required\"";
+        // the native API: Silo's tokens
+        if (p.rfind("/api/", 0) == 0) {
+            const User user = m_auth.byToken(req);
+            if (!user.valid()) {
+                error(res, 401, "unauthorized");
+                return;
             }
-            error(res, 401, "unauthorized", headers);
+            routeSilo(req, res, user);
             return;
         }
 
-        if (get && p == "/api/auth/me") {
-            json me = user.empty() ? json{{"name", "owner"}} : json{{"name", user}, {"token", m_auth.tokenOf(user)}};
-            res.json(200, json{{"user", me}, {"auth", m_auth.required()}}.dump());
+#if P2P_COMPAT_MATRIX
+        // MatriX: Basic; a known torrent is played without it
+        const User user = m_auth.byBasic(req);
+        if (!user.valid() && !matrixPublic(req)) {
+            error(res, 401, "unauthorized", {{"WWW-Authenticate", "Basic realm=\"Authorization Required\""}});
             return;
         }
-#if P2P_COMPAT_MATRIX
-        if (routeMatrix(req, res)) {
+        if (routeMatrix(req, res, user)) {
             return;
         }
 #endif

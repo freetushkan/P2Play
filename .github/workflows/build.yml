@@ -43,7 +43,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           cmake --build build --target p2play_release -j$(nproc)
 
-      # the TorrServer API as pPlay and Lampa use it: RAM storage, RAM with a cache smaller
+      # the TorrServer MatriX API as pPlay and Lampa use it: RAM storage, RAM with a cache smaller
       # than the file (pieces dropped and downloaded again), disk storage
       - name: Core test
         run: |
@@ -51,6 +51,7 @@ jobs:
           python3 tools/core-test.py build/src/app/p2playd --cache16
           python3 tools/core-test.py build/src/app/p2playd --disk
           python3 tools/auth-test.py build/src/app/p2playd
+          python3 tools/silo-test.py build/src/app/p2playd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

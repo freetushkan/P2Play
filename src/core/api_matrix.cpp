@@ -33,6 +33,11 @@ namespace p2p {
             return it != j.end() && it->is_number() ? it->get<int>() : def;
         }
 
+        std::string lower(std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+            return s;
+        }
+
         bool error(HttpResponse &res, int status, const std::string &message) {
             return res.json(status, json{{"error", message}}.dump());
         }
@@ -52,73 +57,27 @@ namespace p2p {
             return slash == std::string::npos ? path : path.substr(slash + 1);
         }
 
-        // multipart/form-data: name -> (filename, content)
-        std::map<std::string, std::pair<std::string, std::string>> parseMultipart(const HttpRequest &req) {
-            std::map<std::string, std::pair<std::string, std::string>> parts;
-            std::string type = req.header("content-type");
-            size_t b = type.find("boundary=");
-            if (b == std::string::npos) {
-                return parts;
-            }
-            std::string boundary = type.substr(b + 9);
-            if (!boundary.empty() && boundary[0] == '"') {
-                boundary = boundary.substr(1, boundary.find('"', 1) - 1);
-            }
-            boundary = "--" + boundary.substr(0, boundary.find(';'));
-            const std::string &body = req.body;
-            size_t pos = body.find(boundary);
-            while (pos != std::string::npos) {
-                pos += boundary.size();
-                if (body.compare(pos, 2, "--") == 0) {
-                    break;
-                }
-                size_t headEnd = body.find("\r\n\r\n", pos);
-                if (headEnd == std::string::npos) {
-                    break;
-                }
-                std::string head = body.substr(pos, headEnd - pos);
-                size_t next = body.find("\r\n" + boundary, headEnd + 4);
-                if (next == std::string::npos) {
-                    break;
-                }
-                std::string content = body.substr(headEnd + 4, next - headEnd - 4);
-                auto attr = [&](const std::string &key) {
-                    size_t k = head.find(key + "=\"");
-                    if (k == std::string::npos) {
-                        return std::string();
-                    }
-                    k += key.size() + 2;
-                    return head.substr(k, head.find('"', k) - k);
-                };
-                std::string name = attr("name");
-                if (!name.empty() && !parts.count(name)) {
-                    parts[name] = {attr("filename"), content};
-                }
-                pos = next + 2;
-            }
-            return parts;
-        }
     }
 
     // the MatriX routes; false: not one of them
-    bool Core::routeMatrix(const HttpRequest &req, HttpResponse &res) {
+    bool Core::routeMatrix(const HttpRequest &req, HttpResponse &res, const User &user) {
         const std::string &p = req.path;
         const bool get = req.method == "GET" || req.method == "HEAD";
         const bool post = req.method == "POST";
         if (post && p == "/torrents") {
-            apiTorrents(req, res);
+            apiTorrents(req, res, user);
         } else if (post && p == "/torrent/upload") {
-            apiUpload(req, res);
+            apiUpload(req, res, user);
         } else if (get && (p == "/stream" || p.rfind("/stream/", 0) == 0)) {
-            apiStream(req, res, "", -1);
+            apiStream(req, res, "", -1, user);
         } else if (get && p.rfind("/play/", 0) == 0) {
             // /play/<hash>/<id>
             std::string rest = p.substr(6);
             size_t slash = rest.find('/');
             int id = slash == std::string::npos ? 1 : std::atoi(rest.c_str() + slash + 1);
-            apiStream(req, res, rest.substr(0, slash), id);
+            apiStream(req, res, rest.substr(0, slash), id, user);
         } else if (post && p == "/viewed") {
-            apiViewed(req, res);
+            apiViewed(req, res, user);
         } else if (post && p == "/settings") {
             apiSettings(req, res);
         } else if (post && p == "/cache") {
@@ -129,10 +88,10 @@ namespace p2p {
                 error(res, 404, "torrent not found");
                 return true;
             }
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, m_auth.identify(req)));
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, user.id, ""));
         } else if (get && p == "/playlistall/all.m3u") {
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist(list(), req.header("host"), 0, m_auth.identify(req)));
-        } else if (get && (p == "/shutdown" || p.rfind("/shutdown/", 0) == 0)) {
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist(listOf(user.id, true), req.header("host"), 0, user.id, ""));
+        } else if (get && (p == "/shutdown" || p.rfind("/shutdown/", 0) == 0) && user.valid()) {
             // the host decides (a standalone server quits, pPlay may ignore it)
             log("[Web] shutdown asked by %s", req.peer.c_str());
             m_shutdownRequested = true;
@@ -204,7 +163,7 @@ namespace p2p {
         return !hash.empty() && find(hash) != nullptr;
     }
 
-    void Core::apiTorrents(const HttpRequest &req, HttpResponse &res) {
+    void Core::apiTorrents(const HttpRequest &req, HttpResponse &res, const User &user) {
         json body = json::parse(req.body, nullptr, false);
         if (!body.is_object()) {
             error(res, 400, "a JSON object is expected");
@@ -220,7 +179,7 @@ namespace p2p {
             }
             std::string err;
             TorrentPtr t = add(link, str(body, "title"), str(body, "poster"), str(body, "category"), str(body, "data"),
-                               flag(body, "save_to_db"), err);
+                               flag(body, "save_to_db") ? user.id : "", err);
             if (!t) {
                 error(res, 400, err);
                 return;
@@ -254,7 +213,7 @@ namespace p2p {
             res.json(200, "{}");
         } else if (action == "rem") {
             if (TorrentPtr t = find(hash)) {
-                remove(t);
+                unlink(t, user.id);
             }
             res.json(200, "{}");
         } else if (action == "drop") {
@@ -264,13 +223,13 @@ namespace p2p {
             res.json(200, "{}");
         } else if (action == "list") {
             json out = json::array();
-            for (const TorrentPtr &t : list()) {
+            for (const TorrentPtr &t : listOf(user.id, true)) {
                 out.push_back(status(t));
             }
             res.json(200, out.dump());
         } else if (action == "wipe") {
-            for (const TorrentPtr &t : list()) {
-                remove(t);
+            for (const TorrentPtr &t : listOf(user.id, false)) {
+                unlink(t, user.id);
             }
             res.json(200, "{}");
         } else {
@@ -279,7 +238,7 @@ namespace p2p {
     }
 
     // .torrent files from a form: "file" (or any file part), "title", "poster", "data", "save"
-    void Core::apiUpload(const HttpRequest &req, HttpResponse &res) {
+    void Core::apiUpload(const HttpRequest &req, HttpResponse &res, const User &user) {
         auto parts = parseMultipart(req);
         auto field = [&](const char *name) {
             auto it = parts.find(name);
@@ -295,7 +254,7 @@ namespace p2p {
             }
             std::string err;
             TorrentPtr t = addMetadata(part.second.second, field("title"), field("poster"), field("category"),
-                                       field("data"), save, err);
+                                       field("data"), save ? user.id : "", err);
             if (t) {
                 out.push_back(status(t));
             } else {
@@ -311,7 +270,8 @@ namespace p2p {
     }
 
     // /stream?link=...&index=...&play|stat|m3u|preload|save and /play/<hash>/<id>
-    void Core::apiStream(const HttpRequest &req, HttpResponse &res, const std::string &playHash, int playIndex) {
+    void Core::apiStream(const HttpRequest &req, HttpResponse &res, const std::string &playHash, int playIndex,
+                         const User &user) {
         const bool fromPlay = !playHash.empty();
         std::string link = fromPlay ? playHash : req.param("link");
         if (link.empty()) {
@@ -322,7 +282,7 @@ namespace p2p {
         // lacks from the parameters
         TorrentPtr t = find(link);
         std::string err;
-        t = add(t ? t->rec.hash : link, req.param("title"), req.param("poster"), req.param("category"), "", false, err);
+        t = add(t ? t->rec.hash : link, req.param("title"), req.param("poster"), req.param("category"), "", "", err);
         if (!t) {
             error(res, 400, err);
             return;
@@ -335,12 +295,8 @@ namespace p2p {
             error(res, 500, "torrent connection timeout");
             return;
         }
-        if (req.has("save")) {
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                t->saved = true;
-            }
-            save(t);
+        if (req.has("save") && user.valid()) {
+            keep(t, user.id);
         }
         int files;
         {
@@ -366,7 +322,7 @@ namespace p2p {
         if (req.has("stat")) {
             res.json(200, status(t).dump());
         } else if (req.has("m3u")) {
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, m_auth.identify(req)));
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, user.id, ""));
         } else if (play) {
             stream(t, index, req, res);
         } else {
@@ -374,7 +330,7 @@ namespace p2p {
         }
     }
 
-    void Core::apiViewed(const HttpRequest &req, HttpResponse &res) {
+    void Core::apiViewed(const HttpRequest &req, HttpResponse &res, const User &user) {
         json body = json::parse(req.body, nullptr, false);
         if (!body.is_object()) {
             error(res, 400, "a JSON object is expected");
@@ -387,11 +343,13 @@ namespace p2p {
                 error(res, 400, "hash is required");
                 return;
             }
-            ViewedRecord r;
-            r.user = m_auth.identify(req);
-            r.hash = hash;
-            r.fileIndex = integer(body, "file_index", 0);
-            r.timecode = body.contains("timecode") && body["timecode"].is_number() ? body["timecode"].get<double>() : 0;
+            // MatriX's list is of the files viewed: a set marks it, the timecode is the position
+            ViewedRecord r = m_store.viewedFile(user.id, lower(hash), integer(body, "file_index", 0));
+            if (body.contains("timecode") && body["timecode"].is_number()) {
+                r.timecode = body["timecode"].get<double>();
+            }
+            r.viewed = true;
+            r.updated = static_cast<int64_t>(time(nullptr));
             m_store.setViewed(r);
             res.json(200, "{}");
         } else if (action == "rem") {
@@ -399,12 +357,14 @@ namespace p2p {
                 error(res, 400, "hash is required");
                 return;
             }
-            m_store.removeViewed(m_auth.identify(req), hash, integer(body, "file_index", 0));
+            m_store.removeViewed(user.id, lower(hash), integer(body, "file_index", 0));
             res.json(200, "{}");
         } else if (action == "list") {
             json out = json::array();
-            for (const ViewedRecord &r : m_store.viewed(m_auth.identify(req), hash)) {
-                out.push_back({{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}});
+            for (const ViewedRecord &r : m_store.viewed(user.id, lower(hash))) {
+                if (r.viewed || r.timecode > 0) {
+                    out.push_back({{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}});
+                }
             }
             res.json(200, out.dump());
         } else {
@@ -472,7 +432,7 @@ namespace p2p {
 
     // the media files of the torrents; fromIndex: from the last viewed file on
     std::string Core::playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex,
-                               const std::string &user) {
+                               const std::string &user, const std::string &query) {
         std::string out = "#EXTM3U\n";
         const std::string base = "http://" + (host.empty() ? "127.0.0.1:" + std::to_string(httpPort()) : host);
         for (const TorrentPtr &t : torrents) {
@@ -494,7 +454,7 @@ namespace p2p {
                 std::string name = baseName(f.path);
                 out += "#EXTINF:0," + name + "\n";
                 out += base + "/stream/" + HttpServer::urlEncode(name) + "?link=" + rec.hash + "&index=" +
-                       std::to_string(f.id) + "&play\n";
+                       std::to_string(f.id) + "&play" + query + "\n";
             }
         }
         return out;

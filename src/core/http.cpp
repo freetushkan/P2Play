@@ -325,4 +325,51 @@ namespace p2p {
         return out;
     }
 
+    // multipart/form-data: name -> (filename, content)
+    std::map<std::string, std::pair<std::string, std::string>> parseMultipart(const HttpRequest &req) {
+        std::map<std::string, std::pair<std::string, std::string>> parts;
+        std::string type = req.header("content-type");
+        size_t b = type.find("boundary=");
+        if (b == std::string::npos) {
+            return parts;
+        }
+        std::string boundary = type.substr(b + 9);
+        if (!boundary.empty() && boundary[0] == '"') {
+            boundary = boundary.substr(1, boundary.find('"', 1) - 1);
+        }
+        boundary = "--" + boundary.substr(0, boundary.find(';'));
+        const std::string &body = req.body;
+        size_t pos = body.find(boundary);
+        while (pos != std::string::npos) {
+            pos += boundary.size();
+            if (body.compare(pos, 2, "--") == 0) {
+                break;
+            }
+            size_t headEnd = body.find("\r\n\r\n", pos);
+            if (headEnd == std::string::npos) {
+                break;
+            }
+            std::string head = body.substr(pos, headEnd - pos);
+            size_t next = body.find("\r\n" + boundary, headEnd + 4);
+            if (next == std::string::npos) {
+                break;
+            }
+            std::string content = body.substr(headEnd + 4, next - headEnd - 4);
+            auto attr = [&](const std::string &key) {
+                size_t k = head.find(key + "=\"");
+                if (k == std::string::npos) {
+                    return std::string();
+                }
+                k += key.size() + 2;
+                return head.substr(k, head.find('"', k) - k);
+            };
+            std::string name = attr("name");
+            if (!name.empty() && !parts.count(name)) {
+                parts[name] = {attr("filename"), content};
+            }
+            pos = next + 2;
+        }
+        return parts;
+    }
+
 }
