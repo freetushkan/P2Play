@@ -1,0 +1,19 @@
+// p2spike for Android: one APK for arm64-v8a and armeabi-v7a. The native part is the
+// p2spike executable packaged as lib/<abi>/libp2spike.so (ci/android-apk.sh puts it into
+// app/src/main/jniLibs): the system extracts it to nativeLibraryDir, the service runs it.
+buildscript {
+    repositories {
+        mavenCentral()
+        google()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:9.2.1'
+    }
+}
+
+allprojects {
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
