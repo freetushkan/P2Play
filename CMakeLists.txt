@@ -47,6 +47,15 @@ if (PLATFORM_SWITCH OR PLATFORM_PS4 OR PLATFORM_PS5)
     add_compile_options(-g)
 endif ()
 
+# PS4: our link script instead of the toolchain's one (cmake/ps4-link.x says why)
+if (PLATFORM_PS4)
+    string(REGEX REPLACE "--script[ ]+[^ ]*link\\.x" "--script ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ps4-link.x"
+            CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+    if (NOT CMAKE_EXE_LINKER_FLAGS MATCHES "ps4-link\\.x")
+        message(FATAL_ERROR "PS4: the toolchain's --script link.x not found in CMAKE_EXE_LINKER_FLAGS")
+    endif ()
+endif ()
+
 include(cmake/libtorrent.cmake)
 
 add_subdirectory(src/spike)
