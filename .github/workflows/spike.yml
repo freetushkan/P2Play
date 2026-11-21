@@ -1,0 +1,197 @@
+name: p2spike
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+env:
+  BOOST_VERSION: 1.86.0
+  BOOST_HEADERS: /opt/boost-headers
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create build environment
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y cmake ninja-build xz-utils curl python3-pip
+          pip3 install --break-system-packages libtorrent
+
+      - name: Cache Boost headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_HEADERS }}
+          key: boost-headers-${{ env.BOOST_VERSION }}
+
+      - name: Boost headers
+        run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          cmake --build build --target p2spike_release -j$(nproc)
+
+      - name: Local stream test
+        run: python3 tools/local-test.py build/src/spike/p2spike
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-Linux
+          path: build/release/*
+
+  switch:
+    runs-on: ubuntu-24.04
+    container: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create build environment
+        run: |
+          apt-get update || true
+          apt-get install -y cmake curl xz-utils
+
+      - name: Cache Boost headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_HEADERS }}
+          key: boost-headers-${{ env.BOOST_VERSION }}
+
+      - name: Boost headers
+        run: ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G "Unix Makefiles" -DPLATFORM_SWITCH=ON -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+          test -f build/release/p2spike/p2spike.nro
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-Switch-log
+          path: build.log
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-Switch
+          path: build/release/*
+
+  ps4:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create build environment
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y pacman-package-manager libarchive-tools cmake make curl xz-utils
+
+          sudo tee -a /etc/pacman.conf > /dev/null <<TEXT
+          [pacbrew]
+          SigLevel = Optional TrustAll
+          Server = https://pacman.mydedibox.fr/pacbrew/packages/
+          TEXT
+
+          sudo pacman --noconfirm -Sy
+          sudo pacman --noconfirm -S --needed ps4-openorbis ps4-openorbis-portlibs
+
+          # Fix missing header (as in pPlay)
+          sudo mkdir -p /opt/pacbrew/ps4/openorbis/include/sys
+          echo '#include <endian.h>' | sudo tee /opt/pacbrew/ps4/openorbis/include/sys/endian.h > /dev/null
+
+      - name: Cache Boost headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_HEADERS }}
+          key: boost-headers-${{ env.BOOST_VERSION }}
+
+      - name: Boost headers
+        run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
+
+      - name: Build
+        run: |
+          export OPENORBIS=/opt/pacbrew/ps4/openorbis
+          cmake -S . -B build -G "Unix Makefiles" -DPLATFORM_PS4=ON -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          set -o pipefail
+          cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS4-log
+          path: build.log
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS4
+          path: build/release/*
+
+  ps5:
+    runs-on: ubuntu-24.04
+    env:
+      PS5_SDK_VERSION: v0.41.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create build environment
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y clang-18 lld-18 build-essential cmake curl xz-utils wget
+
+          sudo mkdir -p /opt/ps5-payload-sdk
+          wget -nv https://github.com/ps5-payload-dev/pacbrew-repo/releases/download/${PS5_SDK_VERSION}/ps5-payload-dev.tar.gz
+          sudo tar -xzf ps5-payload-dev.tar.gz -C /
+          echo "PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk" >> $GITHUB_ENV
+
+      - name: Cache Boost headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_HEADERS }}
+          key: boost-headers-${{ env.BOOST_VERSION }}
+
+      - name: Boost headers
+        run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
+
+      - name: Build
+        run: |
+          /opt/ps5-payload-sdk/bin/prospero-cmake -S . -B build -DPLATFORM_PS5=ON -DCMAKE_BUILD_TYPE=Release \
+            -DPS5_PAYLOAD_SDK=/opt/ps5-payload-sdk -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          set -o pipefail
+          cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS5-log
+          path: build.log
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS5
+          path: build/release/*

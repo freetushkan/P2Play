@@ -1,0 +1,44 @@
+diff --git a/include/libtorrent/config.hpp b/include/libtorrent/config.hpp
+index fe7e77d35..8fb429c8d 100644
+--- a/include/libtorrent/config.hpp
++++ b/include/libtorrent/config.hpp
+@@ -405,6 +405,15 @@ POSSIBILITY OF SUCH DAMAGE.
+ #define TORRENT_USE_IFCONF 1
+ #define TORRENT_USE_SYSCTL 1
+ 
++// ==== Nintendo Switch (devkitA64, libnx) ===
++#elif defined __SWITCH__
++#define TORRENT_SWITCH
++#define TORRENT_HAS_FALLOCATE 0
++#define TORRENT_USE_NX_RANDOM 1
++#ifndef TORRENT_HAVE_MMAP
++#define TORRENT_HAVE_MMAP 0
++#endif
++
+ #else
+ 
+ #ifdef _MSC_VER
+diff --git a/src/random.cpp b/src/random.cpp
+index d457dd674..2819b0b7d 100644
+--- a/src/random.cpp
++++ b/src/random.cpp
+@@ -65,6 +65,10 @@ extern "C" {
+ 
+ #include <cstdlib>
+ 
++#elif defined TORRENT_USE_NX_RANDOM
++
++#include <switch/kernel/random.h>
++
+ #elif TORRENT_USE_GETRANDOM
+ 
+ #include <sys/random.h>
+@@ -148,6 +152,8 @@ namespace aux {
+ 			int r = RAND_bytes(reinterpret_cast<unsigned char*>(buffer.data())
+ 				, int(buffer.size()));
+ 			if (r != 1) aux::throw_ex<system_error>(errors::no_entropy);
++#elif defined TORRENT_USE_NX_RANDOM
++			::randomGet(buffer.data(), static_cast<std::size_t>(buffer.size()));
+ #elif defined TORRENT_USE_ARC4RANDOM
+ 			::arc4random_buf(buffer.data(), static_cast<std::size_t>(buffer.size()));
+ #elif TORRENT_USE_GETRANDOM
