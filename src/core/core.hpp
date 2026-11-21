@@ -56,6 +56,7 @@ namespace p2p {
         bool disableUpnp = false;
         int listenPort = 0;          // BitTorrent, 0: any (restart)
         std::string dhtBootstrap;    // P2PDhtBootstrap: "host:port,...", a DHT of our own
+        bool catalogOnly = false;    // P2PCatalogOnly: lists and search, no streamer (restart)
     };
 
     class Core {
@@ -77,6 +78,9 @@ namespace p2p {
 
         // a client asked the server to stop (MatriX /shutdown); the host decides
         bool shutdownRequested() const { return m_shutdownRequested; }
+
+        // a catalog node: the lists and the search only, no streamer
+        bool catalogOnly() const { return m_settings.catalogOnly; }
 
         static const char *version();
 
@@ -102,6 +106,7 @@ namespace p2p {
             bool wanted = false;             // subscribed, no version yet
             std::vector<std::string> peers;  // hints: ip:port of nodes holding it
             lt::torrent_handle fetching;
+            lt::sha256_hash fetchIh;
             int64_t fetchSeq = -1;
             std::string fetchPointer, fetchDir;
         };
@@ -115,6 +120,18 @@ namespace p2p {
         void meshTick(bool start);
         void meshReleased(const std::string &pk);
         nlohmann::json meshState(const std::string &pk);
+        void meshDirectory();
+        nlohmann::json meshDirectoryJson();
+    public:
+        // mesh_ext.cpp's hooks
+        lt::info_hash_t meshDirectoryHash();
+        std::vector<std::pair<std::string, int64_t>> meshHeld();
+        void meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists);
+    private:
+        struct Discovered {
+            int64_t seq = 0;
+            std::set<std::string> holders;
+        };
 
         // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)
         void routeMesh(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
@@ -200,6 +217,10 @@ namespace p2p {
         std::mutex m_meshMutex;
         std::map<std::string, MeshNet> m_meshNet;
         lt::error_code m_meshError;
+        lt::torrent_handle m_directory;
+        std::mutex m_directoryMutex;
+        lt::info_hash_t m_directoryHash;
+        std::map<std::string, Discovered> m_discovered;
         std::chrono::steady_clock::time_point m_meshLast, m_meshWantedLast;
         Auth m_auth;
         Settings m_settings;

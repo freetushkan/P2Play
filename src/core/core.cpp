@@ -340,6 +340,7 @@ namespace p2p {
         }
 
         m_alertThread = std::thread(&Core::alertLoop, this);
+        meshDirectory();
         meshTick(true);
         m_idleThread = std::thread(&Core::idleLoop, this);
 
@@ -394,6 +395,7 @@ namespace p2p {
         b("DisableDHT", m_settings.disableDht);
         b("DisableUPNP", m_settings.disableUpnp);
         i("PeersListenPort", m_settings.listenPort);
+        b("P2PCatalogOnly", m_settings.catalogOnly);
         if (s.contains("P2PDhtBootstrap") && s["P2PDhtBootstrap"].is_string()) {
             m_settings.dhtBootstrap = s["P2PDhtBootstrap"].get<std::string>();
         }
@@ -424,6 +426,9 @@ namespace p2p {
             sp.set_bool(lt::settings_pack::dht_ignore_dark_internet, false);
             sp.set_bool(lt::settings_pack::dht_prefer_verified_node_ids, false);
             sp.set_bool(lt::settings_pack::allow_multiple_connections_per_ip, true);
+            // the nodes may share an address: no rate limit by address
+            sp.set_int(lt::settings_pack::dht_block_ratelimit, 100000);
+            sp.set_int(lt::settings_pack::dht_block_timeout, 0);
         }
         m_session->apply_settings(sp);
         // the nodes given known at once (the bootstrap list is read when the DHT starts)

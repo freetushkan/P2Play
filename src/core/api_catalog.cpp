@@ -4,6 +4,7 @@
 //   GET    /api/catalog/search?q=&tag=&limit=   {"results": [record]}
 //   GET    /api/catalog/:infohash               a record and the lists holding it
 //   GET    /api/lists                           {"lists": [card]}
+//   GET    /api/lists/discover                  the lists of the network: holders, seq
 //   DELETE /api/lists/:pubkey                   a received list dropped
 //   POST   /api/lists/import {"dir"}            a version directory taken (checked) - admins
 //   POST   /api/publish {"name","description"}  a new list, its key made here - admins
@@ -80,6 +81,9 @@ namespace p2p {
                     lists.push_back(j);
                 }
                 res.json(200, json{{"lists", lists}}.dump());
+            } else if (get && n == 3 && at(2) == "discover") {
+                // the lists the directory swarm told of, the most held first
+                res.json(200, json{{"lists", meshDirectoryJson()}}.dump());
             } else if (m == "POST" && n == 3 && at(2) == "import") {
                 if (!admin) {
                     error(res, 403, "insufficient permissions");

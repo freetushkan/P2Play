@@ -5,7 +5,8 @@
 
 Checks (a third node, C, only stores DHT items): node A publishes a list (its version seeded as a v2 torrent, its pointer put into the
 DHT); node B subscribes by the key alone: the pointer from the DHT, the version downloaded
-from A, checked and searched; a newer version reaches B; B seeds what it took.
+from A, checked and searched; a newer version reaches B; B seeds what it took; C, holding no
+list, learns of it and its holders in the directory swarm ("mediamesh" extension).
 """
 
 import base64
@@ -57,7 +58,7 @@ def start(daemon, root, node):
     data = os.path.join(root, node)
     os.makedirs(data, exist_ok=True)
     with open(os.path.join(data, "settings.json"), "w") as f:
-        json.dump({"PeersListenPort": bt, "P2PDhtBootstrap": others}, f)
+        json.dump({"PeersListenPort": bt, "P2PDhtBootstrap": others, "P2PCatalogOnly": node == "c"}, f)
     with open(os.path.join(data, "auth.json"), "w") as f:
         json.dump({"users": [{"username": "owner", "password": ct.OWNER_PASSWORD, "api_token": ct.OWNER_TOKEN}]}, f)
     log = open(os.path.join(data, "stdout.log"), "a")
@@ -114,6 +115,12 @@ def main():
         call("b", f"/api/lists/{pk}", {})
         got = wait("B takes version 2", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 2])
         check(bool(got) and call("b", "/api/catalog/search?q=second")[1]["results"] != [], "B: version 2 taken")
+        # the directory swarm: C holds no list, learns of this one and of its holders
+        found = wait("C learns of the list", lambda: [l for l in call("c", "/api/lists/discover")[1]["lists"]
+                                                       if l["pubkey"] == pk and l["holders"] >= 2 and l["seq"] == 2], 90)
+        check(bool(found) and not found[0]["subscribed"], "C: the list and its two holders from the directory swarm")
+        check(call("c", "/api/torrents")[0] == 404 and call("c", "/torrents", {"action": "list"})[0] == 404
+              and call("c", "/api/catalog/search?q=x")[0] == 200, "C, a catalog node: no streamer, the catalog")
         print("PASS")
     finally:
         for p in procs:

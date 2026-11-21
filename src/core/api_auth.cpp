@@ -91,6 +91,10 @@ namespace p2p {
             return;
         }
 
+        if (m_settings.catalogOnly && p != "/echo") {
+            error(res, 404, "a catalog node: no streamer");
+            return;
+        }
 #if P2P_COMPAT_MATRIX
         // MatriX: Basic; a known torrent is played without it (TorrServer leaves these open)
         const User user = m_auth.byBasic(req);

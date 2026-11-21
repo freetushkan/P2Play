@@ -267,6 +267,11 @@ namespace p2p {
             return;
         }
 
+        if (m_settings.catalogOnly && (at(1) == "torrents" || at(1) == "stream" || at(1) == "progress" ||
+                                       at(1) == "library" || at(1) == "events")) {
+            error(res, 404, "a catalog node: no streamer");
+            return;
+        }
         if (at(1) == "catalog" || at(1) == "lists" || at(1) == "publish") {
             routeMesh(req, res, user, parts);
             return;

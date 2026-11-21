@@ -73,14 +73,24 @@ storage is RAM for streams, files for `lists/`); the pointer to the current vers
 under the list's key (salt `mediamesh.v1`, value: the version's infohash and the name, seq: the version).
 Subscribing by the key: the pointer from the DHT, the version downloaded, checked, seeded. Every node puts
 the pointers of its lists again every 30 minutes and asks for newer versions: a list lives on without its
-releaser. Not yet: the `mediamesh` extension (pointers pushed between peers), the directory swarm and the
-rating, media packs and shards. `P2PDhtBootstrap` (settings, `host:port,...`): a DHT of one's own (tests, a LAN).
+releaser.
+
+The directory swarm: a fixed tiny torrent (one file `mediamesh.v1`, v1, 16 KiB pieces) every node joins and
+nobody holds the data of (a seed would meet no other seed). Its peers speak the `mediamesh` BEP 10 extension:
+`have`, the lists a node holds and their versions, sent at the handshake and again when they change. A node
+learns so the lists of the network and how many nodes hold each (`GET /api/lists/discover`, the most held
+first: the rating), and asks the DHT at once for a newer version of a list it holds.
+
+A catalog node (`P2PCatalogOnly` in the settings): the lists, the directory and the search, no streamer (the
+torrent and stream routes answer 404): beside Silo, for its plugin, or on a server holding lists round the
+clock. Not yet: pointers pushed through the extension, media packs and shards, the releaser's proxy. `P2PDhtBootstrap` (settings, `host:port,...`): a DHT of one's own (tests, a LAN).
 
 | Route | |
 | --- | --- |
 | `GET /api/catalog/search?q=&tag=&limit=` | every word in the title or tags (any case, Latin and Cyrillic, ё = е); each result with its `torrs://` link and lists |
 | `GET /api/catalog/:infohash` | a record and its lists |
 | `GET /api/lists`, `DELETE /api/lists/:pubkey` | the lists of this node (`net`: seeded, being fetched); a received one dropped |
+| `GET /api/lists/discover` | the lists the directory swarm told of: `holders`, `seq`, `subscribed` |
 | `POST /api/lists/:pubkey` | subscribe by the key (`{"peers": ["ip:port"]}`: optional hints): 202 |
 | `POST /api/lists/import` | `{"dir"}`: a version directory taken (admins) |
 | `POST /api/publish` | `{"name","description"}`: a new list, its key in `keys/` (admins) |

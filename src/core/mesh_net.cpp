@@ -20,6 +20,7 @@
 #include <libtorrent/magnet_uri.hpp>
 
 #include "core_torrent.hpp"
+#include "mesh_ext.hpp"
 
 namespace p2p {
 
@@ -147,16 +148,23 @@ namespace p2p {
         atp.save_path = m_store.dir() + "/lists";
         atp.flags |= lt::torrent_flags::seed_mode;
         atp.flags &= ~(lt::torrent_flags::auto_managed | lt::torrent_flags::paused);
+        {
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            MeshNet &n = m_meshNet[pk];
+            if (n.seeding.is_valid() && n.versionIh == ti->info_hashes().v2) {
+                return;
+            }
+        }
+        // added without the lock: the network thread takes it too (the extension's hooks)
+        lt::error_code ec;
+        lt::torrent_handle added = m_session->add_torrent(std::move(atp), ec);
         lt::torrent_handle old;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             MeshNet &n = m_meshNet[pk];
-            if (n.seeding.is_valid() && n.seeding.info_hashes() == ti->info_hashes()) {
-                return;
-            }
             old = n.seeding;
             n.versionIh = ti->info_hashes().v2;
-            n.seeding = m_session->add_torrent(std::move(atp), m_meshError);
+            n.seeding = added;
         }
         if (old.is_valid()) {
             m_session->remove_torrent(old);
@@ -270,27 +278,38 @@ namespace p2p {
         atp.save_path = staging;
         atp.flags &= ~(lt::torrent_flags::auto_managed | lt::torrent_flags::paused);
         std::vector<std::string> peers;
+        lt::torrent_handle old;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             MeshNet &n = m_meshNet[pk];
-            if (n.fetching.is_valid()) {
-                if (n.fetchSeq >= seq) {
-                    return;
-                }
-                m_session->remove_torrent(n.fetching, lt::session::delete_files);
+            if (n.fetchSeq >= seq && n.fetching.is_valid()) {
+                return;
             }
+            old = n.fetching;
+            n.fetchIh = ih;
             n.fetchSeq = seq;
             n.fetchPointer = pointer;
             n.fetchDir = staging;
             peers = n.peers;
-            n.fetching = m_session->add_torrent(std::move(atp), m_meshError);
-            for (const std::string &p : peers) {
-                const size_t colon = p.rfind(':');
-                lt::error_code ec;
-                auto addr = lt::make_address(p.substr(0, colon), ec);
-                if (!ec && colon != std::string::npos) {
-                    n.fetching.connect_peer(lt::tcp::endpoint(addr, static_cast<std::uint16_t>(std::atoi(p.c_str() + colon + 1))));
-                }
+        }
+        if (old.is_valid()) {
+            m_session->remove_torrent(old, lt::session::delete_files);
+        }
+        lt::error_code ec;
+        lt::torrent_handle h = m_session->add_torrent(std::move(atp), ec);
+        for (const std::string &p : peers) {
+            const size_t colon = p.rfind(':');
+            lt::error_code pe;
+            auto addr = lt::make_address(p.substr(0, colon), pe);
+            if (!pe && colon != std::string::npos) {
+                h.connect_peer(lt::tcp::endpoint(addr, static_cast<std::uint16_t>(std::atoi(p.c_str() + colon + 1))));
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            MeshNet &n = m_meshNet[pk];
+            if (!n.fetchIh.is_all_zeros()) {
+                n.fetching = h;  // not finished yet
             }
         }
         log("[Mesh] list %s: fetching version %lld", pk.substr(0, 16).c_str(), static_cast<long long>(seq));
@@ -331,14 +350,17 @@ namespace p2p {
         if (auto *tf = lt::alert_cast<lt::torrent_finished_alert>(a)) {
             std::string pk, dir, pointer;
             lt::torrent_handle h;
+            // by the infohash: the alert may come before the handle is kept
+            const lt::sha256_hash v2 = tf->handle.info_hashes().v2;
             {
                 std::lock_guard<std::mutex> lock(m_meshMutex);
                 for (auto &e : m_meshNet) {
-                    if (e.second.fetching.is_valid() && e.second.fetching == tf->handle) {
+                    if (!e.second.fetchDir.empty() && !v2.is_all_zeros() && e.second.fetchIh == v2) {
+                        h = tf->handle;
+                        e.second.fetchIh = lt::sha256_hash();
                         pk = e.first;
                         dir = e.second.fetchDir;
                         pointer = e.second.fetchPointer;
-                        h = e.second.fetching;
                         e.second.fetching = lt::torrent_handle();
                     }
                 }
@@ -436,6 +458,123 @@ namespace p2p {
             j["version_ih"] = hexOf(it->second.versionIh.data(), 32);
         }
         return j;
+    }
+
+}
+
+namespace p2p {
+
+    namespace {
+        class CoreHooks final : public MeshExtension::Hooks {
+        public:
+            explicit CoreHooks(Core *core) : m_core(core) {}
+
+            lt::info_hash_t directory() override { return m_core->meshDirectoryHash(); }
+
+            std::vector<std::pair<std::string, int64_t>> held() override { return m_core->meshHeld(); }
+
+            void received(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) override {
+                m_core->meshDiscovered(peer, lists);
+            }
+
+        private:
+            Core *m_core;
+        };
+    }
+
+    // the directory swarm: a fixed tiny torrent (one file "mediamesh.v1", v1, 16 KiB pieces:
+    // the same infohash on every node) all the nodes seed; its peers tell each other their lists
+    void Core::meshDirectory() {
+        m_session->add_extension(MeshExtension::make(std::make_shared<CoreHooks>(this)));
+        const std::string dir = m_store.dir() + "/lists/.directory";
+        mkdir((m_store.dir() + "/lists").c_str(), 0777);
+        mkdir(dir.c_str(), 0777);
+        const std::string content = "MediaMesh v1 directory: the nodes holding lists meet here.\n";
+        if (readAll(dir + "/mediamesh.v1") != content) {
+            writeAll(dir + "/mediamesh.v1", content);
+        }
+        lt::file_storage fs;
+        lt::add_files(fs, dir + "/mediamesh.v1");
+        lt::create_torrent ct(fs, 16 * 1024, lt::create_torrent::v1_only);
+        lt::error_code ec;
+        lt::set_piece_hashes(ct, dir, ec);
+        if (ec) {
+            log("[Mesh] no directory swarm: %s", ec.message().c_str());
+            return;
+        }
+        std::vector<char> buf;
+        lt::bencode(std::back_inserter(buf), ct.generate());
+        auto ti = std::make_shared<lt::torrent_info>(buf, ec, lt::from_span);
+        if (ec) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_directoryMutex);
+            m_directoryHash = ti->info_hashes();
+        }
+        // nobody holds its data (an empty directory, the file not wanted): a seed asks the DHT
+        // for leechers only and would meet no other node; a finished torrent that is no seed
+        // meets them all
+        lt::add_torrent_params atp;
+        atp.ti = ti;
+        atp.save_path = dir + "/none";
+        atp.file_priorities = {lt::dont_download};
+        atp.flags &= ~(lt::torrent_flags::auto_managed | lt::torrent_flags::paused);
+        m_directory = m_session->add_torrent(std::move(atp), m_meshError);
+        log("[Mesh] directory swarm %s", hexOf(ti->info_hashes().v1.data(), 20).c_str());
+    }
+
+    lt::info_hash_t Core::meshDirectoryHash() {
+        std::lock_guard<std::mutex> lock(m_directoryMutex);
+        return m_directoryHash;
+    }
+
+    std::vector<std::pair<std::string, int64_t>> Core::meshHeld() {
+        std::vector<std::pair<std::string, int64_t>> out;
+        for (const MeshList &l : m_mesh.lists()) {
+            std::string pk(32, '\0');
+            if (unhexTo(l.pubkey, &pk[0], 32)) {
+                out.emplace_back(pk, l.seq);
+            }
+        }
+        return out;
+    }
+
+    // a peer's lists: the directory and its holders; a newer version of a list held, asked for
+    void Core::meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) {
+        std::vector<std::string> newer;
+        {
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            for (const auto &l : lists) {
+                const std::string pk = hexOf(l.first.data(), l.first.size());
+                Discovered &d = m_discovered[pk];
+                d.seq = std::max(d.seq, l.second);
+                d.holders.insert(peer);
+                MeshList held;
+                if (m_mesh.list(pk, held) && held.seq < l.second && !m_meshNet[pk].fetching.is_valid()) {
+                    newer.push_back(pk);
+                }
+            }
+        }
+        for (const std::string &pk : newer) {
+            meshGet(pk);
+        }
+    }
+
+    json Core::meshDirectoryJson() {
+        json out = json::array();
+        std::lock_guard<std::mutex> lock(m_meshMutex);
+        for (const auto &d : m_discovered) {
+            MeshList held;
+            const bool have = m_mesh.list(d.first, held);
+            out.push_back({{"pubkey", d.first},
+                           {"seq", d.second.seq},
+                           {"holders", d.second.holders.size()},
+                           {"subscribed", have},
+                           {"name", have ? held.name : ""}});
+        }
+        std::sort(out.begin(), out.end(), [](const json &a, const json &b) { return a["holders"] > b["holders"]; });
+        return out;
     }
 
 }
