@@ -5,7 +5,7 @@ set(SPIKE_SRC
 )
 
 if (PLATFORM_PS4)
-    list(APPEND SPIKE_SRC ps4/ps4_compat.c)
+    list(APPEND SPIKE_SRC ps4/ps4_compat.c ps4/crashlog.c)
 endif ()
 
 add_executable(p2spike ${SPIKE_SRC})

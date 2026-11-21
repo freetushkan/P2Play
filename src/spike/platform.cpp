@@ -83,6 +83,9 @@ bool p2p::platformIsConsole() { return true; }
 #include "ps4_compat.h"
 
 bool p2p::platformInit() {
+    // the order of pPlay: the timezone in ps4_compat_init needs SystemService loaded
+    sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SYSTEM_SERVICE);
+    sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     ps4_compat_init();
     mkdir(dataDir().c_str(), 0777);

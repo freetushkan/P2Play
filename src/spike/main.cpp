@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <map>
 #include <set>
 #include <chrono>
@@ -430,7 +431,27 @@ namespace {
 
 }
 
+namespace {
+    // the reason of an uncaught exception, before abort()
+    void onTerminate() {
+        const char *what = "unknown";
+        try {
+            std::exception_ptr e = std::current_exception();
+            if (e) {
+                std::rethrow_exception(e);
+            }
+            what = "terminate without an exception";
+        } catch (const std::exception &ex) {
+            what = ex.what();
+        } catch (...) {
+        }
+        log("fatal: uncaught exception: %s", what);
+        std::abort();
+    }
+}
+
 int main(int argc, char **argv) {
+    std::set_terminate(onTerminate);
     if (!platformInit()) {
         return 1;
     }

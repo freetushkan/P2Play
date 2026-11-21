@@ -5,6 +5,10 @@ on:
   push:
   pull_request:
 
+defaults:
+  run:
+    shell: bash
+
 env:
   BOOST_VERSION: 1.86.0
   BOOST_HEADERS: /opt/boost-headers
