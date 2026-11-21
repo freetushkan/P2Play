@@ -18,8 +18,8 @@ The server answers on port **8090** (TorrServer's): `http://<device ip>:8090`.
 | PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
 
 The log: `p2play.log` in the data directory (Switch: also on the screen, PS4/PS5: klog, PS5: a toast with the address).
-A crash: `crash.log` there (Switch, PS4, PS5; offsets: `llvm-addr2line -f -C -e <the unstripped binary> <offset>`); an uncaught
-exception also writes its reason to `p2play.log`.
+A crash: `crash.log` there (every platform, see Layout); an uncaught exception also writes its reason to
+`p2play.log`.
 
 ## API
 
@@ -65,8 +65,21 @@ The CI signs with the `ANDROID_KEYSTORE_*` secrets (the same as pPlay) when they
 PS5: configure with `/opt/ps5-payload-sdk/bin/prospero-cmake ... -DPLATFORM_PS5=ON`. The package is a separate
 project built with the PS4 toolchain: `src/app/ps5/launcher` (`-DP2PLAY_ELF=<the PS5 build>/p2play.elf`).
 
-Layout: `src/core` the core (a static library, C API in `p2play.h` for pPlay), `src/app` the application
-around it (p2playd, the console homebrew; `platform.cpp`), `android/` the APK.
+Layout:
+
+- `src/core`: the core, a module (a static library, C API in `p2play.h`). It has no platform code: the host
+  gives it the data directory and a log callback, asks `p2play_active_streams()` to keep the device awake,
+  and installs its own crash handlers. Inside pPlay these are pPlay's (its Platform, CrashLog, log, data
+  directories); the core's HTTP port can be any free one there (`http_port = -1`).
+- `src/app`: the standalone host, pPlay's platform harness for a headless application: crash handlers of every
+  platform (`crashlog.h`), the platform name and behaviour (`platform.cpp`: Switch exit request and background
+  service, PS4 video playback ticks while streaming and exit through the system, PS5 notifications), the log,
+  the data directories. p2playd on Linux and Android, the homebrew on Switch, PS4 and PS5.
+- `android/`: the APK around p2playd.
+
+Debug symbols as pPlay: everything is built with `-g`, the release binaries are stripped, the full ones are
+kept in `build/symbols` (CI: `P2Play-Symbols-<platform>`). A crash: `crash.log` in the data directory, then
+`llvm-addr2line -f -C -e <symbols> <offset>`.
 
 PS4 (and the PS5 package) link with `cmake/ps4-link.x`: create-fself as pinned by pacbrew loads the data
 segment only up to the end of `.data`, so `.data.*` sections must be merged into it. `ci/ps4-check-sections.sh`

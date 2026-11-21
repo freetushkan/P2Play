@@ -152,6 +152,15 @@ namespace p2p {
         return "MatriX.141 P2Play/0.1";
     }
 
+    int Core::activeStreams() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        int n = 0;
+        for (const auto &t : m_torrents) {
+            n += t.second->readers + (t.second->preloading ? 1 : 0);
+        }
+        return n;
+    }
+
     std::string Core::echo() const {
         return m_config.platform.empty() ? std::string(version()) : std::string(version()) + " " + m_config.platform;
     }

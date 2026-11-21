@@ -5,27 +5,57 @@ set(APP_SRC
         platform.cpp
 )
 
+# the crash handlers of pPlay, a file a platform
 if (PLATFORM_PS4)
-    list(APPEND APP_SRC ps4/ps4_compat.c ps4/crashlog.c)
+    list(APPEND APP_SRC ps4/ps4_compat.c ps4/crashlog.c ps4/crashlog_api.cpp)
 elseif (PLATFORM_SWITCH)
     list(APPEND APP_SRC switch/crashlog.cpp ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
 elseif (PLATFORM_PS5)
     list(APPEND APP_SRC ps5/crashlog.cpp)
+elseif (PLATFORM_ANDROID)
+    list(APPEND APP_SRC android/crashlog.cpp)
+else ()
+    list(APPEND APP_SRC linux/crashlog.cpp)
+endif ()
+
+# "0.1 (<commit>)" in the log and crash.log, as pPlay's APP_VERSION_FULL
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        OUTPUT_VARIABLE P2P_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if (NOT P2P_COMMIT)
+    set(P2P_COMMIT "unknown")
 endif ()
 
 add_executable(p2play ${APP_SRC})
 target_link_libraries(p2play PRIVATE p2play_core)
-target_compile_definitions(p2play PRIVATE ${P2P_PLATFORM_DEFINES})
+target_compile_definitions(p2play PRIVATE ${P2P_PLATFORM_DEFINES}
+        "APP_VERSION_FULL=\"${VERSION_MAJOR}.${VERSION_MINOR} (${P2P_COMMIT})\"")
+if (PLATFORM_ANDROID)
+    target_link_libraries(p2play PRIVATE log)
+elseif (PLATFORM_LINUX)
+    # the symbols of the backtrace in crash.log
+    target_link_options(p2play PRIVATE -rdynamic)
+endif ()
 target_compile_options(p2play PRIVATE -g)
 
 set(RELEASE_DIR ${CMAKE_BINARY_DIR}/release/p2play)
+# the unstripped binary of the release, for crash.log offsets (CI: P2Play-Symbols-<platform>)
+set(SYMBOLS_DIR ${CMAKE_BINARY_DIR}/symbols)
+if (CMAKE_STRIP)
+    set(P2P_STRIP ${CMAKE_STRIP})
+else ()
+    set(P2P_STRIP strip)
+endif ()
 
 if (PLATFORM_SWITCH)
     target_link_libraries(p2play PRIVATE nx)
+    # as pPlay: the nro from an ELF without debug info, the full ELF kept
     add_custom_target(p2play_release
             DEPENDS p2play
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SYMBOLS_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:p2play> ${SYMBOLS_DIR}/p2play.elf
+            COMMAND ${DEVKITPRO}/devkitA64/bin/aarch64-none-elf-strip --strip-debug -o p2play.stripped.elf $<TARGET_FILE:p2play>
             COMMAND ${DEVKITPRO}/tools/bin/nacptool --create "P2Play" "freetushkan" "${VERSION_MAJOR}.${VERSION_MINOR}" p2play.nacp
-            COMMAND ${DEVKITPRO}/tools/bin/elf2nro $<TARGET_FILE:p2play> p2play.nro
+            COMMAND ${DEVKITPRO}/tools/bin/elf2nro p2play.stripped.elf p2play.nro
                     --icon=${PROJECT_SOURCE_DIR}/data/switch/icon.jpg --nacp=p2play.nacp
             COMMAND ${CMAKE_COMMAND} -E remove_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${RELEASE_DIR}
@@ -52,24 +82,38 @@ elseif (PLATFORM_PS4)
     add_pkg(p2play ${PS4_PKG_DIR} "PTWO00001" "P2Play" "01.00" 0 "gde")
     add_custom_target(p2play_release
             DEPENDS p2play_pkg
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SYMBOLS_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:p2play> ${SYMBOLS_DIR}/p2play.elf
             COMMAND ${CMAKE_COMMAND} -E remove_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${PKG_OUT_NAME} ${RELEASE_DIR}/)
 elseif (PLATFORM_PS5)
     target_link_libraries(p2play PRIVATE SceNet kernel_sys)
     set_target_properties(p2play PROPERTIES SUFFIX ".elf")
+    # as pPlay: the payload without debug info, the full ELF kept
     add_custom_target(p2play_release
             DEPENDS p2play
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SYMBOLS_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:p2play> ${SYMBOLS_DIR}/p2play.elf
             COMMAND ${CMAKE_COMMAND} -E remove_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${RELEASE_DIR}
-            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:p2play> ${RELEASE_DIR}/)
+            COMMAND ${P2P_STRIP} --strip-debug -o ${RELEASE_DIR}/p2play.elf $<TARGET_FILE:p2play>)
 else ()
     # Linux and Android: the service
     set_target_properties(p2play PROPERTIES OUTPUT_NAME p2playd)
+    # as pPlay: a separate debug file and a debuglink to it
+    if (CMAKE_OBJCOPY)
+        set(P2P_OBJCOPY ${CMAKE_OBJCOPY})
+    else ()
+        set(P2P_OBJCOPY objcopy)
+    endif ()
     add_custom_target(p2play_release
             DEPENDS p2play
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SYMBOLS_DIR}
+            COMMAND ${P2P_OBJCOPY} --only-keep-debug $<TARGET_FILE:p2play> ${SYMBOLS_DIR}/p2playd.debug
             COMMAND ${CMAKE_COMMAND} -E remove_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${RELEASE_DIR}
-            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:p2play> ${RELEASE_DIR}/
+            COMMAND ${P2P_STRIP} --strip-debug -o ${RELEASE_DIR}/p2playd $<TARGET_FILE:p2play>
+            COMMAND ${P2P_OBJCOPY} --add-gnu-debuglink=${SYMBOLS_DIR}/p2playd.debug ${RELEASE_DIR}/p2playd
             COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/linux/p2playd.service ${RELEASE_DIR}/)
 endif ()

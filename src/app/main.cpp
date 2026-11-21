@@ -128,7 +128,8 @@ int main(int argc, char **argv) {
     makeDirs(dataDir);
     g_log = std::fopen((dataDir + "/p2play.log").c_str(), P2P_CONSOLE ? "w" : "a");
     std::set_terminate(onTerminate);
-#if defined(__SWITCH__) || defined(__PS5__)
+#ifndef __PS4__
+    // PS4: ps4/crashlog.c installs itself (/data/p2play/crash.log)
     p2p::CrashLog::install(dataDir + "/crash.log");
 #endif
 
@@ -151,10 +152,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::string url = "http://" + localAddress() + ":" + std::to_string(p2play_http_port());
-    logLine(("[App] " + p2p::platformName() + ", data in " + dataDir + ", " + url).c_str(), nullptr);
+    logLine(("[App] P2Play " APP_VERSION_FULL " on " + platform + ", data in " + dataDir + ", " + url).c_str(), nullptr);
+    p2p::platformStarted();
     p2p::platformNotify("P2Play: " + url);
 
     while (p2p::platformRunning()) {
+        p2p::CrashLog::heartbeat();
+        p2p::platformKeepAwake(p2play_active_streams() > 0);
     }
     logLine("[App] quitting", nullptr);
     p2play_stop();

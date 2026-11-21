@@ -15,6 +15,15 @@
 namespace {
     PadState g_pad;
     std::mutex g_consoleMutex;
+    AppletHookCookie g_hook;
+    std::atomic<bool> g_exitRequested{false};
+
+    // the system asks to close (HOME, then close): as pPlay, with the exit locked until then
+    void onAppletHook(AppletHookType hook, void *) {
+        if (hook == AppletHookType_OnExitRequest) {
+            g_exitRequested = true;
+        }
+    }
 }
 
 bool p2p::platformInit() {
@@ -41,12 +50,29 @@ bool p2p::platformInit() {
 }
 
 void p2p::platformExit() {
+    appletUnhook(&g_hook);
+    appletUnlockExit();
     socketExit();
     consoleExit(nullptr);
 }
 
+void p2p::platformStarted() {
+    appletLockExit();
+    appletHook(&g_hook, onAppletHook, nullptr);
+    // HOME: the server keeps serving in the background
+    appletSetFocusHandlingMode(AppletFocusHandlingMode_NoSuspend);
+}
+
+void p2p::platformKeepAwake(bool on) {
+    static int last = -1;
+    if (static_cast<int>(on) != last) {
+        appletSetAutoSleepDisabled(on);
+        last = on;
+    }
+}
+
 bool p2p::platformRunning() {
-    if (!appletMainLoop()) {
+    if (!appletMainLoop() || g_exitRequested) {
         return false;
     }
     padUpdate(&g_pad);
@@ -61,7 +87,18 @@ bool p2p::platformRunning() {
     return true;
 }
 
-std::string p2p::platformName() { return "switch"; }
+std::string p2p::platformName() {
+    std::string out = "Switch";
+    SetSysFirmwareVersion fw;
+    if (R_SUCCEEDED(setsysInitialize())) {
+        if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw))) {
+            out += std::string(" ") + fw.display_version;
+        }
+        setsysExit();
+    }
+    out += appletGetAppletType() == AppletType_Application ? " (title)" : " (applet)";
+    return out;
+}
 
 std::string p2p::dataDir() { return "sdmc:/switch/p2play"; }
 
@@ -82,7 +119,15 @@ bool p2p::platformIsConsole() { return true; }
 #include <orbis/Sysmodule.h>
 #include "ps4_compat.h"
 
+extern "C" {
+int sceSystemServiceLoadExec(const char *path, const char *args[]);
+int sceSystemServicePowerTick();
+int sceSystemServiceTickVideoPlayback();
+int sceSystemServiceTurnOffScreenSaver();
+}
+
 bool p2p::platformInit() {
+    setvbuf(stdout, nullptr, _IONBF, 0);
     // the order of pPlay: the timezone in ps4_compat_init needs SystemService loaded
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SYSTEM_SERVICE);
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
@@ -92,7 +137,13 @@ bool p2p::platformInit() {
     return true;
 }
 
-void p2p::platformExit() {}
+// back to the system, as pPlay (a plain return leaves the application hanging)
+void p2p::platformExit() {
+    sceSystemServiceLoadExec("exit", nullptr);
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+}
 
 bool p2p::platformRunning() {
     struct stat st{};
@@ -104,7 +155,26 @@ bool p2p::platformRunning() {
     return true;
 }
 
-std::string p2p::platformName() { return "ps4"; }
+void p2p::platformStarted() {
+    char report[256];
+    ps4_clock_report(report, sizeof(report));
+    platformPrint(std::string("PS4 clocks: ") + report);
+}
+
+// the video playback tick: what video apps report to keep the console awake (the power
+// tick alone is not enough), as pPlay
+void p2p::platformKeepAwake(bool on) {
+    static auto last = std::chrono::steady_clock::time_point();
+    if (!on || std::chrono::steady_clock::now() - last < std::chrono::seconds(5)) {
+        return;
+    }
+    last = std::chrono::steady_clock::now();
+    sceSystemServiceTickVideoPlayback();
+    sceSystemServicePowerTick();
+    sceSystemServiceTurnOffScreenSaver();
+}
+
+std::string p2p::platformName() { return "PS4"; }
 
 std::string p2p::dataDir() { return "/data/p2play"; }
 
@@ -142,7 +212,12 @@ bool p2p::platformRunning() {
     return true;
 }
 
-std::string p2p::platformName() { return "ps5"; }
+void p2p::platformStarted() {}
+
+// a payload: no system ticks for it (pPlay keeps none on the PS5 either)
+void p2p::platformKeepAwake(bool) {}
+
+std::string p2p::platformName() { return "PS5"; }
 
 std::string p2p::dataDir() { return "/data/p2play"; }
 
@@ -186,11 +261,16 @@ bool p2p::platformRunning() {
     return !g_quit;
 }
 
+void p2p::platformStarted() {}
+
+// Android: the app's service holds a wake lock; Linux: a server
+void p2p::platformKeepAwake(bool) {}
+
 std::string p2p::platformName() {
 #ifdef __ANDROID__
-    return "android";
+    return "Android";
 #else
-    return "linux";
+    return "Linux";
 #endif
 }
 

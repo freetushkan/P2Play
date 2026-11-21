@@ -40,6 +40,11 @@ extern "C" int p2play_http_port(void) {
     return g_core ? g_core->httpPort() : 0;
 }
 
+extern "C" int p2play_active_streams(void) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_core ? g_core->activeStreams() : 0;
+}
+
 extern "C" void p2play_stop(void) {
     std::unique_ptr<p2p::Core> core;
     {

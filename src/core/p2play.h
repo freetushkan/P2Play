@@ -27,6 +27,9 @@ int p2play_start(const p2play_config *config);
 /* the HTTP port, 0 if not running */
 int p2play_http_port(void);
 
+/* streams (and preloads) being served: the host keeps the device awake while nonzero */
+int p2play_active_streams(void);
+
 void p2play_stop(void);
 
 const char *p2play_version(void);

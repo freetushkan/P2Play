@@ -201,3 +201,9 @@ void p2p::CrashLog::install(const std::string &logPath) {
 void p2p::CrashLog::install(const std::string &) {}
 
 #endif
+
+#if defined(__SWITCH__)
+void p2p::CrashLog::registerCurrentThread() {}
+void p2p::CrashLog::heartbeat() {}
+void p2p::CrashLog::setIdle(bool) {}
+#endif

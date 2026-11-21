@@ -43,10 +43,9 @@ endif ()
 set(Boost_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake/boost)
 set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
 
-# consoles: debug info everywhere, for crash log addresses (the released binaries are stripped)
-if (PLATFORM_SWITCH OR PLATFORM_PS4 OR PLATFORM_PS5)
-    add_compile_options(-g)
-endif ()
+# debug info everywhere, for crash.log addresses: the released binaries are stripped, the
+# full ones kept in build/symbols (as pPlay)
+add_compile_options(-g)
 
 # PS4: our link script instead of the toolchain's one (cmake/ps4-link.x says why)
 if (PLATFORM_PS4)

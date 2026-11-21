@@ -66,6 +66,9 @@ namespace p2p {
 
         uint16_t httpPort() const { return m_http.port(); }
 
+        // streams being served (the host keeps the device awake meanwhile)
+        int activeStreams();
+
         static const char *version();
 
         // /echo: the version and the platform
