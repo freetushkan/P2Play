@@ -1,7 +1,8 @@
-# OpenOrbis link.x with .data.* merged into .data and .tdata.*/.tbss.* into .tls.
+# OpenOrbis link.x (v0.5.4) with .data.* merged into .data and .tdata.*/.tbss.* into .tls.
 # create-fself as pinned by pacbrew (30d2e105) sizes the data segment up to the end of
-# .data: orphan .data.* sections after it (statics of inline functions, musl's own data)
-# read as zeros on the console.
+# .data: orphan .data.* sections placed after it (statics of inline functions, musl's
+# stdout/stderr, libc++/libunwind data) read as zeros on the console.
+# Used through cmake/ps4-link.cmake.
 SECTIONS
 {
 	# Combine text, rodata, and eh_frame stuff

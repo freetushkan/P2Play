@@ -4,6 +4,7 @@ set(PLATFORM_LINUX OFF CACHE BOOL "Linux target")
 set(PLATFORM_SWITCH OFF CACHE BOOL "Nintendo Switch target")
 set(PLATFORM_PS4 OFF CACHE BOOL "Sony PS4 target")
 set(PLATFORM_PS5 OFF CACHE BOOL "Sony PS5 target")
+set(PLATFORM_ANDROID OFF CACHE BOOL "Android target (NDK, adb shell executable)")
 set(BOOST_INCLUDE_DIR "" CACHE PATH "Boost headers (ci/boost-headers.sh)")
 
 include(cmake/toolchain.cmake)
@@ -49,11 +50,7 @@ endif ()
 
 # PS4: our link script instead of the toolchain's one (cmake/ps4-link.x says why)
 if (PLATFORM_PS4)
-    string(REGEX REPLACE "--script[ ]+[^ ]*link\\.x" "--script ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ps4-link.x"
-            CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
-    if (NOT CMAKE_EXE_LINKER_FLAGS MATCHES "ps4-link\\.x")
-        message(FATAL_ERROR "PS4: the toolchain's --script link.x not found in CMAKE_EXE_LINKER_FLAGS")
-    endif ()
+    include(cmake/ps4-link.cmake)
 endif ()
 
 include(cmake/libtorrent.cmake)

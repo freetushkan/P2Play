@@ -147,6 +147,7 @@ jobs:
             -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2spike_release -j$(nproc) -- -k 2>&1 | tee build.log
+          ci/ps4-check-sections.sh build/src/spike/p2spike
 
       - name: Error summary
         if: failure()
@@ -236,4 +237,110 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: p2spike-PS5
+          path: build/release/*
+
+  # PS5 package: a PS4 "gd" package which sends p2spike.elf to elfldr (src/spike/ps5/launcher)
+  ps5-pkg:
+    needs: ps5
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create build environment
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y pacman-package-manager libarchive-tools cmake make
+
+          sudo tee -a /etc/pacman.conf > /dev/null <<TEXT
+          [pacbrew]
+          SigLevel = Optional TrustAll
+          Server = https://pacman.mydedibox.fr/pacbrew/packages/
+          TEXT
+
+          sudo pacman --noconfirm -Sy
+          sudo pacman --noconfirm -S --needed ps4-openorbis
+
+      - name: Download PS5 build
+        uses: actions/download-artifact@v4
+        with:
+          name: p2spike-PS5
+          path: ps5-input
+
+      - name: Build
+        run: |
+          export OPENORBIS=/opt/pacbrew/ps4/openorbis
+          cmake -S src/spike/ps5/launcher -B build-ps5pkg \
+            -DCMAKE_TOOLCHAIN_FILE=${OPENORBIS}/cmake/ps4.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DP2SPIKE_ELF="$PWD/ps5-input/p2spike/p2spike.elf"
+          cmake --build build-ps5pkg --verbose
+          ci/ps4-check-sections.sh build-ps5pkg/p2spike_launcher
+          mkdir -p release
+          cp build-ps5pkg/*.pkg release/
+          ls -lh release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS5-pkg
+          path: release/*.pkg
+
+  # Android: a command-line executable for adb shell, the ABIs of pPlay
+  android:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create build environment
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y cmake ninja-build xz-utils curl
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+
+      - name: Cache Boost headers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_HEADERS }}
+          key: boost-headers-${{ env.BOOST_VERSION }}-${{ hashFiles('patches/boost/**', 'ci/boost-headers.sh') }}
+
+      - name: Boost headers
+        run: sudo -E ci/boost-headers.sh "$BOOST_VERSION" "$BOOST_HEADERS"
+
+      - name: Build
+        run: |
+          echo "NDK: $ANDROID_NDK_HOME"
+          cmake -S . -B build -G Ninja -DPLATFORM_ANDROID=ON -DANDROID_ABI=${{ matrix.abi }} \
+            -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          set -o pipefail
+          cmake --build build --target p2spike_release -j$(nproc) -- -k 0 2>&1 | tee build.log
+
+      - name: Error summary
+        if: failure()
+        run: |
+          {
+            echo "### Android ${{ matrix.abi }}: unique errors"
+            echo '```'
+            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-Android-${{ matrix.abi }}-log
+          path: build.log
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-Android-${{ matrix.abi }}
           path: build/release/*

@@ -186,7 +186,13 @@ bool p2p::platformRunning() {
     return !g_quit;
 }
 
-std::string p2p::platformName() { return "linux"; }
+std::string p2p::platformName() {
+#ifdef __ANDROID__
+    return "android";
+#else
+    return "linux";
+#endif
+}
 
 std::string p2p::dataDir() {
     const char *env = getenv("P2SPIKE_DATA");

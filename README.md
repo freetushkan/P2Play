@@ -1,6 +1,6 @@
 # P2Play
 
-All-in-one torrent streamer with a decentralized catalog (MediaMesh), for Linux, Switch, PS4, PS5 and later pPlay.
+All-in-one torrent streamer with a decentralized catalog (MediaMesh), for Linux, Android, Switch, PS4, PS5 and later pPlay.
 
 Stage 0 of the roadmap: `p2spike`, a proof that libtorrent runs on every target.
 
@@ -11,7 +11,7 @@ A magnet (or an infohash, or a .torrent path) in, the largest file of the torren
     http://<device ip>:8095/stream    the file, for mpv / VLC / pPlay
     http://<device ip>:8095/status    JSON: state, peers, DHT nodes, speed
 
-Linux:
+Linux, Android (adb shell):
 
     p2spike "magnet:?xt=urn:btih:..." [--peer ip:port] [--port 6881] [--http 8095] [--readahead 16]
 
@@ -23,7 +23,8 @@ then optional `peer ip:port`, `port n`, `http n`, `readahead mb` lines.
 | Linux | `p2spike <link>` | `./p2play-data` (`P2SPIKE_DATA`) | Ctrl+C |
 | Switch | `p2spike.nro` from hbmenu (application mode, not the album) | `sdmc:/switch/p2play` | `+` |
 | PS4 | install the pkg, launch | `/data/p2play` | create `/data/p2play/stop` |
-| PS5 | send `p2spike.elf` to elfldr (port 9021) | `/data/p2play` | create `/data/p2play/stop` |
+| Android | `adb push p2spike /data/local/tmp/`, then in `adb shell`: `cd /data/local/tmp && ./p2spike <link>` | `./p2play-data` (`P2SPIKE_DATA`) | Ctrl+C |
+| PS5 | install `p2spike-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2spike.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
 
 The log goes to `spike.log` in the data directory (PS4: also klog, PS5: klog and a toast with the URL).
 Downloads land in `downloads/` there.
@@ -33,10 +34,17 @@ Downloads land in `downloads/` there.
 The same SDKs as pPlay, see `.github/workflows/spike.yml`. Boost is header-only:
 
     ci/boost-headers.sh 1.86.0 /opt/boost-headers
-    cmake -S . -B build -DBOOST_INCLUDE_DIR=/opt/boost-headers [-DPLATFORM_SWITCH=ON | -DPLATFORM_PS4=ON]
+    cmake -S . -B build -DBOOST_INCLUDE_DIR=/opt/boost-headers [-DPLATFORM_SWITCH=ON | -DPLATFORM_PS4=ON | -DPLATFORM_ANDROID=ON -DANDROID_ABI=armeabi-v7a]
     cmake --build build --target p2spike_release
 
-PS5: configure with `/opt/ps5-payload-sdk/bin/prospero-cmake ... -DPLATFORM_PS5=ON`.
+Android: the NDK from `ANDROID_NDK_HOME`, Android 6+ (API 23), `arm64-v8a` by default.
+
+PS5: configure with `/opt/ps5-payload-sdk/bin/prospero-cmake ... -DPLATFORM_PS5=ON`. The package is a separate
+project built with the PS4 toolchain: `src/spike/ps5/launcher` (`-DP2SPIKE_ELF=<the PS5 build>/p2spike.elf`).
+
+PS4 (and the PS5 package) link with `cmake/ps4-link.x`: create-fself as pinned by pacbrew loads the data
+segment only up to the end of `.data`, so `.data.*` sections must be merged into it. `ci/ps4-check-sections.sh`
+fails the build when such sections are left.
 
 libtorrent is the upstream tag in `third_party/libtorrent`; `patches/libtorrent/*.patch` are applied
 at configure time. Change libtorrent only through those patches.

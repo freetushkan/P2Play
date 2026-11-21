@@ -5,7 +5,7 @@ set(SPIKE_SRC
 )
 
 if (PLATFORM_PS4)
-    list(APPEND SPIKE_SRC ps4/ps4_compat.c ps4/crashlog.c ps4/data_probe.cpp)
+    list(APPEND SPIKE_SRC ps4/ps4_compat.c ps4/crashlog.c)
 elseif (PLATFORM_SWITCH)
     list(APPEND SPIKE_SRC ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
 endif ()

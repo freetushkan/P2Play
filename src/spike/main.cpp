@@ -43,10 +43,6 @@
 #include "http_server.hpp"
 #include "platform.hpp"
 
-#ifdef __PS4__
-std::string p2pDataProbe();
-#endif
-
 using namespace p2p;
 using Clock = std::chrono::steady_clock;
 
@@ -465,9 +461,6 @@ int main(int argc, char **argv) {
     g_logFile = std::fopen((dir + "/spike.log").c_str(), "w");
 
     log("p2spike %s, libtorrent %s, platform %s", "0.1", LIBTORRENT_VERSION, platformName().c_str());
-#ifdef __PS4__
-    log("%s", p2pDataProbe().c_str());
-#endif
 
     Config cfg = loadConfig(argc, argv);
     if (cfg.link.empty()) {
@@ -507,9 +500,6 @@ int main(int argc, char **argv) {
     try {
         ses = std::make_unique<lt::session>(std::move(params));
         log("session: started");
-#ifdef __PS4__
-        log("%s", p2pDataProbe().c_str());
-#endif
     } catch (const std::exception &e) {
         log("session failed: %s", e.what());
         while (platformRunning()) {
