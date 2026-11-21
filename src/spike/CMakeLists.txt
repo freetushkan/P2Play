@@ -2,6 +2,7 @@ set(SPIKE_SRC
         main.cpp
         http_server.cpp
         platform.cpp
+        ram_cache.cpp
 )
 
 if (PLATFORM_PS4)

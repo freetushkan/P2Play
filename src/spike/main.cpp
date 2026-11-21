@@ -42,6 +42,7 @@
 
 #include "http_server.hpp"
 #include "platform.hpp"
+#include "ram_cache.hpp"
 
 using namespace p2p;
 using Clock = std::chrono::steady_clock;
@@ -54,6 +55,10 @@ namespace {
         uint16_t httpPort = 8095;
         uint16_t btPort = 6881;
         int64_t readahead = 16 * 1024 * 1024;
+        // ram: pieces in memory (RamCache), only the parts being played are downloaded;
+        // disk: the whole file into downloads/ (posix_disk_io)
+        bool ram = true;
+        int64_t cache = 128 * 1024 * 1024;
     };
 
     struct StreamFile {
@@ -69,6 +74,7 @@ namespace {
     };
 
     StreamFile g_stream;
+    std::unique_ptr<RamCache> g_cache;
     std::atomic<bool> g_stopping{false};
     std::atomic<int> g_clients{0};
     std::mutex g_logMutex;
@@ -109,11 +115,16 @@ namespace {
             cfg.httpPort = static_cast<uint16_t>(std::stoi(value));
         } else if (key == "readahead") {
             cfg.readahead = std::stoll(value) * 1024 * 1024;
+        } else if (key == "storage") {
+            cfg.ram = value != "disk";
+        } else if (key == "cache") {
+            cfg.cache = std::max<int64_t>(16, std::stoll(value)) * 1024 * 1024;
         }
     }
 
-    // <data dir>/magnet.txt: the link, then "peer ip:port", "port n", "http n", "readahead mb"
-    // lines; then the arguments on top: <link> [--peer ip:port] [--port n] [--http n] [--readahead mb]
+    // <data dir>/magnet.txt: the link, then "peer ip:port", "port n", "http n", "readahead mb",
+    // "storage ram|disk", "cache mb" lines; then the arguments on top: <link> [--peer ip:port]
+    // [--port n] [--http n] [--readahead mb] [--storage ram|disk] [--cache mb]
     Config loadConfig(int argc, char **argv) {
         Config cfg;
         std::ifstream in(dataDir() + "/magnet.txt");
@@ -211,8 +222,11 @@ namespace {
             }
         }
 
+        // RAM: only the windows of the readers are downloaded (Wanted), disk: the whole file
         std::vector<lt::download_priority_t> prio(static_cast<size_t>(fs.num_files()), lt::dont_download);
-        prio[static_cast<size_t>(static_cast<int>(best))] = lt::default_priority;
+        if (!g_cache) {
+            prio[static_cast<size_t>(static_cast<int>(best))] = lt::default_priority;
+        }
         h.prioritize_files(prio);
 
         std::lock_guard<std::mutex> lock(g_stream.mutex);
@@ -226,8 +240,10 @@ namespace {
         g_stream.ready = true;
 
         // container headers and indexes live at both ends
-        h.set_piece_deadline(lt::piece_index_t{g_stream.firstPiece}, 0);
-        h.set_piece_deadline(lt::piece_index_t{g_stream.lastPiece}, 0);
+        for (int p : {g_stream.firstPiece, g_stream.lastPiece}) {
+            h.piece_priority(lt::piece_index_t{p}, lt::top_priority);
+            h.set_piece_deadline(lt::piece_index_t{p}, 0);
+        }
 
         log("metadata: %s, %d files, piece %d KB; streaming \"%s\" (%.1f MB)",
             ti->name().c_str(), fs.num_files(), g_stream.pieceLength / 1024,
@@ -298,13 +314,68 @@ namespace {
 
     PieceReader g_reader;
 
-    bool waitPiece(const lt::torrent_handle &h, int piece, int lastPiece, int ahead) {
-        for (int i = 0; i < ahead && piece + i <= lastPiece; i++) {
-            lt::piece_index_t p{piece + i};
-            if (!h.have_piece(p)) {
-                h.set_piece_deadline(p, i * 100);
+    // The pieces the stream readers want next: top priority and deadlines. In RAM mode the
+    // rest of the file is not downloaded (a piece leaving every window goes back to
+    // dont_download) and the cache drops the pieces of the windows last.
+    class Wanted {
+    public:
+        void set(const lt::torrent_handle &h, int reader, int first, int last) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (first < 0) {
+                m_windows.erase(reader);
+            } else {
+                m_windows[reader] = {first, last};
             }
+            if (g_cache) {
+                g_cache->setReader(h.info_hashes().get_best(), reader, first, last);
+            }
+            std::set<int> now;
+            for (const auto &w : m_windows) {
+                for (int p = w.second.first; p <= w.second.second; p++) {
+                    now.insert(p);
+                }
+            }
+            std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> prio;
+            int order = 0;
+            for (int p : now) {
+                if (!m_pieces.count(p)) {
+                    prio.emplace_back(lt::piece_index_t{p}, lt::top_priority);
+                }
+            }
+            if (g_cache) {
+                for (int p : m_pieces) {
+                    if (!now.count(p) && p != g_stream.firstPiece && p != g_stream.lastPiece) {
+                        prio.emplace_back(lt::piece_index_t{p}, lt::dont_download);
+                        h.reset_piece_deadline(lt::piece_index_t{p});
+                    }
+                }
+            }
+            if (!prio.empty()) {
+                h.prioritize_pieces(prio);
+            }
+            // deadlines in reading order: the reader's next piece first
+            for (const auto &w : m_windows) {
+                order = 0;
+                for (int p = w.second.first; p <= w.second.second; p++) {
+                    if (!m_pieces.count(p) && !h.have_piece(lt::piece_index_t{p})) {
+                        h.set_piece_deadline(lt::piece_index_t{p}, order * 100);
+                    }
+                    order++;
+                }
+            }
+            m_pieces = std::move(now);
         }
+
+    private:
+        std::mutex m_mutex;
+        std::map<int, std::pair<int, int>> m_windows;
+        std::set<int> m_pieces;
+    };
+
+    Wanted g_wanted;
+    std::atomic<int> g_nextReader{1};
+
+    bool waitPiece(const lt::torrent_handle &h, int piece) {
         auto deadline = Clock::now() + std::chrono::minutes(3);
         while (!h.have_piece(lt::piece_index_t{piece})) {
             if (g_stopping || Clock::now() > deadline) {
@@ -370,18 +441,35 @@ namespace {
 
         g_clients++;
         log("stream: %s bytes %lld-%lld", req.method.c_str(), (long long) start, (long long) end);
+        // RAM: the window takes at most half of the cache
+        if (g_cache) {
+            readahead = std::min<int64_t>(readahead, g_cache->stats().capacity / 2);
+        }
         const int ahead = std::max<int>(2, static_cast<int>(readahead / pieceLength));
+        const int reader = g_nextReader++;
+        const lt::sha1_hash infoHash = h.info_hashes().get_best();
         int64_t pos = start;
         int64_t sent = 0;
         auto began = Clock::now();
 
         while (pos <= end && !g_stopping) {
             int piece = static_cast<int>((offset + pos) / pieceLength);
-            if (!waitPiece(h, piece, lastPiece, ahead)) {
+            g_wanted.set(h, reader, piece, std::min(lastPiece, piece + ahead - 1));
+            if (!waitPiece(h, piece)) {
                 log("stream: piece %d timed out", piece);
                 break;
             }
-            PieceReader::Buffer data = g_reader.read(h, piece, std::chrono::seconds(30));
+            // RAM: from the cache; a piece dropped meanwhile is downloaded again
+            PieceReader::Buffer data;
+            if (g_cache) {
+                data = g_cache->piece(infoHash, piece);
+                if (!data) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
+            } else {
+                data = g_reader.read(h, piece, std::chrono::seconds(30));
+            }
             if (!data) {
                 log("stream: piece %d read failed", piece);
                 break;
@@ -395,6 +483,7 @@ namespace {
             pos += to - from;
             sent += to - from;
         }
+        g_wanted.set(h, reader, -1, -1);
         double secs = std::chrono::duration<double>(Clock::now() - began).count();
         log("stream: closed after %.1f MB in %.0f s", static_cast<double>(sent) / 1048576.0, secs);
         g_clients--;
@@ -414,6 +503,11 @@ namespace {
           << ",\"upload_rate\":" << st.upload_rate
           << ",\"dht_nodes\":" << dhtNodes
           << ",\"clients\":" << g_clients.load();
+        if (g_cache) {
+            RamCache::Stats cs = g_cache->stats();
+            o << ",\"cache_mb\":" << cs.bytes / 1048576 << ",\"cache_capacity_mb\":" << cs.capacity / 1048576
+              << ",\"cache_pieces\":" << cs.pieces << ",\"cache_evicted\":" << cs.evicted;
+        }
         {
             std::lock_guard<std::mutex> lock(g_stream.mutex);
             if (g_stream.ready) {
@@ -468,8 +562,9 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    log("config: %s, %d peer(s), bt port %d, http port %d", cfg.link.substr(0, 60).c_str(),
-        static_cast<int>(cfg.peers.size()), cfg.btPort, cfg.httpPort);
+    log("config: %s, %d peer(s), bt port %d, http port %d, storage %s", cfg.link.substr(0, 60).c_str(),
+        static_cast<int>(cfg.peers.size()), cfg.btPort, cfg.httpPort,
+        cfg.ram ? ("ram " + std::to_string(cfg.cache / 1048576) + " MB").c_str() : "disk");
 
     lt::settings_pack sp;
     const bool console = platformIsConsole();
@@ -480,6 +575,9 @@ int main(int argc, char **argv) {
                lt::alert_category::status | lt::alert_category::error | lt::alert_category::storage |
                lt::alert_category::dht);
     sp.set_bool(lt::settings_pack::enable_dht, true);
+    // RAM mode wants only the windows: the torrent is "finished" between them, its seeds
+    // must stay connected
+    sp.set_bool(lt::settings_pack::close_redundant_connections, false);
     sp.set_bool(lt::settings_pack::enable_lsd, !console);
     sp.set_bool(lt::settings_pack::enable_upnp, !console);
     sp.set_bool(lt::settings_pack::enable_natpmp, !console);
@@ -490,7 +588,12 @@ int main(int argc, char **argv) {
     }
 
     lt::session_params params(std::move(sp));
-    params.disk_io_constructor = lt::posix_disk_io_constructor;
+    if (cfg.ram) {
+        g_cache = std::make_unique<RamCache>(cfg.cache);
+        params.disk_io_constructor = g_cache->constructor();
+    } else {
+        params.disk_io_constructor = lt::posix_disk_io_constructor;
+    }
 
     std::unique_ptr<lt::session> ses;
     log("session: starting");
@@ -601,9 +704,15 @@ int main(int argc, char **argv) {
             lastStatus = Clock::now();
             ses->post_dht_stats();
             lt::torrent_status st = h.status();
-            log("%s %.1f%% peers %d (seeds %d) down %d KB/s up %d KB/s dht %d clients %d",
+            std::string cache;
+            if (g_cache) {
+                RamCache::Stats cs = g_cache->stats();
+                cache = " cache " + std::to_string(cs.bytes / 1048576) + "/" + std::to_string(cs.capacity / 1048576) +
+                        " MB, " + std::to_string(cs.evicted) + " evicted";
+            }
+            log("%s %.1f%% peers %d (seeds %d) down %d KB/s up %d KB/s dht %d clients %d%s",
                 stateName(st.state), st.progress * 100.0, st.num_peers, st.num_seeds,
-                st.download_rate / 1024, st.upload_rate / 1024, dhtNodes.load(), g_clients.load());
+                st.download_rate / 1024, st.upload_rate / 1024, dhtNodes.load(), g_clients.load(), cache.c_str());
         }
     }
 

@@ -4,7 +4,7 @@
 the source file.
 
     pip install libtorrent
-    tools/local-test.py build-linux/src/spike/p2spike
+    tools/local-test.py build-linux/src/spike/p2spike [p2spike options: --cache 16, --storage disk]
 """
 
 import hashlib
@@ -63,7 +63,7 @@ def start_seeder(ti, save_path):
     raise RuntimeError("seeder did not finish checking")
 
 
-def fetch(url, start=None, end=None, timeout=120):
+def fetch(url, start=None, end=None, timeout=40):
     req = urllib.request.Request(url)
     if start is not None:
         req.add_header("Range", f"bytes={start}-" + ("" if end is None else str(end)))
@@ -73,6 +73,7 @@ def fetch(url, start=None, end=None, timeout=120):
 
 def main():
     spike = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "build-linux/src/spike/p2spike")
+    extra = sys.argv[2:]
     root = tempfile.mkdtemp(prefix="p2spike-")
     proc = None
     try:
@@ -84,7 +85,7 @@ def main():
 
         env = dict(os.environ, P2SPIKE_DATA=os.path.join(root, "spike"))
         proc = subprocess.Popen([spike, magnet, "--peer", f"127.0.0.1:{SEED_PORT}",
-                                 "--port", str(SPIKE_PORT), "--http", str(HTTP_PORT)],
+                                 "--port", str(SPIKE_PORT), "--http", str(HTTP_PORT)] + extra,
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
         base = f"http://127.0.0.1:{HTTP_PORT}"

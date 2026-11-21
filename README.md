@@ -16,7 +16,7 @@ Linux:
     p2spike "magnet:?xt=urn:btih:..." [--peer ip:port] [--port 6881] [--http 8095] [--readahead 16]
 
 `magnet.txt` in the data directory is the config: the link on the first line, then optional
-`peer ip:port`, `port n`, `http n`, `readahead mb` lines. Arguments go on top of it (a link argument
+`peer ip:port`, `port n`, `http n`, `readahead mb`, `storage ram|disk`, `cache mb` lines. Arguments go on top of it (a link argument
 replaces the file's link); consoles have only the file.
 
 | Platform | Run | Data directory | Quit |
@@ -27,8 +27,13 @@ replaces the file's link); consoles have only the file.
 | Android | install `p2spike-android.apk`, allow all files access, paste a magnet (or leave the field empty for the link of `magnet.txt`), Start; or open a magnet link with it, or `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity`. Play opens the stream in a player | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
 | PS5 | install `p2spike-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2spike.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
 
+Storage (`storage`): `ram` by default, as TorrServer: pieces live in memory (`cache`, 128 MB), only the
+pieces around the playback position (`readahead`, at most half of the cache) and both ends of the file are
+downloaded; past the cache the oldest pieces are dropped, those of the playback window last, and libtorrent
+downloads them again when wanted (libtorrent patch 0006). `disk`: the whole file into `downloads/`.
+
 The log goes to `spike.log` in the data directory (PS4: also klog, PS5: klog and a toast with the URL).
-Downloads land in `downloads/` there.
+Disk storage downloads land in `downloads/` there.
 
 ## Build
 
@@ -51,7 +56,8 @@ segment only up to the end of `.data`, so `.data.*` sections must be merged into
 fails the build when such sections are left.
 
 libtorrent is the upstream tag in `third_party/libtorrent`; `patches/libtorrent/*.patch` are applied
-at configure time. Change libtorrent only through those patches.
+at configure time. Change libtorrent only through those patches: configure moves a tree it patched
+itself (or a clean one) to the current series, and stops on changes made by hand.
 
 Boost headers get `patches/boost/*.patch` from `ci/boost-headers.sh`: on Switch and PS4 asio wakes its
 reactor through a loopback socket pair (libnx has no pipe/socketpair). What the console SDK headers
@@ -64,6 +70,7 @@ miss is in `compat/` (forced include `compat/p2p_platform.h`, `compat/switch/sys
 | libtorrent 0003 | PS4: platform branch (no sysctl, mmap, rlimit; `/dev/urandom`) |
 | libtorrent 0004 | Switch, PS4: no interface/route enumeration, listen on 0.0.0.0 as on Android 7+ |
 | libtorrent 0005 | `try_signal` (SIGBUS around mmap) left out where there is no mmap |
+| libtorrent 0006 | `torrent_lost_piece()`: a RAM storage drops a piece, the torrent downloads it again |
 | boost 0001 | asio: socket-pair interrupter and no signal blocker on request |
 
 Local check without DHT (a seeder on 127.0.0.1, byte ranges compared with the source):

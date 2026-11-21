@@ -1,0 +1,174 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 98c0d22d1..2f2bed0fe 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -96,6 +96,7 @@ set(libtorrent_include_files
+ 	pex_flags.hpp
+ 	piece_block.hpp
+ 	piece_block_progress.hpp
++	piece_eviction.hpp
+ 	piece_picker.hpp
+ 	platform_util.hpp
+ 	portmap.hpp
+diff --git a/include/libtorrent/error_code.hpp b/include/libtorrent/error_code.hpp
+index d34ab0e38..d72d366a0 100644
+--- a/include/libtorrent/error_code.hpp
++++ b/include/libtorrent/error_code.hpp
+@@ -477,6 +477,8 @@ namespace errors {
+ 		torrent_inconsistent_hashes,
+ 		// a file in the v2 metadata has the pad attribute set
+ 		torrent_invalid_pad_file,
++		// the disk layer dropped the piece (a RAM cache): it has to be downloaded again
++		piece_evicted,
+ 
+ 		// the number of error codes
+ 		error_code_max
+diff --git a/include/libtorrent/piece_eviction.hpp b/include/libtorrent/piece_eviction.hpp
+new file mode 100644
+index 000000000..3eaeb92e8
+--- /dev/null
++++ b/include/libtorrent/piece_eviction.hpp
+@@ -0,0 +1,29 @@
++/*
++
++Copyright (c) 2026, P2Play
++All rights reserved.
++
++You may use, distribute and modify this code under the terms of the BSD license,
++see LICENSE file.
++*/
++
++#ifndef TORRENT_PIECE_EVICTION_HPP_INCLUDED
++#define TORRENT_PIECE_EVICTION_HPP_INCLUDED
++
++#include <memory>
++
++#include "libtorrent/config.hpp"
++#include "libtorrent/units.hpp"
++
++namespace libtorrent {
++
++	// For disk_interface implementations which drop pieces (a RAM cache). ``torrent`` is
++	// the object passed to disk_interface::new_torrent(). The torrent stops considering
++	// the piece as had: it tells its peers (lt_donthave) and downloads it again when
++	// it is wanted. Must be called on the network thread (post it on the io_context
++	// given to the disk_interface constructor).
++	TORRENT_EXPORT void torrent_lost_piece(std::shared_ptr<void> const& torrent
++		, piece_index_t piece);
++}
++
++#endif
+diff --git a/include/libtorrent/torrent.hpp b/include/libtorrent/torrent.hpp
+index 226b6a92c..b184e9934 100644
+--- a/include/libtorrent/torrent.hpp
++++ b/include/libtorrent/torrent.hpp
+@@ -1036,6 +1036,9 @@ namespace libtorrent {
+ 		// the pieces don't necessarily need to be flushed to disk
+ 		bool is_finished() const;
+ 
++		// the disk layer dropped this piece (see piece_eviction.hpp)
++		void lost_piece(piece_index_t piece);
++
+ 		bool is_inactive() const;
+ 
+ 		std::string save_path() const;
+diff --git a/src/error_code.cpp b/src/error_code.cpp
+index 98c49ede4..b3496d616 100644
+--- a/src/error_code.cpp
++++ b/src/error_code.cpp
+@@ -294,7 +294,8 @@ namespace libtorrent {
+ 			"a piece layer is invalid",
+ 			"a v2 file entry has no root hash",
+ 			"v1 and v2 hashes do not describe the same data",
+-			"a file in the v2 metadata has the pad attribute set"
++			"a file in the v2 metadata has the pad attribute set",
++			"the piece was evicted from the cache"
+ 		};
+ 		if (ev < 0 || ev >= int(sizeof(msgs)/sizeof(msgs[0])))
+ 			return "Unknown error";
+diff --git a/src/peer_connection.cpp b/src/peer_connection.cpp
+index 0888a32eb..2508d2184 100644
+--- a/src/peer_connection.cpp
++++ b/src/peer_connection.cpp
+@@ -5606,6 +5606,13 @@ namespace libtorrent {
+ 				return;
+ 			}
+ 
++			if (error.ec == errors::piece_evicted)
++			{
++				write_reject_request(r);
++				t->lost_piece(r.piece);
++				return;
++			}
++
+ 			write_dont_have(r.piece);
+ 			write_reject_request(r);
+ 			if (t->alerts().should_post<file_error_alert>())
+diff --git a/src/torrent.cpp b/src/torrent.cpp
+index 7f731e123..6c8eac859 100644
+--- a/src/torrent.cpp
++++ b/src/torrent.cpp
+@@ -65,6 +65,7 @@ POSSIBILITY OF SUCH DAMAGE.
+ #include <functional>
+ 
+ #include "libtorrent/torrent.hpp"
++#include "libtorrent/piece_eviction.hpp"
+ #include "libtorrent/torrent_handle.hpp"
+ #include "libtorrent/announce_entry.hpp"
+ #include "libtorrent/torrent_info.hpp"
+@@ -1204,7 +1205,8 @@ bool is_downloading_state(int const st)
+ 		{
+ 			rp->fail = true;
+ 			rp->error = se.ec;
+-			handle_disk_error("read", se);
++			if (se.ec == errors::piece_evicted) lost_piece(r.piece);
++			else handle_disk_error("read", se);
+ 		}
+ 		else
+ 		{
+@@ -8437,6 +8439,45 @@ namespace {
+ 
+ 	// this is called when we were finished, but some files were
+ 	// marked for downloading, and we are no longer finished
++	void torrent::lost_piece(piece_index_t const piece)
++	{
++		TORRENT_ASSERT(is_single_thread());
++		if (m_abort || !valid_metadata() || !m_connections_initialized) return;
++		if (piece < piece_index_t(0) || piece >= m_torrent_file->end_piece()) return;
++		if (!has_picker() && !m_have_all) return;
++
++		bool const was_finished = is_finished();
++		if (m_seed_mode) leave_seed_mode(seed_mode_t::skip_checking);
++		need_picker();
++		if (!m_picker->have_piece(piece)) return;
++
++#ifndef TORRENT_DISABLE_LOGGING
++		debug_log("*** LOST_PIECE (%d)", static_cast<int>(piece));
++#endif
++		m_picker->we_dont_have(piece);
++		m_have_all = false;
++
++		// the per-file progress only counts up: recount it
++		m_file_progress.clear();
++		m_file_progress.init(*m_picker, m_torrent_file->files());
++
++		for (auto* p : m_connections)
++		{
++			TORRENT_INCREMENT(m_iterating_connections);
++			p->write_dont_have(piece);
++		}
++
++		update_gauge();
++		set_need_save_resume(torrent_handle::if_download_progress);
++		update_peer_interest(was_finished);
++	}
++
++	void torrent_lost_piece(std::shared_ptr<void> const& t, piece_index_t const piece)
++	{
++		if (!t) return;
++		static_cast<torrent*>(t.get())->lost_piece(piece);
++	}
++
+ 	void torrent::resume_download()
+ 	{
+ 		// the invariant doesn't hold here, because it expects the torrent
