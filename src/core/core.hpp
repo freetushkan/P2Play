@@ -103,17 +103,35 @@ namespace p2p {
         struct MeshNet {
             lt::torrent_handle seeding;      // the current version's torrent
             lt::sha256_hash versionIh;
+            bool pendingGet = false;         // deferred DHT lookup from discovery callback
+            bool requested = false;          // ask directory peers as well as the DHT
+            int64_t pointerSeq = -1;          // signed high-water mark, including in-flight versions
+            std::string pointer;             // verified BEP 44 envelope, ready to relay
             bool wanted = false;             // subscribed, no version yet
             std::vector<std::string> peers;  // hints: ip:port of nodes holding it
+            bool importing = false;          // finished version queued on the joined worker
             lt::torrent_handle fetching;
             lt::sha256_hash fetchIh;
             int64_t fetchSeq = -1;
             std::string fetchPointer, fetchDir;
+            bool accepted = false;
+            bool prioritiesSet = false;
+            std::set<std::string> installed, mediaWanted, reservedMedia;
+            bool recordsReady = false;
+            std::chrono::steady_clock::time_point transferStarted, nextRetry;
+            std::map<std::string, std::chrono::steady_clock::time_point> mediaDeadlines;
+            std::string netError;
         };
         std::shared_ptr<lt::torrent_info> meshTorrent(const std::string &pk, std::string &error);
         void meshSeed(const std::string &pk, std::shared_ptr<lt::torrent_info> ti);
         void meshPut(const std::string &pk);
         void meshGet(const std::string &pk);
+        void meshReceivePointer(const std::string &raw, const std::string &peer);
+        void meshWork();
+        void meshDetach(const std::string &pk);
+        void meshRefresh(const std::string &pk);
+        bool meshMediaRequest(const std::string &pk, const std::string &ih, const std::string &kind);
+        void meshForget(const std::string &pk);
         std::string meshSubscribe(const std::string &pk, const std::vector<std::string> &peers);
         void meshFetch(const std::string &pk, const lt::sha256_hash &ih, int64_t seq, const std::string &pointer);
         bool meshAlert(lt::alert *a);
@@ -127,6 +145,9 @@ namespace p2p {
         lt::info_hash_t meshDirectoryHash();
         std::vector<std::pair<std::string, int64_t>> meshHeld();
         void meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists);
+        std::vector<std::pair<std::string, int64_t>> meshRequests();
+        bool meshPeerItem(const std::string &key, std::string &raw);
+        void meshPeerReceived(const std::string &raw, const std::string &peer = "");
     private:
         struct Discovered {
             int64_t seq = 0;
@@ -215,7 +236,15 @@ namespace p2p {
         Store m_store;
         Mesh m_mesh;
         std::mutex m_meshMutex;
+        // Worker/API disk lifecycle only; never acquired from libtorrent callbacks.
+        std::recursive_mutex m_meshLifecycle;
+        uint64_t m_meshGeneration = 0;
+        struct MeshMediaRequest { std::string pk, path; int64_t seq; };
+        std::vector<MeshMediaRequest> m_meshMediaQueue;
+        std::map<lt::torrent_handle, std::string> m_meshRetired;
+        std::vector<std::string> m_meshGarbage;
         std::map<std::string, MeshNet> m_meshNet;
+        std::vector<std::pair<std::string, std::string>> m_meshIncoming; // bounded network -> idle worker queue
         lt::error_code m_meshError;
         lt::torrent_handle m_directory;
         std::mutex m_directoryMutex;

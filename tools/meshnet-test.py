@@ -101,7 +101,7 @@ def main():
 
         status, _ = call("b", f"/api/lists/{pk}", {})
         check(status == 202, "B: subscribing by the key")
-        got = wait("B takes version 1", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 1])
+        got = wait("B takes version 1", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 1 and l["net"].get("records_ready")])
         if not got:
             print(open(os.path.join(root, "b", "p2play.log")).read()[-3000:])
         check(bool(got) and not got[0]["own"], "B: version 1 from the DHT pointer and A's seed")
@@ -113,7 +113,7 @@ def main():
         check(call("a", f"/api/publish/{pk}/release", {})[1]["seq"] == 2, "A: version 2")
         time.sleep(2)
         call("b", f"/api/lists/{pk}", {})
-        got = wait("B takes version 2", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 2])
+        got = wait("B takes version 2", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 2 and l["net"].get("records_ready")])
         check(bool(got) and call("b", "/api/catalog/search?q=second")[1]["results"] != [], "B: version 2 taken")
         # the directory swarm: C holds no list, learns of this one and of its holders
         found = wait("C learns of the list", lambda: [l for l in call("c", "/api/lists/discover")[1]["lists"]
