@@ -109,11 +109,17 @@ def start_seeder(ti, save_path):
 
 
 BASE = f"http://127.0.0.1:{HTTP_PORT}"
+# the tests' owner (authorization is required): written into a data directory without users
+OWNER_PASSWORD = "test"
+OWNER_TOKEN = "ts_test00000000000000000000"
+OWNER_BASIC = "Basic " + __import__("base64").b64encode(f"owner:{OWNER_PASSWORD}".encode()).decode()
 
 
-def http(path, body=None, rng=None, timeout=60):
+def http(path, body=None, rng=None, timeout=60, auth=True):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method="POST" if body is not None else "GET")
+    if auth:
+        req.add_header("Authorization", OWNER_BASIC)
     if body is not None:
         req.add_header("Content-Type", "application/json")
     if rng:
@@ -138,12 +144,15 @@ def check(cond, what):
         raise RuntimeError(what)
 
 
-def start_daemon(daemon, data):
+def start_daemon(daemon, data, users=True):
+    if users and not os.path.exists(os.path.join(data, "auth.json")):
+        with open(os.path.join(data, "auth.json"), "w") as f:
+            json.dump({"users": [{"username": "owner", "password": OWNER_PASSWORD, "api_token": OWNER_TOKEN}]}, f)
     log = open(os.path.join(data, "stdout.log"), "a")
     proc = subprocess.Popen([daemon, "--data", data, "--port", str(HTTP_PORT)], stdout=log, stderr=subprocess.STDOUT)
     for _ in range(100):
         try:
-            if http("/echo", timeout=2)[0] == 200:
+            if http("/echo", timeout=2, auth=False)[0] == 200:
                 return proc
         except Exception:
             pass

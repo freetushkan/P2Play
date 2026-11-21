@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""The native API (Silo's scheme under /api) against a local seeder, without users (every
-request is the owner's, as Silo without a password).
+"""The native API (Silo's scheme under /api) against a local seeder, as the owner.
 
     tools/silo-test.py build-linux/src/app/p2playd
 
@@ -33,6 +32,7 @@ check = ct.check
 def call(path, body=None, method=None, headers=None, raw=None):
     data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
     req = urllib.request.Request(ct.BASE + path, data=data, method=method or ("POST" if data is not None else "GET"))
+    req.add_header("Authorization", "Bearer " + ct.OWNER_TOKEN)
     if body is not None:
         req.add_header("Content-Type", "application/json")
     for k, v in (headers or {}).items():
@@ -84,7 +84,7 @@ def main():
         status, v = call("/api/system/version")
         check(status == 200 and v["version"] and v["torrent"].startswith("libtorrent"), "/api/system/version")
         status, me = call("/api/auth/me")
-        check(status == 200 and me["id"] == "owner", "without users: the owner")
+        check(status == 200 and me["id"] == "owner", "the owner's token")
 
         status, st = call("/api/torrents", {"link": magnet, "title": "Show", "poster": "http://p/1.jpg"})
         check(status == 201 and st["hash"] == ih and st["title"] == "Show", "add a magnet: 201, the status")
@@ -102,7 +102,7 @@ def main():
         listed = call("/api/torrents")[1]["torrents"]
         check([t["hash"] for t in listed] == [ih] and listed[0]["poster"] == "http://p/1.jpg", "the library")
         # Silo's /api/events: the library first ("sync")
-        with urllib.request.urlopen(ct.BASE + "/api/events", timeout=10) as r:
+        with urllib.request.urlopen(ct.BASE + "/api/events?token=" + ct.OWNER_TOKEN, timeout=10) as r:
             event, line = r.readline().decode().strip(), r.readline().decode().strip()
         cards = json.loads(line.removeprefix("data:").strip())
         check(r.status == 200 and event == "event: sync" and [c["hash"] for c in cards] == [ih]
@@ -190,15 +190,6 @@ def main():
               and card["poster"] == "https://image.tmdb.org/t/p/w500/abc.jpg" and card["category"] == "tv"
               and card["torrent_size"] == 12345678901, "a torrs:// link of Silo")
         check(call("/api/torrents/5d902edb06f1ca0d2a713ce3cdd395b75d36f735", method="DELETE")[0] == 200, "its card removed")
-        # the first login as the owner with a password sets it; /api needs a token from then on,
-        # the MatriX routes stay open until matrix_basic
-        status, out = call("/api/auth/login", {"username": "owner", "password": "first"})
-        token = out.get("token", "") if status == 200 else ""
-        check(token.startswith("ts_") and call("/api/torrents")[0] == 401, "the first login sets the owner's password")
-        check(call("/api/auth/login", {"username": "owner", "password": "other"})[0] == 401, "another password refused")
-        check(ct.http("/torrents", {"action": "list"})[0] == 200, "MatriX still open")
-        check(call("/api/system/auth", {"matrix_basic": True}, "PUT", headers={"Authorization": "Bearer " + token})[0] == 200
-              and ct.http("/torrents", {"action": "list"})[0] == 401, "MatriX behind Basic once asked")
         print("PASS")
         del ses
     finally:

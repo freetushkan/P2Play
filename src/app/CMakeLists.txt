@@ -7,7 +7,8 @@ set(APP_SRC
 
 # the crash handlers of pPlay, a file a platform
 if (PLATFORM_PS4)
-    list(APPEND APP_SRC ps4/ps4_compat.c ps4/crashlog.c ps4/crashlog_api.cpp)
+    list(APPEND APP_SRC ps4/ps4_compat.c ps4/crashlog.c ps4/crashlog_api.cpp
+            screen/console.cpp screen/font.cpp screen/videoout_ps4.cpp)
 elseif (PLATFORM_SWITCH)
     list(APPEND APP_SRC switch/crashlog.cpp ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
 elseif (PLATFORM_PS5)
@@ -63,7 +64,7 @@ if (PLATFORM_SWITCH)
             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 elseif (PLATFORM_PS4)
     target_include_directories(p2play PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ps4)
-    target_link_libraries(p2play PRIVATE SceSysmodule SceNet SceSystemService kernel)
+    target_link_libraries(p2play PRIVATE SceSysmodule SceNet SceSystemService SceVideoOut kernel)
     # Linux constants in the musl headers, FreeBSD ones in libkernel (ps4/ps4_compat.c)
     target_link_options(p2play PRIVATE
             "LINKER:--wrap=clock_gettime"

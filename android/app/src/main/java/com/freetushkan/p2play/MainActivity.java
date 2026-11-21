@@ -132,6 +132,7 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        sDataDir = ServerService.dataDir(this);
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -212,7 +213,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // POST /torrents add (into the library), wait for the file list, open the largest media file
+    // POST /api/torrents (into the owner's library), wait for the file list, open the largest file
     private void addAndPlay() {
         final String link = mLink.getText().toString().trim();
         if (link.isEmpty()) {
@@ -225,12 +226,12 @@ public class MainActivity extends Activity {
             String error = null;
             String url = null;
             try {
-                JSONObject add = new JSONObject().put("action", "add").put("link", link).put("save_to_db", true);
+                JSONObject add = new JSONObject().put("link", link).put("save_to_db", true);
                 JSONObject st = null;
                 // the server may be starting
                 for (int i = 0; i < 20 && st == null; i++) {
                     try {
-                        st = new JSONObject(post("/torrents", add.toString()));
+                        st = new JSONObject(post("/api/torrents", add.toString()));
                     } catch (Exception e) {
                         Thread.sleep(500);
                     }
@@ -239,10 +240,9 @@ public class MainActivity extends Activity {
                     throw new Exception("the server does not answer");
                 }
                 String hash = st.getString("hash");
-                JSONObject get = new JSONObject().put("action", "get").put("hash", hash);
                 for (int i = 0; i < 120 && !st.has("file_stats"); i++) {
                     Thread.sleep(500);
-                    st = new JSONObject(post("/torrents", get.toString()));
+                    st = new JSONObject(request("GET", "/api/torrents/" + hash, null));
                 }
                 if (!st.has("file_stats")) {
                     throw new Exception("no metadata in 60 s (no peers?)");
@@ -255,10 +255,8 @@ public class MainActivity extends Activity {
                         best = f;
                     }
                 }
-                String path = best.getString("path");
-                String name = path.substring(path.lastIndexOf('/') + 1);
-                url = LOCAL + "/stream/" + URLEncoder.encode(name, "UTF-8").replace("+", "%20") + "?link=" + hash
-                        + "&index=" + best.getInt("id") + "&play";
+                url = LOCAL + "/api/stream/" + hash + "/" + best.getInt("id") + "?token="
+                        + URLEncoder.encode(token(), "UTF-8");
             } catch (Exception e) {
                 error = e.getMessage();
             }
@@ -312,7 +310,7 @@ public class MainActivity extends Activity {
     // a line a torrent: title, state, peers, speed
     private static String torrents() {
         try {
-            JSONArray list = new JSONArray(post("/torrents", "{\"action\":\"list\"}"));
+            JSONArray list = new JSONObject(request("GET", "/api/torrents", null)).getJSONArray("torrents");
             if (list.length() == 0) {
                 return "Server running, no torrents";
             }
@@ -369,8 +367,35 @@ public class MainActivity extends Activity {
         return request("POST", path, body);
     }
 
+    // the owner's token: the server's own auth.json (this app is the owner of its server)
+    private static volatile String sToken = "";
+    private static File sDataDir;
+
+    private static String token() {
+        if (sToken.isEmpty() && sDataDir != null) {
+            try (InputStream in = new java.io.FileInputStream(new File(sDataDir, "auth.json"))) {
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int n;
+                while ((n = in.read(b)) > 0) {
+                    buf.write(b, 0, n);
+                }
+                JSONArray users = new JSONObject(buf.toString("UTF-8")).getJSONArray("users");
+                for (int i = 0; i < users.length(); i++) {
+                    if ("owner".equals(users.getJSONObject(i).optString("id"))) {
+                        sToken = users.getJSONObject(i).optString("api_token");
+                    }
+                }
+            } catch (Exception ignored) {
+                // the server writes it at its first start
+            }
+        }
+        return sToken;
+    }
+
     private static String request(String method, String path, String body) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(LOCAL + path).openConnection();
+        c.setRequestProperty("Authorization", "Bearer " + token());
         try {
             c.setConnectTimeout(1500);
             c.setReadTimeout(10000);

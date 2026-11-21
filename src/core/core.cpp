@@ -345,10 +345,10 @@ namespace p2p {
             stop();
             return false;
         }
-        log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library, authorization %s",
+        log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library, the owner's password %s",
             version(), LIBTORRENT_VERSION,
             m_cache ? ("ram " + std::to_string(m_settings.cacheSize >> 20) + " MB").c_str() : "disk",
-            m_http.port(), static_cast<int>(m_torrents.size()), m_auth.required() ? "on" : "off");
+            m_http.port(), static_cast<int>(m_torrents.size()), m_auth.passwordSet() ? "set" : "not set: the first login sets it");
         return true;
     }
 

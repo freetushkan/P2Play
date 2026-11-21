@@ -54,7 +54,7 @@ def main():
     os.makedirs(data)
     owner_token = "ts_owner0000000000000000000"
     with open(os.path.join(data, "auth.json"), "w") as f:
-        json.dump({"users": [{"name": "owner", "password": "secret", "token": owner_token}], "matrix_basic": True}, f)
+        json.dump({"users": [{"name": "owner", "password": "secret", "token": owner_token}]}, f)
     proc = None
     try:
         folder, files = ct.make_payload(root)
@@ -73,7 +73,7 @@ def main():
               "found by pPlay's discovery and TorrServe with users set: " + echo.decode())
         stored = json.load(open(os.path.join(data, "auth.json")))["users"][0]
         check(stored["password_hash"].startswith("sha256$") and "password" not in stored, "auth.json: the password hashed")
-        check(json.loads(call("/api/system/auth", headers=bearer(owner_token))[2]) == {"required": True, "matrix_basic": True},
+        check(json.loads(call("/api/system/auth", headers=bearer(owner_token))[2]) == {"required": True, "password_set": True},
               "/api/system/auth")
 
         # MatriX: Basic only
@@ -141,6 +141,22 @@ def main():
         check(call(f"/api/users/{kid['id']}", headers=bearer(owner_token), method="DELETE")[0] == 200
               and call("/api/torrents", headers=bearer(kid_token))[0] == 401, "a deleted user's token refused")
         check(call("/api/users/owner", headers=bearer(owner_token), method="DELETE")[0] == 403, "the owner stays")
+        ct.stop_daemon(proc)
+        proc = None
+
+        # a new server: authorization required from the start; the first owner login sets the password
+        fresh = os.path.join(root, "fresh")
+        os.makedirs(fresh)
+        proc = ct.start_daemon(daemon, fresh, users=False)
+        check(call("/torrents", {"action": "list"})[0] == 401 and call("/api/torrents")[0] == 401,
+              "a new server: both APIs need a login")
+        check(json.loads(call("/api/system/auth", headers=bearer(json.load(open(os.path.join(fresh, "auth.json")))["users"][0]["api_token"]))[2])["password_set"] is False,
+              "no password yet")
+        check(call("/torrents", {"action": "list"}, basic("owner", "first"))[0] == 200,
+              "the first Basic as the owner sets the password")
+        check(call("/torrents", {"action": "list"}, basic("owner", "other"))[0] == 401
+              and call("/api/auth/login", {"username": "owner", "password": "first"})[0] == 200,
+              "one password on both APIs")
         print("PASS")
         del ses
     finally:

@@ -12,12 +12,12 @@ The server answers on port **8090** (TorrServer's): `http://<device ip>:8090`.
 | Platform | Run | Data directory | Quit |
 | --- | --- | --- | --- |
 | Linux | `p2playd [--data DIR] [--port N]`, or the systemd unit `p2playd.service` | `$P2PLAY_DATA`, else `~/.local/share/p2play` | Ctrl+C / SIGTERM |
-| Android | `p2play-android.apk`: allow all files access; the server starts with the app (a foreground service). A magnet or a `torrs://` link typed, pasted, opened or shared with the app is added and its largest media file opened in a player; "Share torrs://" shares the newest torrent's link; `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity` | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
+| Android | `p2play-android.apk`: allow all files access; the server starts with the app (a foreground service). The app talks to its server as the owner (the token of its `auth.json`). A magnet or a `torrs://` link typed, pasted, opened or shared with the app is added and its largest media file opened in a player; "Share torrs://" shares the newest torrent's link; `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity` | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
 | Switch | `p2play.nro` from hbmenu (application mode, not the album) | `sdmc:/switch/p2play` | `+` |
 | PS4 | install the pkg, launch | `/data/p2play` | create `/data/p2play/stop` |
 | PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | launch it again (the running server stops; the next launch starts the new one, after an update too), or create `/data/p2play/stop` |
 
-The log: `p2play.log` in the data directory (Switch: also on the screen, PS4/PS5: klog, PS5: a toast with the address).
+The log: `p2play.log` in the data directory (on the screen on Switch and PS4, with the address on top; Android: in the app; PS5: klog and a toast with the address).
 A crash: `crash.log` there (every platform, see Layout); an uncaught exception also writes its reason to
 `p2play.log`.
 
@@ -99,17 +99,18 @@ as a v2 torrent, the BEP 44 pointer, the `mediamesh` extension, the directory sw
 
 ### Users
 
-One set of users, `auth.json` in the data directory, for both APIs; each API asks as its original does.
+One set of users, `auth.json` in the data directory, required on both APIs; each asks as its original does:
+`/api` (Silo) a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie), the MatriX routes Basic
+(`WWW-Authenticate`). The MatriX routes TorrServer leaves open (`/stream` with `play` or `m3u`, `/play`,
+`/playlist`) play a torrent already known without a login, as there: players open those links without
+credentials. The library, the progress and everything else are one store; the file numbers of each API are
+kept apart (MatriX's id, Silo's index).
 
-- `/api` (Silo): a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie). Silo's clients ask a
-  login for any server but their own, so it is required once the owner (`owner`, rank 100, always there) has a
-  password. Until then every request is the owner's, and the first login as `owner` with a password sets it:
-  on a console there is no other place to set it. Or by hand: `{"users": [{"username": "owner", "password":
-  "secret"}]}` in `auth.json` (hashed at the start), or `PUT /api/users/owner {"password"}`.
-- MatriX: Basic (`WWW-Authenticate`), only with `matrix_basic` on (as TorrServer's `--httpauth`):
-  `PUT /api/system/auth {"matrix_basic": true}`, `GET /api/system/auth`. Off by default: pPlay and Lampa need no
-  credentials. A torrent already known can be played without a login (`/stream` with `play` or `m3u`, `/play`,
-  `/playlist`): players such as pPlay and VLC open those links without credentials.
+The owner (`owner`, rank 100) is always there. Until it has a password, the first login as `owner` with a
+password sets it, on either API (Silo's client: log in as `owner`; pPlay or Lampa: `owner` and the password in
+the network's credentials): a console has no other place to set it. Or by hand, before the first start:
+`{"users": [{"username": "owner", "password": "secret"}]}` in `auth.json` (hashed at the start).
+`GET /api/system/auth`: whether the password is set.
 
 The other users are made through `/api/users`: a user manages those of a lower rank (admins 50-99, users 10-49,
 guests 1-9). Each user has their own library and progress; a torrent no library holds is forgotten once closed.

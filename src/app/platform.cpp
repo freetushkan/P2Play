@@ -119,6 +119,12 @@ bool p2p::platformIsConsole() { return true; }
 #include <orbis/libkernel.h>
 #include <orbis/Sysmodule.h>
 #include "ps4_compat.h"
+#include "screen/console.hpp"
+
+namespace {
+    // the log on the screen (the application's own video out)
+    p2p::TextConsole g_console;
+}
 
 extern "C" {
 int sceSystemServiceLoadExec(const char *path, const char *args[]);
@@ -135,11 +141,14 @@ bool p2p::platformInit() {
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     ps4_compat_init();
     mkdir(dataDir().c_str(), 0777);
+    g_console.setTitle("P2Play: starting");
+    p2p::screenStart(&g_console);
     return true;
 }
 
 // back to the system, as pPlay (a plain return leaves the application hanging)
 void p2p::platformExit() {
+    p2p::screenStop();
     sceSystemServiceLoadExec("exit", nullptr);
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -181,9 +190,12 @@ std::string p2p::dataDir() { return "/data/p2play"; }
 
 void p2p::platformPrint(const std::string &line) {
     sceKernelDebugOutText(0, ("[p2play] " + line + "\n").c_str());
+    g_console.add(line);
 }
 
-void p2p::platformNotify(const std::string &) {}
+void p2p::platformNotify(const std::string &text) {
+    g_console.setTitle(text);
+}
 
 bool p2p::platformIsConsole() { return true; }
 

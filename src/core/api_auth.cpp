@@ -43,7 +43,7 @@ namespace p2p {
             return;
         }
         if (get && p == "/") {
-            res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", m_auth.required()}}.dump());
+            res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", true}}.dump());
             return;
         }
         if (get && p == "/api/system/ping") {
@@ -56,7 +56,7 @@ namespace p2p {
             User u = body.is_object() && body.value("password", json()).is_string()
                              ? m_auth.login(name, body.value("password", ""))
                              : User();
-            if (!u.valid() && name == Auth::kOwner && !m_auth.required()) {
+            if (!u.valid() && name == Auth::kOwner && !m_auth.passwordSet()) {
                 // no password yet: the first one given becomes the owner's (Silo's clients ask a
                 // login anyway; a console has no other place to set it)
                 const std::string password = body.value("password", json()).is_string() ? body["password"].get<std::string>() : "";
@@ -92,7 +92,7 @@ namespace p2p {
         }
 
 #if P2P_COMPAT_MATRIX
-        // MatriX: Basic; a known torrent is played without it
+        // MatriX: Basic; a known torrent is played without it (TorrServer leaves these open)
         const User user = m_auth.byBasic(req);
         if (!user.valid() && !matrixPublic(req)) {
             error(res, 401, "unauthorized", {{"WWW-Authenticate", "Basic realm=\"Authorization Required\""}});

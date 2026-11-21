@@ -27,6 +27,7 @@ check = ct.check
 def call(path, body=None, method=None, raw=None):
     data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
     req = urllib.request.Request(ct.BASE + path, data=data, method=method or ("POST" if data is not None else "GET"))
+    req.add_header("Authorization", "Bearer " + ct.OWNER_TOKEN)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read() or b"null")
