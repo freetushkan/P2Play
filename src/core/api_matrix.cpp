@@ -1,11 +1,14 @@
-// The TorrServer MatriX API, as Lampa and pPlay use it: /echo, /torrents, /torrent/upload,
+// The TorrServer MatriX API, as Lampa and pPlay use it: /torrents, /torrent/upload,
 // /stream, /play, /viewed, /settings, /cache, /playlist, /playlistall. File ids start
-// from 1. Errors: {"error": "..."}.
+// from 1. Errors: {"error": "..."}. A compatibility layer: P2P_COMPAT_MATRIX off leaves it
+// out (with the Basic authentication of auth.cpp).
 
 #include <algorithm>
 #include <cctype>
 
 #include "core_torrent.hpp"
+
+#if P2P_COMPAT_MATRIX
 
 namespace p2p {
 
@@ -97,28 +100,12 @@ namespace p2p {
         }
     }
 
-    // an exception (a torrent closed meanwhile: its handle throws) ends the request, not the
-    // process
-    void Core::handle(const HttpRequest &req, HttpResponse &res) {
-        try {
-            route(req, res);
-        } catch (const std::exception &e) {
-            log("[Web] %s %s failed: %s", req.method.c_str(), req.path.c_str(), e.what());
-            if (!res.started()) {
-                error(res, 500, e.what());
-            }
-        }
-    }
-
-    void Core::route(const HttpRequest &req, HttpResponse &res) {
+    // the MatriX routes; false: not one of them
+    bool Core::routeMatrix(const HttpRequest &req, HttpResponse &res) {
         const std::string &p = req.path;
         const bool get = req.method == "GET" || req.method == "HEAD";
         const bool post = req.method == "POST";
-        if (get && p == "/echo") {
-            res.text(200, echo());
-        } else if (get && p == "/") {
-            res.json(200, json{{"name", "P2Play"}, {"version", version()}}.dump());
-        } else if (post && p == "/torrents") {
+        if (post && p == "/torrents") {
             apiTorrents(req, res);
         } else if (post && p == "/torrent/upload") {
             apiUpload(req, res);
@@ -140,14 +127,81 @@ namespace p2p {
             TorrentPtr t = find(req.param("hash"));
             if (!t) {
                 error(res, 404, "torrent not found");
+                return true;
+            }
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, m_auth.identify(req)));
+        } else if (get && p == "/playlistall/all.m3u") {
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist(list(), req.header("host"), 0, m_auth.identify(req)));
+        } else if (get && (p == "/shutdown" || p.rfind("/shutdown/", 0) == 0)) {
+            // the host decides (a standalone server quits, pPlay may ignore it)
+            log("[Web] shutdown asked by %s", req.peer.c_str());
+            m_shutdownRequested = true;
+            res.json(200, "{}");
+        } else if (get && p.rfind("/download/", 0) == 0) {
+            downloadTest(req, res, std::atoll(p.c_str() + 10));
+        } else if (get && p == "/storage/settings") {
+            res.json(200, json{{"settings", "json"}, {"viewed", "json"}}.dump());
+        } else if (post && p == "/storage/settings") {
+            res.json(200, json{{"status", "ok"}}.dump());
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    // TorrServer's speed test: <mb> megabytes of zeros, with Range
+    void Core::downloadTest(const HttpRequest &req, HttpResponse &res, int64_t megabytes) {
+        const int64_t size = std::max<int64_t>(0, std::min<int64_t>(megabytes, 10240)) * 1024 * 1024;
+        int64_t start = 0, end = size - 1;
+        if (req.hasRange && size > 0) {
+            start = req.rangeStart < 0 ? std::max<int64_t>(0, size + req.rangeStart) : req.rangeStart;
+            if (req.rangeStart >= 0 && req.rangeEnd >= 0) {
+                end = std::min(req.rangeEnd, size - 1);
+            }
+        }
+        if (start > end || start >= size) {
+            res.begin(416, "", 0, {{"Content-Range", "bytes */" + std::to_string(size)}});
+            return;
+        }
+        std::map<std::string, std::string> headers = {
+                {"Accept-Ranges", "bytes"},
+                {"Content-Disposition", "attachment; filename=\"" + std::to_string(megabytes) + "mb.bin\""}};
+        if (req.hasRange) {
+            headers["Content-Range"] = "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(size);
+        }
+        if (!res.begin(req.hasRange ? 206 : 200, "application/octet-stream", end - start + 1, headers) ||
+            req.method == "HEAD") {
+            return;
+        }
+        static const std::vector<char> zeros(256 * 1024, 0);
+        for (int64_t left = end - start + 1; left > 0 && !m_stopping;) {
+            size_t n = static_cast<size_t>(std::min<int64_t>(left, static_cast<int64_t>(zeros.size())));
+            if (!res.write(zeros.data(), n)) {
                 return;
             }
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0));
-        } else if (get && p == "/playlistall/all.m3u") {
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist(list(), req.header("host"), 0));
-        } else {
-            error(res, 404, "not found");
+            left -= static_cast<int64_t>(n);
         }
+    }
+
+    // MatriX without a user: a known torrent may be played (/stream with play or m3u,
+    // /play, /playlist), as players open these links without credentials
+    bool Core::matrixPublic(const HttpRequest &req) {
+        const std::string &p = req.path;
+        std::string link;
+        if (p == "/stream" || p.rfind("/stream/", 0) == 0) {
+            if (!req.has("play") && !req.has("m3u")) {
+                return false;
+            }
+            link = req.param("link");
+        } else if (p.rfind("/play/", 0) == 0) {
+            link = p.substr(6, p.find('/', 6) == std::string::npos ? std::string::npos : p.find('/', 6) - 6);
+        } else if (p == "/playlist" || p.rfind("/playlist/", 0) == 0) {
+            link = req.param("hash");
+        } else {
+            return false;
+        }
+        std::string hash = hashOfLink(link);
+        return !hash.empty() && find(hash) != nullptr;
     }
 
     void Core::apiTorrents(const HttpRequest &req, HttpResponse &res) {
@@ -171,7 +225,10 @@ namespace p2p {
                 error(res, 400, err);
                 return;
             }
-            log("[Web] torrent added: %s", t->rec.hash.c_str());
+            log("[Web] torrent added: %s (title %s, poster %s, category %s, data %s, %s)", t->rec.hash.c_str(),
+                str(body, "title").empty() ? "-" : "+", str(body, "poster").empty() ? "-" : "+",
+                str(body, "category").empty() ? "-" : "+", str(body, "data").empty() ? "-" : "+",
+                flag(body, "save_to_db") ? "to the library" : "not saved");
             res.json(200, status(t).dump());
         } else if (action == "get") {
             TorrentPtr t = find(hash);
@@ -228,7 +285,8 @@ namespace p2p {
             auto it = parts.find(name);
             return it == parts.end() ? std::string() : it->second.second;
         };
-        const bool save = field("save") == "true" || field("save") == "on" || field("save") == "1";
+        // MatriX: the field's presence saves, whatever its value
+        const bool save = parts.count("save") > 0;
         json out = json::array();
         std::string lastError = "no file";
         for (const auto &part : parts) {
@@ -236,7 +294,8 @@ namespace p2p {
                 continue;  // not a file
             }
             std::string err;
-            TorrentPtr t = addMetadata(part.second.second, field("title"), field("poster"), "", field("data"), save, err);
+            TorrentPtr t = addMetadata(part.second.second, field("title"), field("poster"), field("category"),
+                                       field("data"), save, err);
             if (t) {
                 out.push_back(status(t));
             } else {
@@ -259,14 +318,14 @@ namespace p2p {
             error(res, 400, "link should not be empty");
             return;
         }
+        // as MatriX: a torrent opened again (or open) takes the title, poster and category it
+        // lacks from the parameters
         TorrentPtr t = find(link);
         std::string err;
-        if (!t || !t->active) {
-            t = add(link, req.param("title"), req.param("poster"), req.param("category"), "", false, err);
-            if (!t) {
-                error(res, 400, err);
-                return;
-            }
+        t = add(t ? t->rec.hash : link, req.param("title"), req.param("poster"), req.param("category"), "", false, err);
+        if (!t) {
+            error(res, 400, err);
+            return;
         }
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -307,7 +366,7 @@ namespace p2p {
         if (req.has("stat")) {
             res.json(200, status(t).dump());
         } else if (req.has("m3u")) {
-            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0));
+            res.send(200, "audio/x-mpegurl; charset=utf-8", playlist({t}, req.header("host"), req.has("fromlast") ? 1 : 0, m_auth.identify(req)));
         } else if (play) {
             stream(t, index, req, res);
         } else {
@@ -329,6 +388,7 @@ namespace p2p {
                 return;
             }
             ViewedRecord r;
+            r.user = m_auth.identify(req);
             r.hash = hash;
             r.fileIndex = integer(body, "file_index", 0);
             r.timecode = body.contains("timecode") && body["timecode"].is_number() ? body["timecode"].get<double>() : 0;
@@ -339,11 +399,11 @@ namespace p2p {
                 error(res, 400, "hash is required");
                 return;
             }
-            m_store.removeViewed(hash, integer(body, "file_index", 0));
+            m_store.removeViewed(m_auth.identify(req), hash, integer(body, "file_index", 0));
             res.json(200, "{}");
         } else if (action == "list") {
             json out = json::array();
-            for (const ViewedRecord &r : m_store.viewed(hash)) {
+            for (const ViewedRecord &r : m_store.viewed(m_auth.identify(req), hash)) {
                 out.push_back({{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}});
             }
             res.json(200, out.dump());
@@ -411,7 +471,8 @@ namespace p2p {
     }
 
     // the media files of the torrents; fromIndex: from the last viewed file on
-    std::string Core::playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex) {
+    std::string Core::playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex,
+                               const std::string &user) {
         std::string out = "#EXTM3U\n";
         const std::string base = "http://" + (host.empty() ? "127.0.0.1:" + std::to_string(httpPort()) : host);
         for (const TorrentPtr &t : torrents) {
@@ -422,7 +483,7 @@ namespace p2p {
             }
             int from = 0;
             if (fromIndex) {
-                for (const ViewedRecord &v : m_store.viewed(rec.hash)) {
+                for (const ViewedRecord &v : m_store.viewed(user, rec.hash)) {
                     from = std::max(from, v.fileIndex);
                 }
             }
@@ -440,3 +501,5 @@ namespace p2p {
     }
 
 }
+
+#endif

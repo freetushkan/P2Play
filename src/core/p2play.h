@@ -30,6 +30,9 @@ int p2play_http_port(void);
 /* streams (and preloads) being served: the host keeps the device awake while nonzero */
 int p2play_active_streams(void);
 
+/* nonzero once a client asked the server to stop (TorrServer's /shutdown); the host decides */
+int p2play_shutdown_requested(void);
+
 void p2play_stop(void);
 
 const char *p2play_version(void);

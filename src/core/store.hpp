@@ -34,6 +34,7 @@ namespace p2p {
     };
 
     struct ViewedRecord {
+        std::string user;     // empty: without authorization (MatriX's single list)
         std::string hash;
         int fileIndex = 0;
         double timecode = 0;  // seconds; 0: viewed, no position
@@ -61,13 +62,13 @@ namespace p2p {
 
         void removeTorrent(const std::string &hash);
 
-        // hash empty: all
-        std::vector<ViewedRecord> viewed(const std::string &hash) const;
+        // a user's viewed files (hash empty: all)
+        std::vector<ViewedRecord> viewed(const std::string &user, const std::string &hash) const;
 
         void setViewed(const ViewedRecord &record);
 
         // fileIndex < 1: every file of the torrent
-        void removeViewed(const std::string &hash, int fileIndex);
+        void removeViewed(const std::string &user, const std::string &hash, int fileIndex);
 
         nlohmann::json settings() const;
 

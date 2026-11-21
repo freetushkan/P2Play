@@ -21,6 +21,7 @@
 #include <libtorrent/torrent_handle.hpp>
 
 #include "../../third_party/nlohmann/json.hpp"
+#include "auth.hpp"
 #include "http.hpp"
 #include "ram_cache.hpp"
 #include "store.hpp"
@@ -69,6 +70,9 @@ namespace p2p {
         // streams being served (the host keeps the device awake meanwhile)
         int activeStreams();
 
+        // a client asked the server to stop (MatriX /shutdown); the host decides
+        bool shutdownRequested() const { return m_shutdownRequested; }
+
         static const char *version();
 
         // /echo: the version and the platform
@@ -83,13 +87,19 @@ namespace p2p {
         // api.cpp
         void handle(const HttpRequest &req, HttpResponse &res);
         void route(const HttpRequest &req, HttpResponse &res);
+        bool routeMatrix(const HttpRequest &req, HttpResponse &res);   // api_matrix.cpp
+        bool matrixPublic(const HttpRequest &req);
+        void downloadTest(const HttpRequest &req, HttpResponse &res, int64_t megabytes);
+        // the hex infohash of a magnet, an infohash (hex or base32); empty otherwise
+        static std::string hashOfLink(const std::string &link);
         void apiTorrents(const HttpRequest &req, HttpResponse &res);
         void apiStream(const HttpRequest &req, HttpResponse &res, const std::string &hash, int index);
         void apiViewed(const HttpRequest &req, HttpResponse &res);
         void apiSettings(const HttpRequest &req, HttpResponse &res);
         void apiCache(const HttpRequest &req, HttpResponse &res);
         void apiUpload(const HttpRequest &req, HttpResponse &res);
-        std::string playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex);
+        std::string playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex,
+                             const std::string &user);
 
         // torrents
         TorrentPtr add(const std::string &link, const std::string &title, const std::string &poster,
@@ -128,6 +138,7 @@ namespace p2p {
 
         CoreConfig m_config;
         Store m_store;
+        Auth m_auth;
         Settings m_settings;
         std::unique_ptr<RamCache> m_cache;   // null with useDisk
         std::unique_ptr<lt::session> m_session;
@@ -143,6 +154,7 @@ namespace p2p {
         std::set<std::pair<std::string, int>> m_readsFailed;
 
         std::atomic<bool> m_stopping{false};
+        std::atomic<bool> m_shutdownRequested{false};
         std::atomic<int> m_nextReader{1};
         std::thread m_alertThread;
         std::thread m_idleThread;

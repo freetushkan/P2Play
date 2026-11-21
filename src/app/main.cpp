@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
     p2p::platformStarted();
     p2p::platformNotify("P2Play: " + url);
 
-    while (p2p::platformRunning()) {
+    while (p2p::platformRunning() && !p2play_shutdown_requested()) {
         p2p::CrashLog::heartbeat();
         p2p::platformKeepAwake(p2play_active_streams() > 0);
     }

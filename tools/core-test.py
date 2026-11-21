@@ -39,7 +39,9 @@ def make_payload(root):
     os.makedirs(folder)
     rnd = random.Random(7)
     files = {}
-    for name, size in (("e01.mkv", BIG), ("e02.mkv", BIG // 3 + 12345), ("notes.txt", 100)):
+    # e9 / e10: TorrServer's order (numbers as numbers), not the torrent's
+    for name, size in (("e01.mkv", BIG), ("e02.mkv", BIG // 3 + 12345), ("e10.mkv", 3000), ("e9.mkv", 2000),
+                       ("notes.txt", 100)):
         data = rnd.randbytes(size)
         with open(os.path.join(folder, name), "wb") as f:
             f.write(data)
@@ -150,12 +152,14 @@ def main():
                 break
             time.sleep(0.2)
         names = [f["path"] for f in st.get("file_stats", [])]
-        check([f["id"] for f in st["file_stats"]] == [1, 2, 3], "get: file ids from 1: " + ", ".join(names))
+        check([f["id"] for f in st["file_stats"]] == [1, 2, 3, 4, 5], "get: file ids from 1: " + ", ".join(names))
+        check([os.path.basename(n) for n in names] == ["e01.mkv", "e02.mkv", "e9.mkv", "e10.mkv", "notes.txt"],
+              "get: TorrServer's file order (e9 before e10)")
         check(st["title"] == "Show" and st["poster"] == "http://p/1.jpg", "get: title and poster kept")
 
         lst = api("/torrents", {"action": "list"})
         d = json.loads(lst[0]["data"])
-        check(d.get("lampa") is True and len(d["TorrServer"]["Files"]) == 3, "list: data with TorrServer.Files (pPlay)")
+        check(d.get("lampa") is True and len(d["TorrServer"]["Files"]) == 5, "list: data with TorrServer.Files (pPlay)")
 
         index = {os.path.basename(f["path"]): f["id"] for f in st["file_stats"]}
         e01, e02 = files["e01.mkv"], files["e02.mkv"]
@@ -185,7 +189,10 @@ def main():
         v = api("/viewed", {"action": "list"})
         check([(x["file_index"], x["timecode"]) for x in v] == [(1, 123.5)], "viewed: rem one file")
 
-        api("/torrents", {"action": "set", "hash": ih, "title": "Show (renamed)"})
+        api("/torrents", {"action": "set", "hash": ih, "title": "Show (renamed)", "poster": ""})
+        # as MatriX: /stream with a poster fills the empty one (kept in the library)
+        http(f"/stream?link={ih}&index=1&stat&poster=http%3A%2F%2Fp%2F2.jpg")
+        check(api("/torrents", {"action": "get", "hash": ih})["poster"] == "http://p/2.jpg", "stream: the poster filled")
         s = api("/settings", {"action": "get"})
         check(s["CacheSize"] > 0 and "ReaderReadAHead" in s and s["UseDisk"] == disk, "settings get")
         api("/settings", {"action": "set", "sets": {"TorrentDisconnectTimeout": 10, "FriendlyName": "test"}})
@@ -194,7 +201,7 @@ def main():
 
         status, _, m3u = http(f"/playlist?hash={ih}")
         lines = [l for l in m3u.decode().splitlines() if l.startswith("http")]
-        check(status == 200 and len(lines) == 2 and all("&play" in l for l in lines), "playlist: 2 media files")
+        check(status == 200 and len(lines) == 4 and all("&play" in l for l in lines), "playlist: 4 media files")
 
         # a restart: the library survives, the torrent is opened again from its metadata
         stop_daemon(proc)
@@ -204,7 +211,8 @@ def main():
         proc = start_daemon(daemon, data)
         lst = api("/torrents", {"action": "list"})
         check(len(lst) == 1 and lst[0]["stat"] == 5 and lst[0]["title"] == "Show (renamed)"
-              and len(lst[0]["file_stats"]) == 3, f"restart: in db, \"{lst[0]['title']}\", files kept")
+              and lst[0]["poster"] == "http://p/2.jpg" and len(lst[0]["file_stats"]) == 5,
+              f"restart: in db, \"{lst[0]['title']}\", poster and files kept")
         check(api("/viewed", {"action": "list", "hash": ih})[0]["timecode"] == 123.5, "restart: viewed kept")
         ses, seed = start_seeder(ti, os.path.join(root, "seed"))
         try:
@@ -240,6 +248,13 @@ def main():
 
         api("/torrents", {"action": "rem", "hash": ih})
         check(api("/torrents", {"action": "list"}) == [], "rem: library empty")
+
+        status, _, body = http("/download/3", rng="1048576-2097151")
+        check(status == 206 and len(body) == 1048576 and body.count(0) == len(body), "/download speed test, a range")
+        check(http("/storage/settings")[0] == 200, "/storage/settings")
+        check(http("/shutdown")[0] == 200, "/shutdown answered")
+        proc.wait(timeout=20)
+        check(proc.returncode == 0, "/shutdown: the daemon stopped")
         print("PASS")
         del ses
     finally:

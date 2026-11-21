@@ -50,7 +50,8 @@ namespace p2p {
 
         bool write(const void *data, size_t size);
 
-        bool send(int status, const std::string &type, const std::string &body);
+        bool send(int status, const std::string &type, const std::string &body,
+                  const std::map<std::string, std::string> &extra = {});
 
         bool json(int status, const std::string &body) { return send(status, "application/json; charset=utf-8", body); }
 

@@ -70,6 +70,7 @@ namespace p2p {
         if (v.is_array()) {
             for (const auto &item : v) {
                 ViewedRecord r;
+                r.user = str(item, "user");
                 r.hash = str(item, "hash");
                 r.fileIndex = static_cast<int>(num(item, "file_index"));
                 r.timecode = item.contains("timecode") && item["timecode"].is_number() ? item["timecode"].get<double>() : 0;
@@ -130,11 +131,11 @@ namespace p2p {
         saveViewed();
     }
 
-    std::vector<ViewedRecord> Store::viewed(const std::string &hash) const {
+    std::vector<ViewedRecord> Store::viewed(const std::string &user, const std::string &hash) const {
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<ViewedRecord> out;
         for (const auto &r : m_viewed) {
-            if (hash.empty() || r.hash == hash) {
+            if (r.user == user && (hash.empty() || r.hash == hash)) {
                 out.push_back(r);
             }
         }
@@ -144,7 +145,7 @@ namespace p2p {
     void Store::setViewed(const ViewedRecord &record) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = std::find_if(m_viewed.begin(), m_viewed.end(), [&](const ViewedRecord &r) {
-            return r.hash == record.hash && r.fileIndex == record.fileIndex;
+            return r.user == record.user && r.hash == record.hash && r.fileIndex == record.fileIndex;
         });
         if (it == m_viewed.end()) {
             m_viewed.push_back(record);
@@ -154,10 +155,10 @@ namespace p2p {
         saveViewed();
     }
 
-    void Store::removeViewed(const std::string &hash, int fileIndex) {
+    void Store::removeViewed(const std::string &user, const std::string &hash, int fileIndex) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_viewed.erase(std::remove_if(m_viewed.begin(), m_viewed.end(), [&](const ViewedRecord &r) {
-            return r.hash == hash && (fileIndex < 1 || r.fileIndex == fileIndex);
+            return r.user == user && r.hash == hash && (fileIndex < 1 || r.fileIndex == fileIndex);
         }), m_viewed.end());
         saveViewed();
     }
@@ -190,7 +191,11 @@ namespace p2p {
     void Store::saveViewed() const {
         json v = json::array();
         for (const auto &r : m_viewed) {
-            v.push_back({{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}});
+            json item = {{"hash", r.hash}, {"file_index", r.fileIndex}, {"timecode", r.timecode}};
+            if (!r.user.empty()) {
+                item["user"] = r.user;
+            }
+            v.push_back(item);
         }
         writeFile("viewed.json", v.dump(1));
     }

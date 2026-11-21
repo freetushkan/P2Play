@@ -169,8 +169,9 @@ namespace p2p {
         return sendAll(m_fd, data, size);
     }
 
-    bool HttpResponse::send(int status, const std::string &type, const std::string &body) {
-        return begin(status, type, static_cast<int64_t>(body.size())) && write(body.data(), body.size());
+    bool HttpResponse::send(int status, const std::string &type, const std::string &body,
+                            const std::map<std::string, std::string> &extra) {
+        return begin(status, type, static_cast<int64_t>(body.size()), extra) && write(body.data(), body.size());
     }
 
     HttpServer::~HttpServer() {

@@ -32,14 +32,35 @@ The TorrServer MatriX API in the part pPlay and Lampa use; file ids start from 1
 | `POST /torrent/upload` | .torrent files (multipart: `file`, `title`, `poster`, `data`, `save`) |
 | `GET /stream[/name]` | `?link=&index=` with `play` (the file, Range), `stat`, `preload`, `save`, `m3u`, `fromlast`, `title`, `poster` |
 | `GET /play/<hash>/<id>` | the file |
-| `POST /viewed` | `set` / `rem` / `list` with `hash`, `file_index`, `timecode` (the position, s) |
+| `POST /viewed` | `set` / `rem` / `list` with `hash`, `file_index`, `timecode` (the position, s); each user has their own |
 | `POST /settings` | `get` / `set` (`sets`) / `def`: TorrServer's BTSets; used: `CacheSize`, `ReaderReadAHead`, `PreloadCache`, `UseDisk`, `TorrentsSavePath`, `TorrentDisconnectTimeout`, `ConnectionsLimit`, rate limits, `DisableUpload`, `DisableDHT`, `DisableUPNP`, `PeersListenPort` |
 | `POST /cache` | `get`: the cache of a torrent |
 | `GET /playlist?hash=`, `GET /playlistall/all.m3u` | M3U of the media files |
+| `GET /download/<MB>` | the speed test: zeros, Range |
+| `GET/POST /storage/settings` | the storage (`ram` / `disk`) |
+| `GET /shutdown` | stops the server |
+| `POST /api/auth/login` | `{"username","password"}` → `{"token"}` and the `p2play_token` cookie; `/api/auth/logout`, `GET /api/auth/me` |
 
-Not yet: `torrs://` links and `https://` .torrent links (stage 3), users (stage 2), DLNA, search.
+Files in a torrent are sorted as TorrServer does (natural order: `e2` before `e10`), so the ids are the episode
+order. `add` and `/stream` fill a title, a poster or a category the torrent has no value for, as MatriX.
 
-The library (`torrents.json`; in `torrents/` libtorrent resume data with the metadata, v2 piece layers and peers, and uploaded .torrent files), the viewed files (`viewed.json`) and the settings
+### Users
+
+No users: everything is open. With users, every route but `/echo`, `/` and the login needs one of:
+a token (`?token=`, `Authorization: Bearer`, the `p2play_token` or `silo_token` cookie), as Silo, or
+`Authorization: Basic` (MatriX). A torrent already known can be played without one (`/stream` with `play` or
+`m3u`, `/play`, `/playlist`): players such as pPlay and VLC open those links without a login.
+
+- `auth.json` in the data directory: `{"users": [{"name": "me", "password": "...", "token": "ts_..."}]}`; a
+  missing token is generated and written back.
+- `accs.db` (MatriX: `{"user": "password"}`) is read as well, its users get Basic and a token.
+
+The MatriX API (and Basic with `accs.db`) is the compatibility layer `P2P_COMPAT_MATRIX` (CMake, ON): the
+core, the users and the tokens work without it, so the layer can be cut out once pPlay and Silo use the own API.
+
+Not yet: `torrs://` links and `https://` .torrent links (stage 3), DLNA, search, `/ffp`.
+
+The library (`torrents.json`; the users in `auth.json`; in `torrents/` libtorrent resume data with the metadata, v2 piece layers and peers, and uploaded .torrent files), the viewed files (`viewed.json`) and the settings
 (`settings.json`) are JSON files in the data directory. Torrents are opened when used and closed after
 `TorrentDisconnectTimeout` without a reader; those not in the library are then forgotten.
 
@@ -76,6 +97,7 @@ Layout:
   service, PS4 video playback ticks while streaming and exit through the system, PS5 notifications), the log,
   the data directories. p2playd on Linux and Android, the homebrew on Switch, PS4 and PS5.
 - `android/`: the APK around p2playd.
+- `tools/`: the core and auth tests (a local seeder, the CI runs them), `make-icon.py` (the icons of every platform).
 
 Debug symbols as pPlay: everything is built with `-g`, the release binaries are stripped, the full ones are
 kept in `build/symbols` (CI: `P2Play-Symbols-<platform>`). A crash: `crash.log` in the data directory, then

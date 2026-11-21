@@ -55,6 +55,44 @@ namespace p2p {
             return s;
         }
 
+        // the digits at the start of s; false if none or too many (Go's strconv.Atoi)
+        bool numberPrefix(const std::string &s, int64_t &out) {
+            size_t n = 0;
+            while (n < s.size() && std::isdigit(static_cast<unsigned char>(s[n]))) {
+                n++;
+            }
+            if (n == 0 || n > 18) {
+                return false;
+            }
+            out = std::stoll(s.substr(0, n));
+            return true;
+        }
+
+        // TorrServer's file order (server/utils CompareStrings): after the common prefix (back
+        // to the start of a number it ends in), numbers compare as numbers: "e2" before "e10"
+        bool torrServerLess(const std::string &first, const std::string &second) {
+            size_t prefix = 0;
+            while (prefix < first.size() && prefix < second.size() && first[prefix] == second[prefix]) {
+                prefix++;
+            }
+            while (prefix > 0 && std::isdigit(static_cast<unsigned char>(first[prefix - 1]))) {
+                prefix--;
+            }
+            const std::string a = first.substr(prefix), b = second.substr(prefix);
+            int64_t na = 0, nb = 0;
+            const bool ha = numberPrefix(a, na), hb = numberPrefix(b, nb);
+            if (ha && hb) {
+                return na == nb ? a < b : na < nb;
+            }
+            if (ha) {
+                return true;
+            }
+            if (hb) {
+                return false;
+            }
+            return a < b;
+        }
+
         bool readFile(const std::string &path, std::string &out) {
             std::ifstream in(path, std::ios::binary);
             if (!in) {
@@ -152,6 +190,19 @@ namespace p2p {
         return "MatriX.141 P2Play/0.1";
     }
 
+    std::string Core::hashOfLink(const std::string &link) {
+        if (isHex40(link)) {
+            return lower(link);
+        }
+        std::string magnet = isBase32(link) ? "magnet:?xt=urn:btih:" + link : link;
+        if (magnet.rfind("magnet:", 0) != 0) {
+            return "";
+        }
+        lt::error_code ec;
+        lt::add_torrent_params atp = lt::parse_magnet_uri(magnet, ec);
+        return ec ? std::string() : hexOf(atp.info_hashes);
+    }
+
     int Core::activeStreams() {
         std::lock_guard<std::mutex> lock(m_mutex);
         int n = 0;
@@ -185,6 +236,7 @@ namespace p2p {
 
     bool Core::start() {
         m_store.load();
+        m_auth.load(m_store.dir());
         loadSettings();
         // one BitTorrent port for every socket, chosen once and kept (0: a random port per
         // socket, which the DHT cannot announce)
@@ -248,9 +300,10 @@ namespace p2p {
             stop();
             return false;
         }
-        log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library", version(),
-            LIBTORRENT_VERSION, m_cache ? ("ram " + std::to_string(m_settings.cacheSize >> 20) + " MB").c_str() : "disk",
-            m_http.port(), static_cast<int>(m_torrents.size()));
+        log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library, authorization %s",
+            version(), LIBTORRENT_VERSION,
+            m_cache ? ("ram " + std::to_string(m_settings.cacheSize >> 20) + " MB").c_str() : "disk",
+            m_http.port(), static_cast<int>(m_torrents.size()), m_auth.required() ? "on" : "off");
         return true;
     }
 
@@ -419,6 +472,7 @@ namespace p2p {
         const std::string hash = hexOf(atp.info_hashes);
 
         TorrentPtr t;
+        bool filled = false;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             auto it = m_torrents.find(hash);
@@ -434,20 +488,24 @@ namespace p2p {
                 }
                 m_torrents[hash] = t;
             }
-            if (!title.empty()) t->rec.title = title;
-            if (!poster.empty()) t->rec.poster = poster;
-            if (!category.empty()) t->rec.category = category;
-            if (!data.empty()) t->rec.data = data;
+            // MatriX's AddTorrent: a field given fills an empty one (set changes them)
+            const TorrentRecord before = t->rec;
+            if (!title.empty() && (t->rec.title.empty() || t->rec.title == atp.name)) t->rec.title = title;
+            if (!poster.empty() && t->rec.poster.empty()) t->rec.poster = poster;
+            if (!category.empty() && t->rec.category.empty()) t->rec.category = category;
+            if (!data.empty() && t->rec.data.empty()) t->rec.data = data;
+            filled = t->saved && (before.title != t->rec.title || before.poster != t->rec.poster ||
+                                  before.category != t->rec.category || before.data != t->rec.data);
             t->lastUse = Clock::now();
         }
         if (!activate(t, error)) {
             return nullptr;
         }
         if (save) {
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                t->saved = true;
-            }
+            std::lock_guard<std::mutex> lock(m_mutex);
+            t->saved = true;
+        }
+        if (save || filled) {
             this->save(t);
         }
         return t;
@@ -569,8 +627,8 @@ namespace p2p {
             return;
         }
         const lt::file_storage &fs = ti->files();
-        std::vector<FileInfo> files;
-        std::vector<lt::file_index_t> index;
+        // the files in TorrServer's order (by path, numbers as numbers), ids from 1 in it
+        std::vector<std::pair<std::string, lt::file_index_t>> sorted;
         int64_t size = 0;
         for (lt::file_index_t i : fs.file_range()) {
             if (fs.pad_file_at(i)) {
@@ -578,9 +636,18 @@ namespace p2p {
             }
             std::string path = fs.file_path(i);
             std::replace(path.begin(), path.end(), '\\', '/');
-            files.push_back({static_cast<int>(files.size()) + 1, path, fs.file_size(i)});
-            index.push_back(i);
+            sorted.emplace_back(path, i);
             size += fs.file_size(i);
+        }
+        // stable_sort: the comparison is not a strict order in every case (std::sort may then
+        // run past the range)
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const auto &a, const auto &b) { return torrServerLess(a.first, b.first); });
+        std::vector<FileInfo> files;
+        std::vector<lt::file_index_t> index;
+        for (const auto &f : sorted) {
+            files.push_back({static_cast<int>(files.size()) + 1, f.first, fs.file_size(f.second)});
+            index.push_back(f.second);
         }
         // nothing is downloaded but the readers' windows
         h.prioritize_files(std::vector<lt::download_priority_t>(static_cast<size_t>(fs.num_files()), lt::dont_download));
