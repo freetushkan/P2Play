@@ -2,8 +2,10 @@
 
 All-in-one torrent streamer with a decentralized catalog (MediaMesh), for Linux, Android, Switch, PS4, PS5 and later pPlay.
 
-Stage 2 of the roadmap: the API of Silo's scheme, users and progress. A server compatible with TorrServer
-(MatriX and Silo's API): pPlay and Lampa use it instead of TorrServer, on the same device or over the network.
+Stage 3 development: signed MediaMesh peer pointers, selective catalog replication, media packs,
+shards and publisher transport. A server compatible with TorrServer (MatriX and Silo's API): pPlay
+and Lampa use it instead of TorrServer, on the same device or over the network. This does not claim
+completion of every roadmap condition; see the implementation boundaries below.
 
 ## Running
 
@@ -62,7 +64,7 @@ trackers)) are added on both APIs as any other link; the status of `/api` gives 
 as Silo, for Silo's clients (TorrServe Silo for Android). Not here: Silo's transcoding and plugins.
 Unlike Silo, a stream does not mark a file viewed (players read the end of a file first): the progress does.
 
-### MediaMesh lists (stage 3, the local half)
+### MediaMesh lists (stage 3)
 
 A list is an ed25519 key; a version is a signed manifest and append-only segments of records,
 in `lists/<pubkey>/` of the data directory (the format: `src/core/mesh.hpp`). The lists of a node are
@@ -83,7 +85,35 @@ first: the rating), and asks the DHT at once for a newer version of a list it ho
 
 A catalog node (`P2PCatalogOnly` in the settings): the lists, the directory and the search, no streamer (the
 torrent and stream routes answer 404): beside Silo, for its plugin, or on a server holding lists round the
-clock. Not yet: pointers pushed through the extension, media packs and shards, the releaser's proxy. `P2PDhtBootstrap` (settings, `host:port,...`): a DHT of one's own (tests, a LAN).
+clock. `P2PDhtBootstrap` (settings, `host:port,...`): a DHT of one's own (tests, a LAN).
+
+The extension now exchanges signed `get`/`item` pointers, independent of DHT availability;
+receivers check the BEP 44 signature, salt, sequence and canonical value before fetching.
+[Peer exchange format and bounds](docs/peer-items.md) describes persistence and relay behavior.
+
+[Media packs, shards and snapshots](docs/media-shards.md) documents the signed format and API:
+`POST /api/publish/:pk/media/{description,poster}`, `POST .../snapshot`,
+`GET /api/catalog/:ih/{description,poster}` and `GET/POST /api/lists/:pk/policy`.
+Replication authenticates the manifest first, downloads only admitted record shards, and queues
+missing media in a bounded background worker. A pending media response is 503; retry after the
+pack is installed. `mirror_media` defaults to false. Partial holders preserve the original torrent
+identity across restarts and never use seed mode. Lazy retrieval currently downloads the **whole
+containing pack**, not an individual object's byte range. Budgets cover retained payload per list,
+not total filesystem usage or temporary working copies. Catalog lists/policies remain node-wide,
+not separate subscription replicas for every API user.
+
+[Publisher SOCKS5 and namespace/VPN deployment](docs/publisher-proxy.md) covers startup-only
+`PublisherProxy`, UDP ASSOCIATE, credential handling and network boundaries. It applies to the
+whole libtorrent session. It is not an anonymity guarantee; use OS egress controls when required.
+HTTP(S) torrent URL fetching is disabled in this mode rather than bypassing the proxy.
+
+[The Silo plugin](docs/silo-plugin.md) lives in `plugins/mediamesh/`, pinned and tested against
+upstream Silo commit `3610db846fd2132f06aa626a4cb94f4a0cfa69ae`. Its search/list UI keeps the daemon
+token server-side and adds selected v1 torrents to the authenticated Silo user's library. The
+pinned Silo host lacks DELETE HTTP and v2 torrent parsing: subscription removal stays in the
+daemon API and v2-only results cannot be added. No upstream Silo patch is required.
+Native Linux tests cover storage with ASan/UBSan, raw peer messages, real selective transfers,
+restarts and a local SOCKS5 fixture; platform SDK/runtime validation remains outstanding.
 
 | Route | |
 | --- | --- |

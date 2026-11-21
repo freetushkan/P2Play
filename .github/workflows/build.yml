@@ -55,6 +55,22 @@ jobs:
           python3 tools/mesh-test.py build/src/app/p2playd
           python3 tools/meshnet-test.py build/src/app/p2playd
 
+      - name: MediaMesh stage 3 integration
+        run: |
+          python3 -I tools/peer-items-test.py build/src/app/p2playd
+          python3 -I tools/mesh-media-test.py build/src/app/p2playd
+          python3 -I tools/mesh-selective-test.py build/src/app/p2playd
+          python3 -I tools/proxy-test.py build/src/app/p2playd
+          node --check plugins/mediamesh/service.js
+          node --check plugins/mediamesh/app.js
+
+      # The storage harness reads Makefile compile flags; keep this separate from Ninja.
+      - name: MediaMesh storage sanitizers
+        run: |
+          cmake -S . -B build-mesh-storage -G 'Unix Makefiles' -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          cmake --build build-mesh-storage --target torrent-rasterbar -j$(nproc)
+          python3 -I tools/mesh-media-test.py --build-dir build-mesh-storage --sanitize
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
