@@ -8,7 +8,8 @@ Checks: version and stats; add a magnet (JSON) and a .torrent (multipart); the s
 file indexes from 0 in TorrServer's order, names and file hashes; /api/stream with Range;
 progress: a position, viewed past 90 %, "continue watching", the same position on MatriX's
 /viewed (stage 2: the progress of one client seen on another); viewed by hand; the card
-edited; the library and the progress after a restart; delete.
+edited; the library and the progress after a restart; torrs:// (in the status, the
+library exported and imported as .torrs, a link added on MatriX); delete.
 """
 
 import hashlib
@@ -43,6 +44,13 @@ def call(path, body=None, method=None, headers=None, raw=None):
     except urllib.error.HTTPError as e:
         out = e.read()
         return e.code, json.loads(out) if out else None
+
+
+# Silo's torrshash.Pack: hash 5d902edb..., the title, a poster, category tv, size 12345678901,
+# two trackers
+SILO_TORRS = ("torrs://5V3A1LVmilvK3xy16gIRAZHoBqmfO4ZJRkLu0FqKxbaOTByQQ75puVqjMLNZSlYSKRl4Z1gafbO2eYk8VaSmksQ0m1r6Gz"
+              "SlQzEBJqFBNsFsxkP4kyOJRXrUG1PBEMI3V36EkiUklKtSDyzw6r6u9NHANQaQxIJKLNkt8Onb0yUtWESOsaZQfDgBZnJpHTsmZ1c0Qj"
+              "6v3wF1weo92UChPiSaCXUPLTfbQiqavSXIF5umBAtOqrC4Fuuytq3WF")
 
 
 def wait_files(ih):
@@ -135,9 +143,35 @@ def main():
         check(st["title"] == "Show 2" and any(fp["id"] == 0 and fp["position"] == 600 for fp in st["file_progress"]),
               "after a restart: the card and the progress")
 
+        # torrs://: in the status, the library out and in, a link added on MatriX
+        torrs = st.get("torrs", "")
+        check(torrs.startswith("torrs://"), "torrs:// in the status")
+        status, body = call("/api/library/export")
+        lines = body.decode().split()
+        check(status == 200 and lines == [torrs], "the library exported as .torrs")
         check(call(f"/api/torrents/{ih}", method="DELETE")[0] == 200 and call("/api/torrents")[1]["torrents"] == []
               and call(f"/api/torrents/{ih}")[0] == 404, "delete")
+        status, out = call("/api/library/import", raw=body, headers={"Content-Type": "text/plain"})
+        listed = call("/api/torrents")[1]["torrents"]
+        check(status == 200 and out["count"] == 1 and [t["hash"] for t in listed] == [ih]
+              and listed[0]["title"] == "Show 2" and listed[0]["category"] == "tv", "imported: the card back")
+        check(call("/api/library/import", raw=body, headers={"Content-Type": "text/plain"})[1]["count"] == 0,
+              "imported again: nothing new")
+        check(listed[0]["stat"] == 5, "an imported card is not opened (as Silo)")
+        check(call(f"/api/torrents/{ih}", method="DELETE")[0] == 200, "delete again")
+        st = ct.api("/torrents", {"action": "add", "link": torrs, "save_to_db": True})
+        check(st["hash"] == ih and st["title"] == "Show 2", "MatriX add: a torrs:// link")
+        ct.api("/torrents", {"action": "rem", "hash": ih})
+        check(call("/api/torrents")[1]["torrents"] == [], "removed on MatriX")
         check(call("/api/progress")[1]["progress"] == [], "the progress of a deleted torrent gone")
+
+        # a link packed by Silo's internal/torrshash (Go): read as Silo writes it
+        status, out = call("/api/library/import", raw=SILO_TORRS.encode(), headers={"Content-Type": "text/plain"})
+        card = call("/api/torrents/5d902edb06f1ca0d2a713ce3cdd395b75d36f735")[1]
+        check(status == 200 and out["count"] == 1 and card["title"] == "Сериал S01 (2024) WEB-DL 1080p"
+              and card["poster"] == "https://image.tmdb.org/t/p/w500/abc.jpg" and card["category"] == "tv"
+              and card["torrent_size"] == 12345678901, "a torrs:// link of Silo")
+        check(call("/api/torrents/5d902edb06f1ca0d2a713ce3cdd395b75d36f735", method="DELETE")[0] == 200, "its card removed")
         print("PASS")
         del ses
     finally:

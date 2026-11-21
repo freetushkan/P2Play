@@ -12,10 +12,10 @@ The server answers on port **8090** (TorrServer's): `http://<device ip>:8090`.
 | Platform | Run | Data directory | Quit |
 | --- | --- | --- | --- |
 | Linux | `p2playd [--data DIR] [--port N]`, or the systemd unit `p2playd.service` | `$P2PLAY_DATA`, else `~/.local/share/p2play` | Ctrl+C / SIGTERM |
-| Android | `p2play-android.apk`: allow all files access; the server starts with the app (a foreground service). A magnet typed, pasted, opened or shared with the app is added and its largest media file opened in a player; `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity` | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
+| Android | `p2play-android.apk`: allow all files access; the server starts with the app (a foreground service). A magnet or a `torrs://` link typed, pasted, opened or shared with the app is added and its largest media file opened in a player; "Share torrs://" shares the newest torrent's link; `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity` | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
 | Switch | `p2play.nro` from hbmenu (application mode, not the album) | `sdmc:/switch/p2play` | `+` |
 | PS4 | install the pkg, launch | `/data/p2play` | create `/data/p2play/stop` |
-| PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | create `/data/p2play/stop` |
+| PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | launch it again (the running server stops; the next launch starts the new one, after an update too), or create `/data/p2play/stop` |
 
 The log: `p2play.log` in the data directory (Switch: also on the screen, PS4/PS5: klog, PS5: a toast with the address).
 A crash: `crash.log` there (every platform, see Layout); an uncaught exception also writes its reason to
@@ -50,9 +50,12 @@ episode order on both APIs (Silo id = MatriX id - 1).
 | `GET /api/progress?since=<unix time>` | "continue watching": the user's files with a position, the latest first (new) |
 | `GET /api/torrents/:hash/cache`, `.../peers` | 204 when closed |
 | `GET /api/stream/:hash/:idx` | the file, Range; `?token=` for players |
+| `GET /api/library/export`, `POST /api/library/import` | the library as `.torrs` (a `torrs://` link a line); imported cards are not opened |
 | `GET/POST /api/users`, `PUT/DELETE /api/users/:id`, `POST .../regenerate-token`, `POST .../rank`, `GET .../torrents` | Silo's user management by rank |
 
-Not yet: `torrs://` and the library in `.torrs` (stage 3), `/api/events` (SSE), Silo's transcoding and plugins.
+`torrs://` links (TorrServer's TorrsHash: base62 of zlib(the infohash, title, poster, category, size,
+trackers)) are added on both APIs as any other link; the status of `/api` gives each torrent's (`torrs`).
+Not yet: `/api/events` (SSE), Silo's transcoding and plugins.
 Unlike Silo, a stream does not mark a file viewed (players read the end of a file first): the progress does.
 
 ### MatriX
@@ -89,7 +92,10 @@ Each user has their own library and progress; a torrent no library holds is forg
 A torrent already known can be played on the MatriX routes without a login (`/stream` with `play` or `m3u`,
 `/play`, `/playlist`): players such as pPlay and VLC open those links without credentials.
 
-Not yet: `https://` .torrent links (stage 3), DLNA, search, `/ffp`.
+Discovery: pPlay and TorrServe find a TorrServer on port 8090 by `/echo` (public, `MatriX.141 P2Play/...`:
+MatriX's version prefix); Silo's clients by the public `/api/system/ping`.
+
+Not yet: `https://` .torrent links, DLNA, the catalog and search (stage 3), `/ffp`.
 
 The library (`torrents.json`, with whose libraries hold each torrent; the users in `auth.json`; in `torrents/` libtorrent resume data with the metadata, v2 piece layers and peers, and uploaded .torrent files), the progress (`viewed.json`) and the settings
 (`settings.json`) are JSON files in the data directory. Torrents are opened when used and closed after

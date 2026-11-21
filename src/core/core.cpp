@@ -26,6 +26,7 @@
 #include <libtorrent/write_resume_data.hpp>
 
 #include "core_torrent.hpp"
+#include "torrs.hpp"
 
 namespace p2p {
 
@@ -191,6 +192,10 @@ namespace p2p {
     }
 
     std::string Core::hashOfLink(const std::string &link) {
+        Torrs th;
+        if (link.rfind("torrs://", 0) == 0) {
+            return torrsUnpack(link, th) ? th.hash : std::string();
+        }
         if (isHex40(link)) {
             return lower(link);
         }
@@ -428,6 +433,69 @@ namespace p2p {
         return out;
     }
 
+    bool Core::addCard(const std::string &link, const std::string &user) {
+        Torrs th;
+        if (!torrsUnpack(link, th)) {
+            return false;
+        }
+        TorrentPtr t;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_torrents.find(th.hash);
+            if (it != m_torrents.end()) {
+                t = it->second;
+                if (t->rec.title.empty()) t->rec.title = th.title;
+                if (t->rec.poster.empty()) t->rec.poster = th.poster;
+                if (t->rec.category.empty()) t->rec.category = th.category;
+            } else {
+                t = std::make_shared<Torrent>();
+                t->rec.hash = th.hash;
+                t->rec.link = "magnet:?xt=urn:btih:" + th.hash;
+                if (!th.title.empty()) {
+                    t->rec.link += "&dn=" + HttpServer::urlEncode(th.title);
+                }
+                for (const std::string &tr : th.trackers) {
+                    t->rec.link += "&tr=" + HttpServer::urlEncode(tr);
+                }
+                t->rec.title = th.title;
+                t->rec.poster = th.poster;
+                t->rec.category = th.category;
+                t->rec.size = th.size;
+                t->rec.timestamp = static_cast<int64_t>(time(nullptr));
+                m_torrents[th.hash] = t;
+            }
+        }
+        keep(t, user);
+        save(t);
+        return true;
+    }
+
+    std::string Core::torrsOf(const TorrentPtr &t) {
+        TorrentRecord rec;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            rec = t->rec;
+        }
+        Torrs th;
+        th.hash = rec.hash.substr(0, 40);
+        th.title = rec.title == rec.name ? "" : rec.title;  // the name is in the metadata
+        th.poster = rec.poster;
+        th.category = rec.category;
+        th.size = rec.size;
+        // the magnet's trackers
+        size_t pos = 0;
+        while ((pos = rec.link.find("tr=", pos)) != std::string::npos) {
+            if (pos > 0 && rec.link[pos - 1] != '&' && rec.link[pos - 1] != '?') {
+                pos += 3;
+                continue;
+            }
+            size_t end = rec.link.find('&', pos);
+            th.trackers.push_back(HttpServer::urlDecode(rec.link.substr(pos + 3, end == std::string::npos ? std::string::npos : end - pos - 3), false));
+            pos += 3;
+        }
+        return rec.hash.size() == 40 ? torrsPack(th) : std::string();
+    }
+
     std::vector<Core::TorrentPtr> Core::listOf(const std::string &user, bool withOpen) {
         std::vector<TorrentPtr> out;
         for (const TorrentPtr &t : list()) {
@@ -512,6 +580,25 @@ namespace p2p {
             }
             return addMetadata(body, title, poster, category, data, saveFor, error);
         }
+        // torrs://: the infohash, the trackers and the card's fields (those given win)
+        std::string title2 = title, poster2 = poster, category2 = category;
+        if (link.rfind("torrs://", 0) == 0) {
+            Torrs th;
+            if (!torrsUnpack(link, th)) {
+                error = "bad torrs:// link";
+                return nullptr;
+            }
+            link = "magnet:?xt=urn:btih:" + th.hash;
+            if (!th.title.empty()) {
+                link += "&dn=" + HttpServer::urlEncode(th.title);
+            }
+            for (const std::string &tr : th.trackers) {
+                link += "&tr=" + HttpServer::urlEncode(tr);
+            }
+            if (title2.empty()) title2 = th.title;
+            if (poster2.empty()) poster2 = th.poster;
+            if (category2.empty()) category2 = th.category;
+        }
         std::string magnet = link;
         if (isHex40(link) || isBase32(link)) {
             magnet = "magnet:?xt=urn:btih:" + link;
@@ -547,9 +634,9 @@ namespace p2p {
             }
             // MatriX's AddTorrent: a field given fills an empty one (set changes them)
             const TorrentRecord before = t->rec;
-            if (!title.empty() && (t->rec.title.empty() || t->rec.title == atp.name)) t->rec.title = title;
-            if (!poster.empty() && t->rec.poster.empty()) t->rec.poster = poster;
-            if (!category.empty() && t->rec.category.empty()) t->rec.category = category;
+            if (!title2.empty() && (t->rec.title.empty() || t->rec.title == atp.name)) t->rec.title = title2;
+            if (!poster2.empty() && t->rec.poster.empty()) t->rec.poster = poster2;
+            if (!category2.empty() && t->rec.category.empty()) t->rec.category = category2;
             if (!data.empty() && t->rec.data.empty()) t->rec.data = data;
             filled = t->saved && (before.title != t->rec.title || before.poster != t->rec.poster ||
                                   before.category != t->rec.category || before.data != t->rec.data);

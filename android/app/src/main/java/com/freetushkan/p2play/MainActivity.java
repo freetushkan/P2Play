@@ -89,7 +89,7 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
-    // a magnet from VIEW or SEND: added and played
+    // a magnet or a torrs:// link from VIEW or SEND: added and played
     private void handleIntent(Intent intent) {
         if (intent == null) {
             return;
@@ -148,7 +148,7 @@ public class MainActivity extends Activity {
         root.addView(server, matchWrap());
 
         mLink = new EditText(this);
-        mLink.setHint("magnet:?xt=urn:btih:... or an infohash");
+        mLink.setHint("magnet:?xt=urn:btih:..., torrs://... or an infohash");
         mLink.setSingleLine(true);
         mLink.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         root.addView(mLink, matchWrap());
@@ -157,6 +157,7 @@ public class MainActivity extends Activity {
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         buttons.addView(button("Add & play", v -> addAndPlay()));
         buttons.addView(button("Paste", v -> paste()));
+        buttons.addView(button("Share torrs://", v -> shareTorrs()));
         root.addView(buttons, matchWrap());
 
         mStatus = new TextView(this);
@@ -331,16 +332,55 @@ public class MainActivity extends Activity {
         }
     }
 
+    // the torrs:// link of the newest torrent of the library, shared (a messenger, pPlay, TorrServe)
+    private void shareTorrs() {
+        new Thread(() -> {
+            String link = null, title = null;
+            try {
+                JSONArray list = new JSONObject(request("GET", "/api/torrents", null)).getJSONArray("torrents");
+                long newest = -1;
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject t = list.getJSONObject(i);
+                    if (t.has("torrs") && t.optLong("timestamp") > newest) {
+                        newest = t.optLong("timestamp");
+                        link = t.getString("torrs");
+                        title = t.optString("title");
+                    }
+                }
+            } catch (Exception e) {
+                link = null;
+            }
+            final String text = link, name = title;
+            runOnUiThread(() -> {
+                if (text == null) {
+                    mStatus.setText("No torrent to share");
+                    return;
+                }
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("text/plain");
+                send.putExtra(Intent.EXTRA_SUBJECT, name);
+                send.putExtra(Intent.EXTRA_TEXT, text);
+                startActivity(Intent.createChooser(send, name));
+            });
+        }, "share").start();
+    }
+
     private static String post(String path, String body) throws Exception {
+        return request("POST", path, body);
+    }
+
+    private static String request(String method, String path, String body) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(LOCAL + path).openConnection();
         try {
             c.setConnectTimeout(1500);
             c.setReadTimeout(10000);
-            c.setDoOutput(true);
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "application/json");
-            try (OutputStream out = c.getOutputStream()) {
-                out.write(body.getBytes("UTF-8"));
+            c.setRequestMethod(method);
+            if (body != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                try (OutputStream out = c.getOutputStream()) {
+                    out.write(body.getBytes("UTF-8"));
+                }
             }
             InputStream in = c.getResponseCode() < 400 ? c.getInputStream() : c.getErrorStream();
             ByteArrayOutputStream buf = new ByteArrayOutputStream();

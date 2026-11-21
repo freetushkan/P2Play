@@ -124,6 +124,10 @@ namespace p2p {
         TorrentPtr addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
                                const std::string &category, const std::string &data, const std::string &saveFor,
                                std::string &error);
+        // a torrs:// card into a user's library, not opened (Silo's import); false: a bad link
+        bool addCard(const std::string &link, const std::string &user);
+        // the torrs:// link of a torrent (its card, size and trackers)
+        std::string torrsOf(const TorrentPtr &t);
         TorrentPtr find(const std::string &hash);
         std::vector<TorrentPtr> list();
         // the torrents of a user's library; withOpen: and the open ones no library holds

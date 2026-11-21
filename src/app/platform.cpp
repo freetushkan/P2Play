@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <sys/stat.h>
 
@@ -188,25 +189,173 @@ bool p2p::platformIsConsole() { return true; }
 
 #elif defined(__PS5__)
 
+#include <cerrno>
 #include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/sysctl.h>
 #include <ps5/klog.h>
 
 extern "C" int sceKernelSendNotificationRequest(int device, void *request, size_t size, int blocking);
 
+// A payload has no system "already running": the icon opened again starts a second
+// process next to the first (and an updated package runs beside the old server). As the
+// pPlay loader: the process names its main thread and finds another one by it. Opening the
+// icon again stops the running server (asked over a loopback control socket, killed if it
+// does not go); the next opening starts the new one.
+namespace {
+    constexpr const char *kThreadName = "p2play";
+    constexpr uint16_t kControlPort = 9097;   // pPlay holds 9095
+    int g_control = -1;
+
+    // the pid of another process whose (main) thread is named so, -1 if none (pPlay's hbldr)
+    pid_t findOther(const char *name) {
+        int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
+        size_t size = 0;
+        if (sysctl(mib, 4, nullptr, &size, nullptr, 0) != 0 || size == 0) {
+            return -1;
+        }
+        size += size / 4;
+        std::vector<uint8_t> buf(size);
+        if (sysctl(mib, 4, buf.data(), &size, nullptr, 0) != 0) {
+            return -1;
+        }
+        const pid_t self = getpid();
+        for (size_t off = 0; off + 460 <= size;) {
+            const uint8_t *p = buf.data() + off;
+            int structSize;
+            pid_t pid;
+            std::memcpy(&structSize, p, sizeof(structSize));
+            std::memcpy(&pid, p + 72, sizeof(pid));
+            if (structSize <= 0) {
+                break;
+            }
+            if (pid != self && std::strncmp(reinterpret_cast<const char *>(p + 447), name, 20) == 0) {
+                return pid;
+            }
+            off += static_cast<size_t>(structSize);
+        }
+        return -1;
+    }
+
+    sockaddr_in loopback(uint16_t port) {
+        sockaddr_in addr{};
+        addr.sin_len = sizeof(addr);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        return addr;
+    }
+
+    // a GET on 127.0.0.1; the answer's start
+    std::string localGet(uint16_t port, const char *path) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return "";
+        }
+        timeval tv{2, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        sockaddr_in addr = loopback(port);
+        std::string out;
+        if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
+            std::string req = std::string("GET ") + path + " HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+            if (send(fd, req.data(), req.size(), 0) == static_cast<ssize_t>(req.size())) {
+                char b[512];
+                ssize_t n;
+                while (out.size() < 4096 && (n = recv(fd, b, sizeof(b), 0)) > 0) {
+                    out.append(b, static_cast<size_t>(n));
+                }
+            }
+        }
+        close(fd);
+        return out;
+    }
+
+    // the running server asked to quit, killed after 10 s
+    void stopOther(pid_t other) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+            sockaddr_in addr = loopback(kControlPort);
+            if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
+                send(fd, "quit\n", 5, 0);
+            }
+            close(fd);
+        }
+        for (int i = 0; i < 50 && findOther(kThreadName) == other; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        if (findOther(kThreadName) == other) {
+            klog_printf("[p2play] the running server (pid %d) did not quit: killed\n", static_cast<int>(other));
+            kill(other, SIGKILL);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+}
+
 bool p2p::platformInit() {
     signal(SIGPIPE, SIG_IGN);
+    syscall(SYS_thr_set_name, -1, kThreadName);
     mkdir(dataDir().c_str(), 0777);
+
+    // opened again: the running server stops, this process too (before the log is opened,
+    // it is the other's)
+    if (pid_t other = findOther(kThreadName); other > 0) {
+        klog_printf("[p2play] already running (pid %d): stopping it\n", static_cast<int>(other));
+        stopOther(other);
+        platformNotify("P2Play: stopped. Open it again to start");
+        return false;
+    }
+    // a server from before this (no thread name): its MatriX /shutdown
+    if (localGet(8090, "/echo").find("P2Play/") != std::string::npos) {
+        klog_printf("[p2play] an older server answers on 8090: /shutdown\n");
+        localGet(8090, "/shutdown");
+        platformNotify("P2Play: stopped. Open it again to start");
+        return false;
+    }
+
+    g_control = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr = loopback(kControlPort);
+    int one = 1;
+    setsockopt(g_control, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    if (g_control >= 0 && (bind(g_control, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 ||
+                           listen(g_control, 4) != 0)) {
+        close(g_control);
+        g_control = -1;
+    }
+    if (g_control >= 0) {
+        fcntl(g_control, F_SETFL, fcntl(g_control, F_GETFL, 0) | O_NONBLOCK);
+    }
     return true;
 }
 
-void p2p::platformExit() {}
+void p2p::platformExit() {
+    if (g_control >= 0) {
+        close(g_control);
+        g_control = -1;
+    }
+}
 
 bool p2p::platformRunning() {
     struct stat st{};
     if (stat((dataDir() + "/stop").c_str(), &st) == 0) {
         remove((dataDir() + "/stop").c_str());
         return false;
+    }
+    // another opening of the icon
+    if (g_control >= 0) {
+        int fd = accept(g_control, nullptr, nullptr);
+        if (fd >= 0) {
+            close(fd);
+            platformPrint("[App] opened again: quitting");
+            return false;
+        }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     return true;

@@ -2,7 +2,8 @@
 // progress added (PUT .../progress, file_progress, GET /api/progress). File indexes from 0
 // (MatriX's id - 1), in TorrServer's order. Errors: {"error": "..."}. Every route needs a
 // token (api_auth.cpp); without users set every request is the owner's.
-// Not here yet: torrs:// and the library in .torrs (stage 3), /api/events (SSE), Silo's
+// torrs:// links are added as any other and given in the status ("torrs"); the library
+// goes in and out as .torrs (a torrs:// link a line). Not here yet: /api/events (SSE), Silo's
 // transcoding, plugins and engine settings (the settings are MatriX's /settings).
 
 #include <algorithm>
@@ -143,6 +144,10 @@ namespace p2p {
         }
         j["viewed_files"] = viewed;
         j["file_progress"] = progress;
+        const std::string torrs = torrsOf(t);
+        if (!torrs.empty()) {
+            j["torrs"] = torrs;
+        }
         return j;
     }
 
@@ -231,6 +236,49 @@ namespace p2p {
         // continue watching
         if (get && n == 2 && at(1) == "progress") {
             ok(res, 200, {{"progress", siloProgress(user.id, std::atoll(req.param("since").c_str()))}});
+            return;
+        }
+
+        // the library as .torrs, as Silo
+        if (at(1) == "library" && n == 3) {
+            if (get && at(2) == "export") {
+                std::string text;
+                for (const TorrentPtr &t : listOf(user.id, false)) {
+                    std::string line = torrsOf(t);
+                    if (!line.empty()) {
+                        text += line + "\n";
+                    }
+                }
+                res.send(200, "text/plain; charset=utf-8", text,
+                         {{"Content-Disposition", "attachment; filename=\"p2play-library.torrs\""}});
+            } else if (m == "POST" && at(2) == "import") {
+                std::string text = req.body;
+                if (req.header("content-type").rfind("multipart/form-data", 0) == 0) {
+                    auto parts = parseMultipart(req);
+                    text = parts.count("file") ? parts["file"].second : "";
+                }
+                int count = 0;
+                size_t pos = 0;
+                while (pos < text.size()) {
+                    size_t end = text.find('\n', pos);
+                    std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+                    pos = end == std::string::npos ? text.size() : end + 1;
+                    line.erase(0, line.find_first_not_of(" \t\r"));
+                    line.erase(line.find_last_not_of(" \t\r") + 1);
+                    if (line.empty()) {
+                        continue;
+                    }
+                    TorrentPtr known = find(hashOfLink(line.rfind("torrs://", 0) == 0 ? line : "torrs://" + line));
+                    if (known && owns(known, user.id)) {
+                        continue;
+                    }
+                    count += addCard(line, user.id) ? 1 : 0;
+                }
+                log("[Web] %s imported %d torrent(s)", user.name.c_str(), count);
+                ok(res, 200, {{"status", "imported"}, {"count", count}});
+            } else {
+                error(res, 404, "not found");
+            }
             return;
         }
 
@@ -467,10 +515,6 @@ namespace p2p {
         link.erase(link.find_last_not_of(" \t\r\n") + 1);
         if (file.empty() && link.empty()) {
             error(res, 400, "torrent file or link is required");
-            return;
-        }
-        if (link.rfind("torrs://", 0) == 0) {
-            error(res, 400, "torrs:// links come with the catalog (not yet)");
             return;
         }
         std::string err;

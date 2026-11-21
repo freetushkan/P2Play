@@ -66,6 +66,11 @@ def main():
         owner = basic("owner", "secret")
 
         check(call("/echo")[0] == 200 and call("/api/system/ping")[0] == 200, "/echo and the ping without a user")
+        # pPlay's discovery: port 8090, /echo answered with 200, its first 40 characters without '<';
+        # TorrServe for Android takes a MatriX server by the "MatriX." prefix
+        status, _, echo = call("/echo")
+        check(status == 200 and echo.decode().startswith("MatriX.") and "<" not in echo.decode()[:40],
+              "found by pPlay's discovery and TorrServe with users set: " + echo.decode())
         stored = json.load(open(os.path.join(data, "auth.json")))["users"][0]
         check(stored["password_hash"].startswith("sha256$") and "password" not in stored, "auth.json: the password hashed")
 

@@ -4,7 +4,7 @@ option(P2P_COMPAT_MATRIX "The TorrServer MatriX API and its Basic authentication
 
 add_library(p2play_core STATIC
         api_auth.cpp api_silo.cpp
-        api_matrix.cpp
+        api_matrix.cpp torrs.cpp
         auth.cpp
         capi.cpp
         core.cpp
