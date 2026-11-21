@@ -49,6 +49,43 @@ def make_payload(root):
     return folder, files
 
 
+def ts_less(a, b):
+    """TorrServer's CompareStrings (server/utils/strings.go), on bytes."""
+    a, b = a.encode(), b.encode()
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]:
+        n += 1
+    while n > 0 and chr(a[n - 1]).isdigit():
+        n -= 1
+    ra, rb = a[n:], b[n:]
+
+    def num(s):
+        k = 0
+        while k < len(s) and chr(s[k]).isdigit():
+            k += 1
+        return int(s[:k]) if k else None
+
+    na, nb = num(ra), num(rb)
+    if na is not None and nb is not None:
+        return ra < rb if na == nb else na < nb
+    if na is not None:
+        return True
+    if nb is not None:
+        return False
+    return ra < rb
+
+
+def ts_ids(ti):
+    """The ids TorrServer MatriX gives the files: every file, pad files too, sorted by path."""
+    import functools
+    fs = ti.files()
+    paths = [fs.file_path(i).replace("\\", "/") for i in range(fs.num_files())]
+    order = sorted(range(len(paths)), key=functools.cmp_to_key(
+        lambda x, y: -1 if ts_less(paths[x], paths[y]) else (1 if ts_less(paths[y], paths[x]) else 0)))
+    pad = [bool(fs.file_flags(i) & lt.file_storage.flag_pad_file) for i in range(fs.num_files())]
+    return {paths[i]: (k + 1, i) for k, i in enumerate(order) if not pad[i]}
+
+
 def make_torrent(folder):
     fs = lt.file_storage()
     lt.add_files(fs, folder)
@@ -152,7 +189,11 @@ def main():
                 break
             time.sleep(0.2)
         names = [f["path"] for f in st.get("file_stats", [])]
-        check([f["id"] for f in st["file_stats"]] == [1, 2, 3, 4, 5], "get: file ids from 1: " + ", ".join(names))
+        expect = ts_ids(ti)
+        check([f["id"] for f in st["file_stats"]] == sorted(v[0] for v in expect.values())
+              and all(expect[f["path"]][0] == f["id"] for f in st["file_stats"]),
+              "get: file ids as TorrServer gives them (pad files counted): "
+              + ", ".join(f"{f['id']} {f['path']}" for f in st["file_stats"]))
         check([os.path.basename(n) for n in names] == ["e01.mkv", "e02.mkv", "e9.mkv", "e10.mkv", "notes.txt"],
               "get: TorrServer's file order (e9 before e10)")
         check(st["title"] == "Show" and st["poster"] == "http://p/1.jpg", "get: title and poster kept")

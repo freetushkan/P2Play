@@ -298,15 +298,16 @@ namespace p2p {
         if (req.has("save") && user.valid()) {
             keep(t, user.id);
         }
-        int files;
+        int files, single = -1;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             files = static_cast<int>(t->fileIndex.size());
+            single = files == 1 ? t->fileIndex.begin()->first : -1;
         }
         int index = fromPlay ? playIndex : -1;
         if (!fromPlay) {
             if (files == 1) {
-                index = 1;
+                index = single;
             } else if (req.has("index") && !req.param("index").empty()) {
                 index = std::atoi(req.param("index").c_str());
             }

@@ -26,12 +26,15 @@ A crash: `crash.log` there (every platform, see Layout); an uncaught exception a
 Two APIs over the same core, the same users and the same progress:
 
 - the native one, under `/api`: the REST scheme of TorrServer's silo branch (Silo), with the viewing
-  progress added; file indexes from 0; a token;
-- TorrServer MatriX, as pPlay and Lampa use it: file ids from 1; Basic. A compatibility layer
+  progress added; a token;
+- TorrServer MatriX, as pPlay and Lampa use it; Basic. A compatibility layer
   (`P2P_COMPAT_MATRIX`, CMake, ON): the core and `/api` build without it.
 
-Files in a torrent are sorted as TorrServer does (natural order: `e2` before `e10`): ids and indexes are the
-episode order on both APIs (Silo id = MatriX id - 1).
+Files are numbered as the originals number them, so ids kept by a client (marks, progress) stay right when it
+moves between TorrServer and P2Play: MatriX ids from 1 over every file of the torrent sorted by path
+(TorrServer's CompareStrings: `e2` before `e10`), BEP 47 pad files counted; Silo's index is the file's index in
+the torrent. Both list the files in TorrServer's order and hide pad files. A record of an earlier P2Play is
+numbered again at the start from the metadata kept, its progress moved along by path.
 
 ### /api (Silo)
 

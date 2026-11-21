@@ -114,9 +114,10 @@ def main():
             if st.get("file_stats"):
                 break
             ct.time.sleep(0.2)
-        status, _, body = call(f"/stream/e01.mkv?link={ih}&index=1&play", headers={"Range": "bytes=0-99"})
+        e01 = ct.ts_ids(ti)["Show S01/e01.mkv"][0]
+        status, _, body = call(f"/stream/e01.mkv?link={ih}&index={e01}&play", headers={"Range": "bytes=0-99"})
         check(status == 206 and body == files["e01.mkv"][:100], "a known torrent played without a user")
-        check(call(f"/play/{ih}/1", headers={"Range": "bytes=0-9"})[0] == 206, "/play without a user")
+        check(call(f"/play/{ih}/{e01}", headers={"Range": "bytes=0-9"})[0] == 206, "/play without a user")
         check(call(f"/stream?link={ih}&index=1&stat")[0] == 401, "stat without a user: 401")
         other = "magnet:?xt=urn:btih:" + "1" * 40
         check(call(f"/stream?link={other}&index=1&play")[0] == 401, "an unknown link without a user: 401")

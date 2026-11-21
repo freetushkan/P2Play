@@ -94,6 +94,43 @@ namespace p2p {
             return a < b;
         }
 
+    }
+
+    // The files as TorrServer numbers them. MatriX (anacrolix): every file of the torrent,
+    // pad files (BEP 47) too, sorted by path (CompareStrings), ids from 1 in that order. Silo:
+    // the index in the torrent's own order. Pad files keep their ids but are not listed.
+    static std::vector<FileInfo> torrServerFiles(const lt::torrent_info &ti, int64_t &size,
+                                          std::map<int, lt::file_index_t> &index) {
+        const lt::file_storage &fs = ti.files();
+        std::vector<std::pair<std::string, lt::file_index_t>> sorted;
+        size = 0;
+        for (lt::file_index_t i : fs.file_range()) {
+            std::string path = fs.file_path(i);
+            std::replace(path.begin(), path.end(), '\\', '/');
+            sorted.emplace_back(path, i);
+            if (!fs.pad_file_at(i)) {
+                size += fs.file_size(i);
+            }
+        }
+        // stable_sort: the comparison is not a strict order in every case (std::sort may then
+        // run past the range)
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const auto &a, const auto &b) { return torrServerLess(a.first, b.first); });
+        std::vector<FileInfo> files;
+        index.clear();
+        int id = 0;
+        for (const auto &f : sorted) {
+            id++;
+            if (fs.pad_file_at(f.second)) {
+                continue;
+            }
+            files.push_back({id, f.first, fs.file_size(f.second), static_cast<int>(f.second)});
+            index[id] = f.second;
+        }
+        return files;
+    }
+
+    namespace {
         bool readFile(const std::string &path, std::string &out) {
             std::ifstream in(path, std::ios::binary);
             if (!in) {
@@ -292,7 +329,8 @@ namespace p2p {
         applySettings();
 
         // the library: closed torrents, opened when used
-        for (const TorrentRecord &r : m_store.torrents()) {
+        for (TorrentRecord r : m_store.torrents()) {
+            renumber(r);
             auto t = std::make_shared<Torrent>();
             t->rec = r;
             t->saved = !r.users.empty();
@@ -657,6 +695,52 @@ namespace p2p {
         return t;
     }
 
+    // a record of an earlier version: its files numbered again from the metadata kept (as
+    // TorrServer, see torrServerFiles), the progress moved along by path
+    void Core::renumber(TorrentRecord &r) {
+        std::string raw;
+        std::shared_ptr<const lt::torrent_info> ti;
+        lt::error_code ec;
+        if (readFile(m_store.resumePath(r.hash), raw)) {
+            lt::add_torrent_params atp = lt::read_resume_data({raw.data(), static_cast<std::ptrdiff_t>(raw.size())}, ec);
+            if (!ec && atp.ti) {
+                ti = atp.ti;
+            }
+        }
+        if (!ti && readFile(m_store.metadataPath(r.hash), raw)) {
+            auto info = std::make_shared<lt::torrent_info>(raw.data(), static_cast<int>(raw.size()), ec);
+            if (!ec) {
+                ti = info;
+            }
+        }
+        if (!ti) {
+            return;
+        }
+        int64_t size = 0;
+        std::map<int, lt::file_index_t> index;
+        std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
+        bool same = files.size() == r.files.size();
+        for (size_t i = 0; same && i < files.size(); i++) {
+            same = files[i].id == r.files[i].id && files[i].path == r.files[i].path && files[i].index == r.files[i].index;
+        }
+        if (same) {
+            return;
+        }
+        std::map<int, int> moved;
+        for (const FileInfo &old : r.files) {
+            for (const FileInfo &f : files) {
+                if (f.path == old.path && f.id != old.id) {
+                    moved[old.id] = f.id;
+                }
+            }
+        }
+        log("[Torrent:%s] files numbered again as TorrServer (%d moved)", r.hash.c_str(), static_cast<int>(moved.size()));
+        r.files = files;
+        r.size = size;
+        m_store.putTorrent(r);
+        m_store.renumberViewed(r.hash, moved);
+    }
+
     Core::TorrentPtr Core::addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
                                        const std::string &category, const std::string &data,
                                        const std::string &saveFor, std::string &error) {
@@ -773,28 +857,9 @@ namespace p2p {
             return;
         }
         const lt::file_storage &fs = ti->files();
-        // the files in TorrServer's order (by path, numbers as numbers), ids from 1 in it
-        std::vector<std::pair<std::string, lt::file_index_t>> sorted;
         int64_t size = 0;
-        for (lt::file_index_t i : fs.file_range()) {
-            if (fs.pad_file_at(i)) {
-                continue;
-            }
-            std::string path = fs.file_path(i);
-            std::replace(path.begin(), path.end(), '\\', '/');
-            sorted.emplace_back(path, i);
-            size += fs.file_size(i);
-        }
-        // stable_sort: the comparison is not a strict order in every case (std::sort may then
-        // run past the range)
-        std::stable_sort(sorted.begin(), sorted.end(),
-                         [](const auto &a, const auto &b) { return torrServerLess(a.first, b.first); });
-        std::vector<FileInfo> files;
-        std::vector<lt::file_index_t> index;
-        for (const auto &f : sorted) {
-            files.push_back({static_cast<int>(files.size()) + 1, f.first, fs.file_size(f.second)});
-            index.push_back(f.second);
-        }
+        std::map<int, lt::file_index_t> index;
+        std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
         // nothing is downloaded but the readers' windows
         h.prioritize_files(std::vector<lt::download_priority_t>(static_cast<size_t>(fs.num_files()), lt::dont_download));
 

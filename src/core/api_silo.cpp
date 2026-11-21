@@ -1,6 +1,6 @@
 // The native API: the REST scheme of TorrServer's silo branch under /api, with the viewing
-// progress added (PUT .../progress, file_progress, GET /api/progress). File indexes from 0
-// (MatriX's id - 1), in TorrServer's order. Errors: {"error": "..."}. Every route needs a
+// progress added (PUT .../progress, file_progress, GET /api/progress). File indexes as Silo:
+// the file's index in the torrent (pad files counted); listed in TorrServer's order. Errors: {"error": "..."}. Every route needs a
 // token (api_auth.cpp); without users set every request is the owner's.
 // torrs:// links are added as any other and given in the status ("torrs"); the library
 // goes in and out as .torrs (a torrs:// link a line). Not here yet: /api/events (SSE), Silo's
@@ -94,6 +94,25 @@ namespace p2p {
             return 400;
         }
 
+        // Silo's index of a file (the torrent's order) from MatriX's id, and back; -1: none
+        int siloIndex(const std::vector<FileInfo> &files, int id) {
+            for (const FileInfo &f : files) {
+                if (f.id == id) {
+                    return f.index >= 0 ? f.index : f.id - 1;
+                }
+            }
+            return -1;
+        }
+
+        int matrixId(const std::vector<FileInfo> &files, int index) {
+            for (const FileInfo &f : files) {
+                if ((f.index >= 0 ? f.index : f.id - 1) == index) {
+                    return f.id;
+                }
+            }
+            return -1;
+        }
+
         json body(const HttpRequest &req) {
             json j = json::parse(req.body, nullptr, false);
             return j.is_object() ? j : json();
@@ -122,7 +141,7 @@ namespace p2p {
         }
         json stats = json::array();
         for (const FileInfo &f : files) {
-            stats.push_back({{"id", f.id - 1},
+            stats.push_back({{"id", f.index >= 0 ? f.index : f.id - 1},
                              {"path", f.path},
                              {"name", baseName(f.path)},
                              {"length", f.length},
@@ -133,10 +152,14 @@ namespace p2p {
         }
         json viewed = json::array(), progress = json::array();
         for (const ViewedRecord &r : m_store.viewed(user, t->rec.hash)) {
-            if (r.viewed) {
-                viewed.push_back(r.fileIndex - 1);
+            const int idx = siloIndex(files, r.fileIndex);
+            if (idx < 0) {
+                continue;
             }
-            progress.push_back({{"id", r.fileIndex - 1},
+            if (r.viewed) {
+                viewed.push_back(idx);
+            }
+            progress.push_back({{"id", idx},
                                 {"position", r.timecode},
                                 {"duration", r.duration},
                                 {"viewed", r.viewed},
@@ -175,7 +198,7 @@ namespace p2p {
             out.push_back({{"hash", r.hash},
                            {"title", rec.title},
                            {"poster", rec.poster},
-                           {"file_id", r.fileIndex - 1},
+                           {"file_id", siloIndex(rec.files, r.fileIndex)},
                            {"file_name", baseName(path)},
                            {"position", r.timecode},
                            {"duration", r.duration},
@@ -319,11 +342,13 @@ namespace p2p {
             int idx = -1;
             const bool file = (at(1) == "stream" && n == 4 && number(at(3), idx)) ||
                               (at(1) == "torrents" && at(3) == "files" && n == 6 && number(at(4), idx));
-            int files;
+            std::vector<FileInfo> fileList;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                files = static_cast<int>(t->rec.files.size());
+                fileList = t->rec.files;
             }
+            // MatriX's id of the file (the core's), -1 unknown yet (no metadata) or none
+            int id = file ? matrixId(fileList, idx) : -1;
             const std::string action = at(1) == "stream" ? "stream" : file ? at(5) : at(3);
 
             if (action == "stream" || action == "preload") {
@@ -346,25 +371,26 @@ namespace p2p {
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
-                    files = static_cast<int>(t->fileIndex.size());
+                    fileList = t->rec.files;
                 }
-                if (idx >= files) {
+                id = matrixId(fileList, idx);
+                if (id < 0) {
                     error(res, 404, "torrent or file not found");
                     return;
                 }
                 if (action == "stream") {
                     if (get) {
-                        stream(t, idx + 1, req, res);
+                        stream(t, id, req, res);
                     } else {
                         error(res, 405, "method not allowed");
                     }
                 } else {
-                    preload(t, idx + 1);
+                    preload(t, id);
                     ok(res, 200, {{"status", "preloaded"}});
                 }
                 return;
             }
-            if (file && idx >= files && files > 0) {
+            if (file && id < 0) {
                 error(res, 404, "file not found");
                 return;
             }
@@ -401,8 +427,14 @@ namespace p2p {
                     return;
                 }
                 const bool viewed = b["viewed"].get<bool>();
-                for (int i = file ? idx : 0; i < (file ? idx + 1 : files); i++) {
-                    ViewedRecord r = m_store.viewedFile(user.id, hash, i + 1);
+                std::vector<int> ids;
+                for (const FileInfo &f : fileList) {
+                    if (!file || f.id == id) {
+                        ids.push_back(f.id);
+                    }
+                }
+                for (int i : ids) {
+                    ViewedRecord r = m_store.viewedFile(user.id, hash, i);
                     r.viewed = viewed;
                     r.updated = static_cast<int64_t>(time(nullptr));
                     m_store.setViewed(r);
@@ -419,8 +451,8 @@ namespace p2p {
                     return;
                 }
                 const double duration = b.value("duration", json()).is_number() ? b["duration"].get<double>() : 0;
-                setPosition(user.id, hash, idx + 1, b["position"].get<double>(), duration, true);
-                ViewedRecord r = m_store.viewedFile(user.id, hash, idx + 1);
+                setPosition(user.id, hash, id, b["position"].get<double>(), duration, true);
+                ViewedRecord r = m_store.viewedFile(user.id, hash, id);
                 ok(res, 200, {{"id", idx}, {"position", r.timecode}, {"duration", r.duration}, {"viewed", r.viewed},
                               {"updated_at", isoTime(r.updated)}});
             } else if (get && action == "cache" && n == 4) {
@@ -635,8 +667,8 @@ namespace p2p {
                 }
                 json viewed = json::array();
                 for (const ViewedRecord &r : m_store.viewed(id, rec.hash)) {
-                    if (r.viewed) {
-                        viewed.push_back(r.fileIndex - 1);
+                    if (r.viewed && siloIndex(rec.files, r.fileIndex) >= 0) {
+                        viewed.push_back(siloIndex(rec.files, r.fileIndex));
                     }
                 }
                 list.push_back({{"user_id", id},

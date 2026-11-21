@@ -210,7 +210,7 @@ namespace p2p {
         int pieceLength = 0, firstPiece = 0, lastPiece = 0;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (!t->active || !t->gotInfo || index < 1 || index > static_cast<int>(t->fileIndex.size())) {
+            if (!t->active || !t->gotInfo || !t->fileIndex.count(index)) {
                 res.text(404, "no such file\n");
                 return;
             }
@@ -219,7 +219,7 @@ namespace p2p {
                 res.text(503, "no metadata\n");
                 return;
             }
-            lt::file_index_t fi = t->fileIndex[static_cast<size_t>(index - 1)];
+            lt::file_index_t fi = t->fileIndex.at(index);
             name = std::string(ti->files().file_name(fi));
             size = ti->files().file_size(fi);
             offset = ti->files().file_offset(fi);
@@ -300,12 +300,12 @@ namespace p2p {
         int64_t bytes = std::min<int64_t>(m_settings.cacheSize * m_settings.preloadCache / 100, windowBytes());
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (!t->active || !t->gotInfo || index < 1 || index > static_cast<int>(t->fileIndex.size()) ||
+            if (!t->active || !t->gotInfo || !t->fileIndex.count(index) ||
                 t->preloading) {
                 return;
             }
             std::shared_ptr<const lt::torrent_info> ti = t->handle.torrent_file();
-            lt::file_index_t fi = t->fileIndex[static_cast<size_t>(index - 1)];
+            lt::file_index_t fi = t->fileIndex.at(index);
             int64_t offset = ti->files().file_offset(fi), size = ti->files().file_size(fi);
             pieceLength = t->pieceLength;
             bytes = std::min(bytes, size);

@@ -13,7 +13,7 @@ namespace p2p {
         bool active = false;              // in the session
         lt::torrent_handle handle;
         bool gotInfo = false;
-        std::vector<lt::file_index_t> fileIndex;  // file id - 1 -> the torrent's file (pad files skipped)
+        std::map<int, lt::file_index_t> fileIndex;  // MatriX's file id -> the torrent's file (no pad files)
         int pieceLength = 0;
         int numPieces = 0;
         lt::sha1_hash cacheKey;           // the RAM storage's key

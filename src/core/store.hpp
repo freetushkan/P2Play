@@ -16,9 +16,10 @@
 namespace p2p {
 
     struct FileInfo {
-        int id = 0;          // from 1, as TorrServer
+        int id = 0;          // MatriX's: from 1, as TorrServer numbers them (pad files counted)
         std::string path;    // inside the torrent, '/' separated, the torrent's name first
         int64_t length = 0;
+        int index = -1;      // Silo's: the file's index in the torrent
     };
 
     struct TorrentRecord {
@@ -76,6 +77,9 @@ namespace p2p {
         ViewedRecord viewedFile(const std::string &user, const std::string &hash, int fileIndex) const;
 
         void setViewed(const ViewedRecord &record);
+
+        // the files of a torrent numbered again: old id -> new id
+        void renumberViewed(const std::string &hash, const std::map<int, int> &moved);
 
         // fileIndex < 1: every file of the torrent
         void removeViewed(const std::string &user, const std::string &hash, int fileIndex);

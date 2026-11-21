@@ -144,6 +144,7 @@ namespace p2p {
         void close(const TorrentPtr &t);
         void remove(const TorrentPtr &t);
         void save(const TorrentPtr &t);
+        void renumber(TorrentRecord &r);
         bool waitInfo(const TorrentPtr &t, std::chrono::seconds timeout);
         void onMetadata(const TorrentPtr &t);
         nlohmann::json status(const TorrentPtr &t);

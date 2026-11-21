@@ -53,6 +53,11 @@ SILO_TORRS = ("torrs://5V3A1LVmilvK3xy16gIRAZHoBqmfO4ZJRkLu0FqKxbaOTByQQ75puVqjM
               "6v3wF1weo92UChPiSaCXUPLTfbQiqavSXIF5umBAtOqrC4Fuuytq3WF")
 
 
+def idx_of(ti, path):
+    fs = ti.files()
+    return [fs.file_path(i).replace("\\", "/") for i in range(fs.num_files())].index(path)
+
+
 def wait_files(ih):
     for _ in range(150):
         status, st = call(f"/api/torrents/{ih}")
@@ -86,43 +91,48 @@ def main():
         st = wait_files(ih)
         names = [f["name"] for f in st["file_stats"]]
         check(names == ["e01.mkv", "e02.mkv", "e9.mkv", "e10.mkv", "notes.txt"]
-              and [f["id"] for f in st["file_stats"]] == [0, 1, 2, 3, 4], "files from 0, in TorrServer's order")
+              and [f["id"] for f in st["file_stats"]] == [idx_of(ti, f["path"])
+                                                         for f in st["file_stats"]],
+              "files in TorrServer's order, indexes as Silo (the torrent's, pad files counted)")
+        S = {f["name"]: f["id"] for f in st["file_stats"]}
+        M = {p.rsplit("/", 1)[1]: v[0] for p, v in ct.ts_ids(ti).items()}
         f0 = st["file_stats"][0]
         check(f0["file_hash"] == hashlib.sha256(f"e01.mkv:{len(files['e01.mkv'])}".encode()).hexdigest(),
               "file_hash as Silo")
         listed = call("/api/torrents")[1]["torrents"]
         check([t["hash"] for t in listed] == [ih] and listed[0]["poster"] == "http://p/1.jpg", "the library")
 
-        status, body = call(f"/api/stream/{ih}/1", headers={"Range": "bytes=100-199"})
-        check(status == 206 and body == files["e02.mkv"][100:200], "/api/stream: index 1 is e02, a range")
-        check(call(f"/api/stream/{ih}/9")[0] == 404, "/api/stream: a file out of range")
+        status, body = call(f"/api/stream/{ih}/{S['e02.mkv']}", headers={"Range": "bytes=100-199"})
+        check(status == 206 and body == files["e02.mkv"][100:200], "/api/stream: e02, a range")
+        check(call(f"/api/stream/{ih}/99")[0] == 404, "/api/stream: a file out of range")
 
         # progress
-        status, p = call(f"/api/torrents/{ih}/files/0/progress", {"position": 600, "duration": 2400}, "PUT")
+        status, p = call(f"/api/torrents/{ih}/files/{S['e01.mkv']}/progress", {"position": 600, "duration": 2400}, "PUT")
         check(status == 200 and p["position"] == 600 and not p["viewed"], "a position")
-        status, p = call(f"/api/torrents/{ih}/files/1/progress", {"position": 2200, "duration": 2400}, "PUT")
+        status, p = call(f"/api/torrents/{ih}/files/{S['e02.mkv']}/progress", {"position": 2200, "duration": 2400}, "PUT")
         check(status == 200 and p["viewed"], "past 90 %: viewed")
         st = call(f"/api/torrents/{ih}")[1]
-        check(st["viewed_files"] == [1] and {fp["id"]: fp["position"] for fp in st["file_progress"]} == {0: 600, 1: 2200},
+        check(st["viewed_files"] == [S["e02.mkv"]]
+              and {fp["id"]: fp["position"] for fp in st["file_progress"]} == {S["e01.mkv"]: 600, S["e02.mkv"]: 2200},
               "viewed_files and file_progress in the status")
         prog = call("/api/progress")[1]["progress"]
-        check(len(prog) == 2 and {p["file_id"] for p in prog} == {0, 1} and prog[0]["title"] == "Show",
+        check(len(prog) == 2 and {p["file_id"] for p in prog} == {S["e01.mkv"], S["e02.mkv"]} and prog[0]["title"] == "Show",
               "continue watching")
         viewed = ct.api("/viewed", {"action": "list", "hash": ih})
-        check(sorted((v["file_index"], v["timecode"]) for v in viewed) == [(1, 600), (2, 2200)],
-              "the same progress on MatriX's /viewed (ids from 1)")
-        ct.api("/viewed", {"action": "set", "hash": ih, "file_index": 3, "timecode": 30})
+        check(sorted((v["file_index"], v["timecode"]) for v in viewed) == sorted([(M["e01.mkv"], 600), (M["e02.mkv"], 2200)]),
+              "the same progress on MatriX's /viewed (MatriX's ids)")
+        ct.api("/viewed", {"action": "set", "hash": ih, "file_index": M["e9.mkv"], "timecode": 30})
         st = call(f"/api/torrents/{ih}")[1]
-        check(2 in st["viewed_files"] and any(fp["id"] == 2 and fp["position"] == 30 for fp in st["file_progress"]),
+        check(S["e9.mkv"] in st["viewed_files"] and any(fp["id"] == S["e9.mkv"] and fp["position"] == 30 for fp in st["file_progress"]),
               "MatriX's viewed seen on /api")
 
-        check(call(f"/api/torrents/{ih}/files/0/viewed", {"viewed": True})[0] == 200
-              and 0 in call(f"/api/torrents/{ih}")[1]["viewed_files"], "viewed by hand")
+        check(call(f"/api/torrents/{ih}/files/{S['e01.mkv']}/viewed", {"viewed": True})[0] == 200
+              and S["e01.mkv"] in call(f"/api/torrents/{ih}")[1]["viewed_files"], "viewed by hand")
         check(call(f"/api/torrents/{ih}/viewed", {"viewed": False})[0] == 200
               and call(f"/api/torrents/{ih}")[1]["viewed_files"] == [], "all files not viewed")
         check(call(f"/api/torrents/{ih}/meta", {"title": "Show 2", "poster": "", "category": "tv"}, "PUT")[0] == 200
               and call(f"/api/torrents/{ih}")[1]["category"] == "tv", "the card edited")
-        check(call(f"/api/torrents/{ih}/files/0/preload", {})[0] == 200, "preload")
+        check(call(f"/api/torrents/{ih}/files/{S['e01.mkv']}/preload", {})[0] == 200, "preload")
         check(call(f"/api/torrents/{ih}/peers")[0] == 200, "peers")
 
         # a .torrent, multipart, not saved
@@ -140,7 +150,7 @@ def main():
         ct.stop_daemon(proc)
         proc = ct.start_daemon(daemon, data)
         st = call(f"/api/torrents/{ih}")[1]
-        check(st["title"] == "Show 2" and any(fp["id"] == 0 and fp["position"] == 600 for fp in st["file_progress"]),
+        check(st["title"] == "Show 2" and any(fp["id"] == S["e01.mkv"] and fp["position"] == 600 for fp in st["file_progress"]),
               "after a restart: the card and the progress")
 
         # torrs://: in the status, the library out and in, a link added on MatriX

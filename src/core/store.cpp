@@ -67,7 +67,8 @@ namespace p2p {
                 }
                 if (item.contains("files") && item["files"].is_array()) {
                     for (const auto &f : item["files"]) {
-                        r.files.push_back({static_cast<int>(num(f, "id")), str(f, "path"), num(f, "length")});
+                        r.files.push_back({static_cast<int>(num(f, "id")), str(f, "path"), num(f, "length"),
+                                           f.contains("index") ? static_cast<int>(num(f, "index")) : -1});
                     }
                 }
                 m_torrents.push_back(std::move(r));
@@ -183,6 +184,20 @@ namespace p2p {
         saveViewed();
     }
 
+    void Store::renumberViewed(const std::string &hash, const std::map<int, int> &moved) {
+        if (moved.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto &r : m_viewed) {
+            auto it = moved.find(r.fileIndex);
+            if (r.hash == hash && it != moved.end()) {
+                r.fileIndex = it->second;
+            }
+        }
+        saveViewed();
+    }
+
     std::vector<std::string> Store::removeUser(const std::string &user) {
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<std::string> orphans;
@@ -223,7 +238,7 @@ namespace p2p {
         for (const auto &r : m_torrents) {
             json files = json::array();
             for (const auto &f : r.files) {
-                files.push_back({{"id", f.id}, {"path", f.path}, {"length", f.length}});
+                files.push_back({{"id", f.id}, {"path", f.path}, {"length", f.length}, {"index", f.index}});
             }
             json users = json::object();
             for (const auto &u : r.users) {
