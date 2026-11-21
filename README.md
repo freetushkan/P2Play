@@ -15,9 +15,9 @@ The server answers on port **8090** (TorrServer's): `http://<device ip>:8090`.
 | Android | `p2play-android.apk`: allow all files access; the server starts with the app (a foreground service). The app talks to its server as the owner (the token of its `auth.json`). A magnet or a `torrs://` link typed, pasted, opened or shared with the app is added and its largest media file opened in a player; "Share torrs://" shares the newest torrent's link; `adb shell am start -d "magnet:?..." com.freetushkan.p2play/.MainActivity` | `/sdcard/.p2play` as pPlay's `.pplay` (without the access: `Android/data/com.freetushkan.p2play/files`) | Stop |
 | Switch | `p2play.nro` from hbmenu (application mode, not the album) | `sdmc:/switch/p2play` | `+` |
 | PS4 | install the pkg, launch | `/data/p2play` | create `/data/p2play/stop` |
-| PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes; or send the ELF to port 9021 yourself | `/data/p2play` | launch it again (the running server stops; the next launch starts the new one, after an update too), or create `/data/p2play/stop` |
+| PS5 | install `P2Play-PS5.pkg` (elfldr / etaHEN running), launch: the package sends `p2play.elf` to elfldr and closes, the payload starts itself again as a big application (pPlay's hbldr: `/data/p2play/bin/p2play.elf`) with the log on the screen, or stays a payload without a screen if that fails; or send the ELF to port 9021 yourself | `/data/p2play` | launch it again (the running server stops; the next launch starts the new one, after an update too), or create `/data/p2play/stop` |
 
-The log: `p2play.log` in the data directory (on the screen on Switch and PS4, with the address on top; Android: in the app; PS5: klog and a toast with the address).
+The log: `p2play.log` in the data directory (on the screen on Switch, PS4 and PS5, with the address on top; Android: in the app; PS4/PS5: klog too).
 A crash: `crash.log` there (every platform, see Layout); an uncaught exception also writes its reason to
 `p2play.log`.
 

@@ -12,7 +12,8 @@ if (PLATFORM_PS4)
 elseif (PLATFORM_SWITCH)
     list(APPEND APP_SRC switch/crashlog.cpp ${PROJECT_SOURCE_DIR}/compat/switch/switch_compat.c)
 elseif (PLATFORM_PS5)
-    list(APPEND APP_SRC ps5/crashlog.cpp)
+    list(APPEND APP_SRC ps5/crashlog.cpp ps5/hbldr/hbldr.c ps5/hbldr/elfldr.c ps5/hbldr/pt.c
+            screen/console.cpp screen/font.cpp screen/videoout_sdl.cpp)
 elseif (PLATFORM_ANDROID)
     list(APPEND APP_SRC android/crashlog.cpp)
 else ()
@@ -89,7 +90,15 @@ elseif (PLATFORM_PS4)
             COMMAND ${CMAKE_COMMAND} -E make_directory ${RELEASE_DIR}
             COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${PKG_OUT_NAME} ${RELEASE_DIR}/)
 elseif (PLATFORM_PS5)
-    target_link_libraries(p2play PRIVATE SceNet kernel_sys)
+    # the big application (ps5/hbldr): a fake app of the launcher's title id; its log on the
+    # screen through the SDK's SDL2 (a software surface)
+    set(P2P_PS5_TITLE_ID "PTWO00005")
+    target_compile_definitions(p2play PRIVATE P2P_PS5_TITLE_ID="${P2P_PS5_TITLE_ID}"
+            HBLDR_TITLE_ID="${P2P_PS5_TITLE_ID}" HBLDR_TITLE_NAME="P2Play" HBLDR_PROCNAME="p2play")
+    target_include_directories(p2play PRIVATE ${PS5_PAYLOAD_SDK}/target/user/homebrew/include)
+    target_link_directories(p2play PRIVATE ${PS5_PAYLOAD_SDK}/target/user/homebrew/lib)
+    target_link_libraries(p2play PRIVATE SDL2 SceNet SceVideoOut SceUserService SceSystemService SceAudioOut
+            ScePad SceSysmodule SceImeDialog SceKeyboard iconv kernel_sys)
     set_target_properties(p2play PROPERTIES SUFFIX ".elf")
     # as pPlay: the payload without debug info, the full ELF kept
     add_custom_target(p2play_release

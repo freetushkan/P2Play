@@ -213,8 +213,98 @@ bool p2p::platformIsConsole() { return true; }
 #include <sys/syscall.h>
 #include <sys/sysctl.h>
 #include <ps5/klog.h>
+#include <dirent.h>
+
+extern "C" {
+#include "ps5/hbldr/hbldr.h"
+}
+#include "screen/console.hpp"
 
 extern "C" int sceKernelSendNotificationRequest(int device, void *request, size_t size, int blocking);
+extern "C" int sceSystemServiceLoadExec(const char *path, const char *args[]);
+
+// The package sends p2play.elf to elfldr: a payload, without a screen. As pPlay, it starts
+// itself again as a big application (hbldr: a fake app of the launcher's title id, its eboot
+// replaced by our ELF), copied out of the package to /data/p2play/bin, and quits; the big
+// application has the video out and draws the log (screen/videoout_sdl.cpp). Should that
+// fail, the payload goes on without a screen.
+namespace {
+    constexpr const char *kBigAppEnv = "P2PLAY_BIGAPP";
+    const bool g_bigApp = getenv("P2PLAY_BIGAPP") != nullptr;
+    p2p::TextConsole g_console;
+
+    bool exists(const std::string &path) {
+        struct stat st{};
+        return stat(path.c_str(), &st) == 0;
+    }
+
+    // the launcher's package content, as pPlay's loader finds it
+    std::string findApp0() {
+        const std::string marker = "/ps5/p2play.elf";
+        for (const std::string &p : {std::string("/mnt/sandbox/pfsmnt/" P2P_PS5_TITLE_ID "-app0"),
+                                     std::string("/mnt/sandbox/" P2P_PS5_TITLE_ID "_000/app0"), std::string("/app0")}) {
+            if (exists(p + marker)) {
+                return p;
+            }
+        }
+        if (DIR *dir = opendir("/mnt/sandbox/pfsmnt")) {
+            while (dirent *e = readdir(dir)) {
+                const std::string p = std::string("/mnt/sandbox/pfsmnt/") + e->d_name;
+                if (e->d_name[0] != '.' && exists(p + marker)) {
+                    closedir(dir);
+                    return p;
+                }
+            }
+            closedir(dir);
+        }
+        return "";
+    }
+
+    // the package's ELF copied when it differs (size or time)
+    bool copyElf(const std::string &from, const std::string &to) {
+        struct stat src{}, dst{};
+        if (stat(from.c_str(), &src) != 0) {
+            return false;
+        }
+        if (stat(to.c_str(), &dst) == 0 && dst.st_size == src.st_size && dst.st_mtime >= src.st_mtime) {
+            return true;
+        }
+        FILE *in = fopen(from.c_str(), "rb");
+        FILE *out = fopen((to + ".tmp").c_str(), "wb");
+        bool ok = in && out;
+        std::vector<char> buf(1 << 20);
+        size_t n;
+        while (ok && (n = fread(buf.data(), 1, buf.size(), in)) > 0) {
+            ok = fwrite(buf.data(), 1, n, out) == n;
+        }
+        if (in) fclose(in);
+        if (out) ok = fclose(out) == 0 && ok;
+        if (ok) {
+            remove(to.c_str());
+            ok = rename((to + ".tmp").c_str(), to.c_str()) == 0;
+        }
+        chmod(to.c_str(), 0755);
+        return ok;
+    }
+
+    bool launchBigApp() {
+        const std::string app0 = findApp0();
+        const std::string dir = p2p::dataDir() + "/bin", elf = dir + "/p2play.elf";
+        mkdir(dir.c_str(), 0777);
+        if (app0.empty() || !copyElf(app0 + "/ps5/p2play.elf", elf)) {
+            klog_printf("[p2play] the package's p2play.elf not found or not copied: no screen\n");
+            return false;
+        }
+        std::string env = std::string(kBigAppEnv) + "=1";
+        char *argv[] = {nullptr};
+        char *envp[] = {&env[0], nullptr};
+        if (hbldr_launch(dir.c_str(), elf.c_str(), -1, argv, envp) < 0) {
+            klog_printf("[p2play] cannot start as a big application (%s): no screen\n", hbldr_error());
+            return false;
+        }
+        return true;
+    }
+}
 
 // A payload has no system "already running": the icon opened again starts a second
 // process next to the first (and an updated package runs beside the old server). As pPlay
@@ -365,6 +455,19 @@ bool p2p::platformInit() {
                             : "P2Play: an older server holds port 8090 and does not stop: restart the console");
         return false;
     }
+    if (!g_bigApp) {
+        // the port freed for the big application, which takes it
+        close(g_control);
+        g_control = -1;
+        signal(SIGCHLD, SIG_IGN);
+        if (launchBigApp()) {
+            return false;
+        }
+        g_control = listenControl();
+        return true;
+    }
+    g_console.setTitle("P2Play: starting");
+    p2p::screenStart(&g_console);
     return true;
 }
 
@@ -372,6 +475,14 @@ void p2p::platformExit() {
     if (g_control >= 0) {
         close(g_control);
         g_control = -1;
+    }
+    if (g_bigApp) {
+        // back to the system: a big application left running keeps a black screen (pPlay)
+        p2p::screenStop();
+        sceSystemServiceLoadExec("exit", nullptr);
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
 }
 
@@ -404,6 +515,9 @@ std::string p2p::dataDir() { return "/data/p2play"; }
 
 void p2p::platformPrint(const std::string &line) {
     klog_printf("[p2play] %s\n", line.c_str());
+    if (g_bigApp) {
+        g_console.add(line);
+    }
 }
 
 void p2p::platformNotify(const std::string &text) {
@@ -413,6 +527,9 @@ void p2p::platformNotify(const std::string &text) {
     } request{};
     snprintf(request.message, sizeof(request.message), "%s", text.c_str());
     sceKernelSendNotificationRequest(0, &request, sizeof(request), 0);
+    if (g_bigApp) {
+        g_console.setTitle(text);
+    }
 }
 
 bool p2p::platformIsConsole() { return true; }
