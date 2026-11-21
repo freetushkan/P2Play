@@ -16,11 +16,13 @@
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/posix_disk_io.hpp>
+#include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/settings_pack.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/version.hpp>
+#include <libtorrent/write_resume_data.hpp>
 
 #include "core_torrent.hpp"
 
@@ -462,24 +464,47 @@ namespace p2p {
         }
         lt::add_torrent_params atp;
         lt::error_code ec;
+        std::string resume;
         std::string meta = m_store.metadataPath(t->rec.hash);
-        if (fileExists(meta)) {
+        if (readFile(m_store.resumePath(t->rec.hash), resume)) {
+            atp = lt::read_resume_data({resume.data(), static_cast<std::ptrdiff_t>(resume.size())}, ec);
+            if (ec || !atp.ti) {
+                atp = lt::add_torrent_params();
+            } else {
+                // nothing kept in memory between runs; the windows decide what is downloaded
+                if (m_cache) {
+                    atp.have_pieces.clear();
+                    atp.verified_pieces.clear();
+                    atp.unfinished_pieces.clear();
+                }
+                atp.piece_priorities.clear();
+                atp.file_priorities.assign(static_cast<size_t>(atp.ti->num_files()), lt::dont_download);
+            }
+            ec.clear();
+        }
+        if (!atp.ti && fileExists(meta)) {
             auto ti = std::make_shared<lt::torrent_info>(meta, ec);
             if (!ec) {
                 atp.ti = ti;
                 atp.file_priorities.assign(static_cast<size_t>(ti->num_files()), lt::dont_download);
-                // the trackers and peers of the link it was added with
-                lt::error_code mec;
-                lt::add_torrent_params m = lt::parse_magnet_uri(t->rec.link, mec);
-                if (!mec) {
-                    atp.trackers = m.trackers;
-                    atp.tracker_tiers = m.tracker_tiers;
-                    atp.peers = m.peers;
-                }
             }
             ec.clear();
         }
-        if (!atp.ti) {
+        if (atp.ti) {
+            // the trackers and peers of the link it was added with
+            lt::error_code mec;
+            lt::add_torrent_params m = lt::parse_magnet_uri(t->rec.link, mec);
+            if (!mec) {
+                atp.tracker_tiers.resize(atp.trackers.size(), 0);
+                for (const auto &tr : m.trackers) {
+                    if (std::find(atp.trackers.begin(), atp.trackers.end(), tr) == atp.trackers.end()) {
+                        atp.trackers.push_back(tr);
+                        atp.tracker_tiers.push_back(0);
+                    }
+                }
+                atp.peers.insert(atp.peers.end(), m.peers.begin(), m.peers.end());
+            }
+        } else {
             atp = lt::parse_magnet_uri(t->rec.link.empty() ? "magnet:?xt=urn:btih:" + t->rec.hash : t->rec.link, ec);
             if (ec) {
                 error = "bad magnet: " + ec.message();
@@ -537,17 +562,9 @@ namespace p2p {
         // nothing is downloaded but the readers' windows
         h.prioritize_files(std::vector<lt::download_priority_t>(static_cast<size_t>(fs.num_files()), lt::dont_download));
 
-        // the metadata kept for the next opening
-        std::string path = m_store.metadataPath(t->rec.hash);
-        if (!fileExists(path)) {
-            lt::span<char const> info = ti->info_section();
-            std::string file = "d4:info" + std::string(info.data(), static_cast<size_t>(info.size())) + "e";
-            FILE *f = std::fopen(path.c_str(), "wb");
-            if (f) {
-                std::fwrite(file.data(), 1, file.size(), f);
-                std::fclose(f);
-            }
-        }
+        // the metadata kept for the next opening: resume data (with the v2 piece layers once
+        // known; written again when the torrent is closed)
+        h.save_resume_data(lt::torrent_handle::save_info_dict);
         bool saved;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -610,9 +627,19 @@ namespace p2p {
                 m_torrents.erase(t->rec.hash);
             }
         }
+        if (saved) {
+            // the resume data (peers, piece layers) before the torrent goes
+            std::unique_lock<std::mutex> lock(m_mutex);
+            const uint64_t before = m_resumeWrites;
+            lock.unlock();
+            h.save_resume_data(lt::torrent_handle::save_info_dict);
+            lock.lock();
+            m_changed.wait_for(lock, std::chrono::seconds(3), [&] { return m_resumeWrites != before || m_stopping; });
+        }
         m_session->remove_torrent(h);
         if (!saved) {
             std::remove(m_store.metadataPath(t->rec.hash).c_str());
+            std::remove(m_store.resumePath(t->rec.hash).c_str());
         }
         log("[Torrent:%s] closed%s", t->rec.hash.c_str(), saved ? "" : " and forgotten (not in the library)");
         m_changed.notify_all();
@@ -630,6 +657,7 @@ namespace p2p {
         }
         m_store.removeTorrent(t->rec.hash);
         std::remove(m_store.metadataPath(t->rec.hash).c_str());
+        std::remove(m_store.resumePath(t->rec.hash).c_str());
     }
 
     json Core::filesData(const TorrentPtr &t) {
@@ -734,6 +762,29 @@ namespace p2p {
                             m_reads[key] = std::make_shared<const std::vector<char>>(rp->buffer.get(),
                                                                                      rp->buffer.get() + rp->size);
                         }
+                    }
+                    m_changed.notify_all();
+                } else if (auto *sr = lt::alert_cast<lt::save_resume_data_alert>(a)) {
+                    std::string hash = hexOf(sr->params.info_hashes);
+                    std::vector<char> buf = lt::write_resume_data_buf(sr->params);
+                    std::string path = m_store.resumePath(hash), tmp = path + ".tmp";
+                    if (FILE *f = std::fopen(tmp.c_str(), "wb")) {
+                        bool ok = std::fwrite(buf.data(), 1, buf.size(), f) == buf.size();
+                        ok = std::fclose(f) == 0 && ok;
+                        if (ok && std::rename(tmp.c_str(), path.c_str()) != 0) {
+                            std::remove(path.c_str());
+                            std::rename(tmp.c_str(), path.c_str());
+                        }
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        m_resumeWrites++;
+                    }
+                    m_changed.notify_all();
+                } else if (lt::alert_cast<lt::save_resume_data_failed_alert>(a)) {
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        m_resumeWrites++;
                     }
                     m_changed.notify_all();
                 } else if (auto *mr = lt::alert_cast<lt::metadata_received_alert>(a)) {

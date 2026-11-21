@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cctype>
 
+#include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/torrent_info.hpp>
+#include <libtorrent/torrent_status.hpp>
 
 #include "core_torrent.hpp"
 
@@ -100,16 +102,50 @@ namespace p2p {
         t->wanted = std::move(now);
     }
 
+    // a piece late for 5 s: its priority and deadline asked again, the peers of the link
+    // connected again if there are none; every 10 s the state in the log
     bool Core::waitPiece(const TorrentPtr &t, int piece, std::chrono::seconds timeout) {
         lt::torrent_handle h;
+        std::string link;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             h = t->handle;
+            link = t->rec.link;
         }
-        auto deadline = Clock::now() + timeout;
+        const auto began = Clock::now();
+        auto deadline = began + timeout;
+        auto nudge = began + std::chrono::seconds(5);
+        auto report = began + std::chrono::seconds(10);
         while (!h.have_piece(lt::piece_index_t{piece})) {
             if (m_stopping || Clock::now() > deadline || !h.is_valid()) {
                 return false;
+            }
+            if (Clock::now() > nudge) {
+                nudge = Clock::now() + std::chrono::seconds(5);
+                h.piece_priority(lt::piece_index_t{piece}, lt::top_priority);
+                h.set_piece_deadline(lt::piece_index_t{piece}, 0);
+                lt::torrent_status st = h.status();
+                if (st.num_peers == 0) {
+                    lt::error_code ec;
+                    lt::add_torrent_params m = lt::parse_magnet_uri(link, ec);
+                    if (!ec) {
+                        for (const auto &peer : m.peers) {
+                            h.connect_peer(peer);
+                        }
+                    }
+                    h.force_dht_announce();
+                    h.force_reannounce();
+                }
+            }
+            if (Clock::now() > report) {
+                report = Clock::now() + std::chrono::seconds(10);
+                lt::torrent_status st = h.status();
+                log("[Stream:%s] waiting %.0f s for piece %d: state %d, peers %d (seeds %d, known %d), "
+                    "priority %d, %d KB/s", t->rec.hash.c_str(),
+                    std::chrono::duration<double>(Clock::now() - began).count(), piece, static_cast<int>(st.state),
+                    st.num_peers, st.num_seeds, st.list_peers,
+                    static_cast<int>(static_cast<std::uint8_t>(h.piece_priority(lt::piece_index_t{piece}))),
+                    st.download_payload_rate / 1024);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }

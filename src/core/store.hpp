@@ -47,7 +47,11 @@ namespace p2p {
 
         const std::string &dir() const { return m_dir; }
 
+        // a .torrent (uploaded, fetched) and libtorrent's resume data (metadata with the v2
+        // piece layers, peers, trackers)
         std::string metadataPath(const std::string &hash) const;
+
+        std::string resumePath(const std::string &hash) const;
 
         std::vector<TorrentRecord> torrents() const;
 

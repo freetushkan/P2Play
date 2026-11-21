@@ -125,6 +125,7 @@ namespace p2p {
         std::mutex m_mutex;                  // m_torrents and the Torrent fields
         std::condition_variable m_changed;   // metadata, pieces read
         std::map<std::string, TorrentPtr> m_torrents;
+        uint64_t m_resumeWrites = 0;         // save_resume_data answers
 
         std::mutex m_readsMutex;             // disk storage: read_piece results
         std::map<std::pair<std::string, int>, std::shared_ptr<const std::vector<char>>> m_reads;

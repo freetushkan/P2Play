@@ -37,7 +37,7 @@ The TorrServer MatriX API in the part pPlay and Lampa use; file ids start from 1
 
 Not yet: `torrs://` links and `https://` .torrent links (stage 3), users (stage 2), DLNA, search.
 
-The library (`torrents.json`, metadata in `torrents/`), the viewed files (`viewed.json`) and the settings
+The library (`torrents.json`; in `torrents/` libtorrent resume data with the metadata, v2 piece layers and peers, and uploaded .torrent files), the viewed files (`viewed.json`) and the settings
 (`settings.json`) are JSON files in the data directory. Torrents are opened when used and closed after
 `TorrentDisconnectTimeout` without a reader; those not in the library are then forgotten.
 

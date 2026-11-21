@@ -196,6 +196,8 @@ def main():
 
         # a restart: the library survives, the torrent is opened again from its metadata
         stop_daemon(proc)
+        check(os.path.getsize(os.path.join(data, "torrents", ih + ".resume")) > 0,
+              "resume data kept (metadata with the v2 piece layers, peers)")
         del ses  # no seeder: the kept metadata is needed for the file list
         proc = start_daemon(daemon, data)
         lst = api("/torrents", {"action": "list"})
@@ -203,7 +205,11 @@ def main():
               and len(lst[0]["file_stats"]) == 3, f"restart: in db, \"{lst[0]['title']}\", files kept")
         check(api("/viewed", {"action": "list", "hash": ih})[0]["timecode"] == 123.5, "restart: viewed kept")
         ses, seed = start_seeder(ti, os.path.join(root, "seed"))
-        status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
+        try:
+            status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
+        except Exception as e:
+            print("stream failed:", e, "- torrent:", api("/torrents", {"action": "get", "hash": ih}))
+            raise
         check(status == 206 and body == e01[5000000:5100000], "restart: stream from the library")
 
         api("/torrents", {"action": "rem", "hash": ih})

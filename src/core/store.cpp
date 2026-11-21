@@ -86,6 +86,10 @@ namespace p2p {
         return m_dir + "/torrents/" + hash + ".torrent";
     }
 
+    std::string Store::resumePath(const std::string &hash) const {
+        return m_dir + "/torrents/" + hash + ".resume";
+    }
+
     std::vector<TorrentRecord> Store::torrents() const {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_torrents;
