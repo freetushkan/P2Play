@@ -3,7 +3,7 @@
 // the file's index in the torrent (pad files counted); listed in TorrServer's order. Errors: {"error": "..."}. Every route needs a
 // token (api_auth.cpp); without users set every request is the owner's.
 // torrs:// links are added as any other and given in the status ("torrs"); the library
-// goes in and out as .torrs (a torrs:// link a line). Not here yet: /api/events (SSE), Silo's
+// goes in and out as .torrs (a torrs:// link a line). /api/events as Silo. Not here: Silo's
 // transcoding, plugins and engine settings (the settings are MatriX's /settings).
 
 #include <algorithm>
@@ -237,6 +237,20 @@ namespace p2p {
                               {"uptime_sec", uptime},
                               {"version", version()},
                               {"torrent", std::string("libtorrent ") + LIBTORRENT_VERSION}});
+            } else if (get && at(2) == "torrent-config") {
+                if (user.rank < 100) {
+                    error(res, 403, "owner access required");
+                    return;
+                }
+                ok(res, 200, {{"cache_size", m_settings.cacheSize},
+                              {"preload_size", m_settings.cacheSize * m_settings.preloadCache / 100},
+                              {"connections_limit", m_settings.connectionsLimit},
+                              {"download_rate_kb", m_settings.downloadRateLimit},
+                              {"upload_rate_kb", m_settings.uploadRateLimit},
+                              {"disable_upload", m_settings.disableUpload},
+                              {"disable_dht", m_settings.disableDht},
+                              {"use_disk", m_settings.useDisk},
+                              {"peers_listen_port", m_settings.listenPort}});
             } else if (m == "POST" && at(2) == "shutdown") {
                 if (user.rank < 100) {
                     error(res, 403, "owner access required");
@@ -258,6 +272,16 @@ namespace p2p {
 
         if (at(1) == "users") {
             siloUsers(req, res, user, parts);
+            return;
+        }
+
+        if (get && n == 3 && at(1) == "ui" && at(2) == "menu") {
+            ok(res, 200, {{"menu", json::array()}});  // no plugins
+            return;
+        }
+
+        if (get && n == 2 && at(1) == "events") {
+            siloEvents(res, user);
             return;
         }
 
@@ -512,6 +536,66 @@ namespace p2p {
         }
 
         error(res, 404, "not found");
+    }
+
+    // Silo's /api/events: the user's library as server-sent events, once a second the cards that
+    // changed ("sync" all of them first, then "card" and "remove"); a comment every 15 s finds a
+    // client gone
+    void Core::siloEvents(HttpResponse &res, const User &user) {
+        if (!res.begin(200, "text/event-stream", -1, {{"Cache-Control", "no-cache"}, {"X-Accel-Buffering", "no"}})) {
+            return;
+        }
+        std::map<std::string, std::string> prev;
+        bool first = true;
+        int quiet = 0;
+        while (!m_stopping) {
+            std::map<std::string, std::string> cur;
+            json all = json::array();
+            for (const TorrentPtr &t : listOf(user.id, false)) {
+                json st = siloStatus(t, user.id);
+                json card = {{"hash", st.value("hash", "")},
+                             {"title", st.value("title", "")},
+                             {"poster", st.value("poster", "")},
+                             {"category", st.value("category", "")},
+                             {"stat", st.value("stat", 0)},
+                             {"size", st.value("torrent_size", static_cast<int64_t>(0))},
+                             {"peers", st.value("active_peers", 0)},
+                             {"seeders", st.value("connected_seeders", 0)},
+                             {"download_speed", st.value("download_speed", 0.0)},
+                             {"timestamp", st.value("timestamp", static_cast<int64_t>(0))},
+                             {"torrs", st.value("torrs", "")}};
+                cur[card["hash"].get<std::string>()] = card.dump();
+                all.push_back(card);
+            }
+            std::string out;
+            if (first) {
+                out = "event: sync\ndata: " + all.dump() + "\n\n";
+                first = false;
+            } else {
+                for (const auto &c : cur) {
+                    auto it = prev.find(c.first);
+                    if (it == prev.end() || it->second != c.second) {
+                        out += "event: card\ndata: " + c.second + "\n\n";
+                    }
+                }
+                for (const auto &p : prev) {
+                    if (!cur.count(p.first)) {
+                        out += "event: remove\ndata: " + json{{"hash", p.first}}.dump() + "\n\n";
+                    }
+                }
+            }
+            if (out.empty() && ++quiet >= 15) {
+                out = ": ping\n\n";
+            }
+            if (!out.empty()) {
+                quiet = 0;
+                if (!res.write(out.data(), out.size())) {
+                    return;
+                }
+            }
+            prev = std::move(cur);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
 
     // POST /api/torrents: JSON {link, title, poster, category, save_to_db} or multipart with a

@@ -101,6 +101,14 @@ def main():
               "file_hash as Silo")
         listed = call("/api/torrents")[1]["torrents"]
         check([t["hash"] for t in listed] == [ih] and listed[0]["poster"] == "http://p/1.jpg", "the library")
+        # Silo's /api/events: the library first ("sync")
+        with urllib.request.urlopen(ct.BASE + "/api/events", timeout=10) as r:
+            event, line = r.readline().decode().strip(), r.readline().decode().strip()
+        cards = json.loads(line.removeprefix("data:").strip())
+        check(r.status == 200 and event == "event: sync" and [c["hash"] for c in cards] == [ih]
+              and cards[0]["torrs"].startswith("torrs://"), "/api/events: the library as sync")
+        check(call("/api/ui/menu")[1] == {"menu": []} and call("/api/system/torrent-config")[1]["preload_size"] > 0,
+              "the menu and the engine config of Silo's client")
 
         status, body = call(f"/api/stream/{ih}/{S['e02.mkv']}", headers={"Range": "bytes=100-199"})
         check(status == 206 and body == files["e02.mkv"][100:200], "/api/stream: e02, a range")

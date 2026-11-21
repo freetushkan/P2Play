@@ -58,7 +58,8 @@ numbered again at the start from the metadata kept, its progress moved along by 
 
 `torrs://` links (TorrServer's TorrsHash: base62 of zlib(the infohash, title, poster, category, size,
 trackers)) are added on both APIs as any other link; the status of `/api` gives each torrent's (`torrs`).
-Not yet: `/api/events` (SSE), Silo's transcoding and plugins.
+`/api/events` (SSE: `sync`, `card`, `remove`), `/api/ui/menu` (empty: no plugins) and `/api/system/torrent-config`
+as Silo, for Silo's clients (TorrServe Silo for Android). Not here: Silo's transcoding and plugins.
 Unlike Silo, a stream does not mark a file viewed (players read the end of a file first): the progress does.
 
 ### MediaMesh lists (stage 3, the local half)
@@ -105,7 +106,8 @@ asked and every request is the owner's. To set the owner's password, write it by
 
     {"users": [{"username": "owner", "password": "secret"}]}
 
-It is hashed at the start (`password_hash`), the token (`api_token`, `ts_...`) generated. The other users are
+It is hashed at the start (`password_hash`), the token (`api_token`, `ts_...`) generated. Or through the API
+while nothing is asked: `PUT /api/users/owner {"password": "..."}`. The other users are
 made through `/api/users`: a user manages those of a lower rank (admins 50-99, users 10-49, guests 1-9).
 Each user has their own library and progress; a torrent no library holds is forgotten once closed.
 A torrent already known can be played on the MatriX routes without a login (`/stream` with `play` or `m3u`,

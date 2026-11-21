@@ -94,6 +94,7 @@ namespace p2p {
         void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
         // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)
         void routeMesh(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
+        void siloEvents(HttpResponse &res, const User &user);
         void siloAdd(const HttpRequest &req, HttpResponse &res, const User &user);
         void siloUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
         nlohmann::json siloStatus(const TorrentPtr &t, const std::string &user);
