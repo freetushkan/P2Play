@@ -171,6 +171,14 @@ jobs:
           name: p2spike-PS4
           path: build/release/*
 
+      # crash.log offsets: llvm-addr2line -f -C -e p2spike <offset>
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2spike-PS4-symbols
+          path: build/src/spike/p2spike
+          retention-days: 90
+
   ps5:
     runs-on: ubuntu-24.04
     env:

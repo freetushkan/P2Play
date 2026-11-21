@@ -471,6 +471,9 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    log("config: %s, %d peer(s), bt port %d, http port %d", cfg.link.substr(0, 60).c_str(),
+        static_cast<int>(cfg.peers.size()), cfg.btPort, cfg.httpPort);
+
     lt::settings_pack sp;
     const bool console = platformIsConsole();
     sp.set_str(lt::settings_pack::listen_interfaces,
@@ -493,8 +496,10 @@ int main(int argc, char **argv) {
     params.disk_io_constructor = lt::posix_disk_io_constructor;
 
     std::unique_ptr<lt::session> ses;
+    log("session: starting");
     try {
         ses = std::make_unique<lt::session>(std::move(params));
+        log("session: started");
     } catch (const std::exception &e) {
         log("session failed: %s", e.what());
         while (platformRunning()) {
@@ -540,6 +545,7 @@ int main(int argc, char **argv) {
         platformExit();
         return 1;
     }
+    log("torrent: added");
     if (h.torrent_file()) {
         onMetadata(h);
     }
