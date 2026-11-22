@@ -861,7 +861,9 @@ namespace p2p {
 
             std::vector<std::pair<std::string, int64_t>> requests() override { return m_core->meshRequests(); }
             bool item(const std::string &key, std::string &raw) override { return m_core->meshPeerItem(key, raw); }
-            void itemReceived(const std::string &raw, const std::string &peer) override { m_core->meshPeerReceived(raw, peer); }
+            void itemReceived(const std::string &raw, const std::string &peer, const std::string &source) override {
+                m_core->meshPeerReceived(raw, peer, source);
+            }
 
             void received(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) override {
                 m_core->meshDiscovered(peer, lists);
