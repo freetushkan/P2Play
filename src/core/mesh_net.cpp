@@ -413,15 +413,28 @@ namespace p2p {
         }
     }
 
-    void Core::meshPeerReceived(const std::string &raw, const std::string &peer) {
+    void Core::meshPeerReceived(const std::string &raw, const std::string &peer, const std::string &source) {
         if (raw.size() > MeshExtension::kMaxItem || m_stopping) {
             return;
         }
+        constexpr size_t kMaxIncoming = 128;
+        constexpr size_t kMaxIncomingPerSource = 8;
+        constexpr size_t kMaxIncomingFromDht = 32;
+        const std::string sourceKey = source.empty() ? (peer.empty() ? "dht" : peer) : source;
         std::lock_guard<std::mutex> lock(m_meshMutex);
-        if (m_meshIncoming.size() < 128 &&
-            std::none_of(m_meshIncoming.begin(), m_meshIncoming.end(), [&](const auto &e) { return e.first == raw; })) {
-            m_meshIncoming.emplace_back(raw, peer);
+        if (m_meshIncoming.size() >= kMaxIncoming ||
+            std::any_of(m_meshIncoming.begin(), m_meshIncoming.end(),
+                        [&](const auto &e) { return e.raw == raw; })) {
+            return;
         }
+        const size_t sourceCount = static_cast<size_t>(std::count_if(
+            m_meshIncoming.begin(), m_meshIncoming.end(),
+            [&](const auto &e) { return (e.source.empty() ? (e.peer.empty() ? "dht" : e.peer) : e.source) == sourceKey; }));
+        const size_t sourceLimit = sourceKey == "dht" ? kMaxIncomingFromDht : kMaxIncomingPerSource;
+        if (sourceCount >= sourceLimit) {
+            return;
+        }
+        m_meshIncoming.push_back({raw, peer, source});
     }
 
     std::vector<std::pair<std::string, int64_t>> Core::meshRequests() {
@@ -487,7 +500,7 @@ namespace p2p {
 
     void Core::meshWork() {
         std::lock_guard<std::recursive_mutex> lifecycle(m_meshLifecycle);
-        std::vector<std::pair<std::string, std::string>> incoming;
+        std::vector<MeshIncoming> incoming;
         std::vector<std::string> lookups, keys, garbage;
         std::vector<MeshMediaRequest> media;
         {
@@ -498,9 +511,26 @@ namespace p2p {
                 if (e.second.pendingGet) { e.second.pendingGet = false; lookups.push_back(e.first); }
             }
         }
+        // Reorder only the detached batch: one item per source per pass. The
+        // libtorrent callback never builds maps/deques or drains under m_meshMutex.
+        std::map<std::string, std::deque<MeshIncoming>> bySource;
+        for (auto &item : incoming) {
+            const std::string source = item.source.empty() ? (item.peer.empty() ? "dht" : item.peer) : item.source;
+            bySource[source].push_back(std::move(item));
+        }
+        std::vector<MeshIncoming> fairIncoming;
+        fairIncoming.reserve(incoming.size());
+        while (!bySource.empty()) {
+            for (auto it = bySource.begin(); it != bySource.end();) {
+                fairIncoming.push_back(std::move(it->second.front()));
+                it->second.pop_front();
+                if (it->second.empty()) it = bySource.erase(it);
+                else ++it;
+            }
+        }
         for (const auto &dir : garbage) removeTree(dir);
         for (const auto &pk : lookups) meshGet(pk);
-        for (const auto &raw : incoming) { if (m_stopping) return; meshReceivePointer(raw.first, raw.second); }
+        for (const auto &item : fairIncoming) { if (m_stopping) return; meshReceivePointer(item.raw, item.peer); }
         const auto now = std::chrono::steady_clock::now();
         for (const auto &pk : keys) {
             if (m_stopping) return;
