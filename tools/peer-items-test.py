@@ -298,8 +298,10 @@ def main():
                             v.get(b"item", {}).get(b"seq") == 3)[b"item"]
 
         b.start()
-        # Connect a raw protocol peer to the restarted subscriber. B must issue
-        # get for its locally held seq=2; answer with the signed seq=3 envelope.
+        # Restore the subscription and its peer hint, then connect a raw protocol
+        # peer. This separates BEP10 get recovery from TCP discovery timing.
+        assert b.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{a.bt}"]})[0] == 202
+        # B must issue get for its locally held seq=2; answer with signed seq=3.
         # The advertised port points at A, which still seeds the version torrent.
         recovery = Peer(b.bt, a.bt)
         peers.append(recovery)
