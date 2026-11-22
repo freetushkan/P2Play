@@ -147,7 +147,7 @@ namespace p2p {
         void meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists);
         std::vector<std::pair<std::string, int64_t>> meshRequests();
         bool meshPeerItem(const std::string &key, std::string &raw);
-        void meshPeerReceived(const std::string &raw, const std::string &peer = "");
+        void meshPeerReceived(const std::string &raw, const std::string &peer = "", const std::string &source = "");
     private:
         struct Discovered {
             int64_t seq = 0;
@@ -244,7 +244,8 @@ namespace p2p {
         std::map<lt::torrent_handle, std::string> m_meshRetired;
         std::vector<std::string> m_meshGarbage;
         std::map<std::string, MeshNet> m_meshNet;
-        std::vector<std::pair<std::string, std::string>> m_meshIncoming; // bounded network -> idle worker queue
+        struct MeshIncoming { std::string raw, peer, source; };
+        std::vector<MeshIncoming> m_meshIncoming; // bounded network -> idle worker queue
         lt::error_code m_meshError;
         lt::torrent_handle m_directory;
         std::mutex m_directoryMutex;

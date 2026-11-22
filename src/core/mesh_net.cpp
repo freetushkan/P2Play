@@ -7,6 +7,8 @@
 // then (signed by the key's owner, any node can store it again): a list lives on without its
 // releaser.
 
+#include <algorithm>
+#include <deque>
 #include <fstream>
 #include <sys/stat.h>
 

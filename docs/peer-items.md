@@ -48,8 +48,11 @@ exact key/sequence match in the sender's latest `have` snapshot.
 
 Each connection has at most 32 pending requests, retries after 15 ticks, and
 rotates across requested keys. Budgets per tick are 32 served gets, 32 pushed
-items, 32 received items and two `have` updates. The shared incoming worker queue holds at most
-128 items and deduplicates envelopes. Discovery retains at most 4096 keys and
+items, 32 received items and two `have` updates. The shared incoming worker queue holds at most 128 items globally, at most 8
+items per TCP source IP, and at most 32 DHT replies. Duplicate envelopes are
+ignored while queued. The worker swaps the bounded vector under the mesh mutex,
+then drains the detached batch round-robin by source outside the mutex. Peers
+behind the same NAT share a quota. Discovery retains at most 4096 keys and
 256 holder IDs per key. Outbound `have` and request snapshots are bounded to
 4096 entries. Cached pointers are only kept for local/subscribed lists; the
 untrusted directory cannot create unlimited download state.
