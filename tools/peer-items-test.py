@@ -298,9 +298,18 @@ def main():
                             v.get(b"item", {}).get(b"seq") == 3)[b"item"]
 
         b.start()
-        assert b.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{a.bt}"]})[0] == 202
+        # Connect a raw protocol peer to the restarted subscriber. B must issue
+        # get for its locally held seq=2; answer with the signed seq=3 envelope.
+        # The advertised port points at A, which still seeds the version torrent.
+        recovery = Peer(b.bt, a.bt)
+        peers.append(recovery)
+        request = recovery.wait(lambda v: v.get(b"get") == key, 20)
+        assert request[b"seq"] == 2, f"expected get after seq=2, got {request!r}"
+        recovery.send(recovery.their, {b"item": third})
         wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in b.lists()), 60)
         print("PASS reconnect get recovers the pointer missed while offline")
+        recovery.close()
+        peers.remove(recovery)
 
         a.stop()
         source.close()
