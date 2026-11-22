@@ -9,18 +9,50 @@ a login. With --browser (Playwright and Chromium needed): log in on the page, se
 Cyrillic, add a result, and the torrent is in the owner's library.
 """
 
-import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("core_test", os.path.join(os.path.dirname(__file__), "core-test.py"))
-ct = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(ct)
-check = ct.check
+BASE = "http://127.0.0.1:8191"
+OWNER_PASSWORD = "test"
+OWNER_TOKEN = "ts_test00000000000000000000"
+
+
+def check(cond, what):
+    print(("OK   " if cond else "FAIL ") + what)
+    if not cond:
+        raise RuntimeError(what)
+
+
+def start_daemon(daemon, data):
+    if not os.path.exists(os.path.join(data, "auth.json")):
+        with open(os.path.join(data, "auth.json"), "w") as f:
+            json.dump({"users": [{"username": "owner", "password": OWNER_PASSWORD,
+                                  "api_token": OWNER_TOKEN}]}, f)
+    log = open(os.path.join(data, "stdout.log"), "a")
+    proc = subprocess.Popen([daemon, "--data", data, "--port", "8191"],
+                            stdout=log, stderr=subprocess.STDOUT)
+    log.close()
+    for _ in range(100):
+        try:
+            if get("/echo")[0] == 200:
+                return proc
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.1)
+    raise RuntimeError("p2playd did not start")
+
+
+def stop_daemon(proc):
+    proc.terminate()
+    proc.wait(timeout=20)
+
+
 PLUGIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugins", "mediamesh")
 
 
@@ -30,7 +62,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def get(path, headers=None):
-    req = urllib.request.Request(ct.BASE + path, headers=headers or {})
+    req = urllib.request.Request(BASE + path, headers=headers or {})
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=10) as r:
             return r.status, dict(r.headers), r.read()
@@ -39,9 +71,9 @@ def get(path, headers=None):
 
 
 def call(path, body=None):
-    req = urllib.request.Request(ct.BASE + path, data=None if body is None else json.dumps(body).encode(),
+    req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(),
                                  method="POST" if body is not None else "GET")
-    req.add_header("Authorization", "Bearer " + ct.OWNER_TOKEN)
+    req.add_header("Authorization", "Bearer " + OWNER_TOKEN)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read() or b"null")
 
@@ -50,9 +82,9 @@ def browser():
     from playwright.sync_api import sync_playwright
     pk = call("/api/publish", {"name": "UI list", "description": "for the page"})["pubkey"]
     ih = "d" * 40
-    req = urllib.request.Request(ct.BASE + f"/api/publish/{pk}/records", method="POST",
+    req = urllib.request.Request(BASE + f"/api/publish/{pk}/records", method="POST",
                                  data=json.dumps({"ih": ih, "title": "Мультфильм Ёжик (1975)", "tags": ["cartoon"]}, ensure_ascii=False).encode())
-    req.add_header("Authorization", "Bearer " + ct.OWNER_TOKEN)
+    req.add_header("Authorization", "Bearer " + OWNER_TOKEN)
     urllib.request.urlopen(req, timeout=30).read()
     call(f"/api/publish/{pk}/release", {})
     with sync_playwright() as p:
@@ -60,10 +92,10 @@ def browser():
         page = b.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(ct.BASE + "/")
+        page.goto(BASE + "/")
         check(page.url.endswith("/ui/"), "the browser at /ui/")
         page.wait_for_selector("#login-view:not([hidden])")
-        page.fill("#password", ct.OWNER_PASSWORD)
+        page.fill("#password", OWNER_PASSWORD)
         page.click("#login-form button")
         page.wait_for_selector("#search-view:not([hidden])")
         check(page.title() == "MediaMesh · P2Play", "logged in on the page")
@@ -84,7 +116,7 @@ def browser():
 def main():
     daemon = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "build-linux/src/app/p2playd")
     root = tempfile.mkdtemp(prefix="p2play-ui-")
-    proc = ct.start_daemon(daemon, root)
+    proc = start_daemon(daemon, root)
     try:
         status, headers, _ = get("/", {"Accept": "text/html,application/xhtml+xml"})
         check(status == 302 and headers.get("Location") == "/ui/", "a browser at / goes to /ui/")
@@ -103,7 +135,7 @@ def main():
             browser()
         print("PASS")
     finally:
-        ct.stop_daemon(proc)
+        stop_daemon(proc)
 
 
 if __name__ == "__main__":
