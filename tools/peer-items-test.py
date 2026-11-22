@@ -125,6 +125,11 @@ class Peer:
         self.wait(lambda v: v.get(b"get") == key)
         self.send(self.their, {b"item": item})
 
+    def push(self, item):
+        # A push is authorized by an exact key/sequence in this peer's latest HAVE.
+        self.send(self.their, {b"have": [[item[b"k"], item[b"seq"]]]})
+        self.send(self.their, {b"item": item})
+
     def no_item(self, key):
         self.send(self.their, {b"get": key, b"seq": -1})
         self.sock.settimeout(.5)
@@ -254,7 +259,7 @@ def main():
         peers.append(source)
         probe = Peer(b.bt, a.bt)
         peers.append(probe)
-        probe.inject(first)
+        probe.push(first)
         wait(lambda: any(l["pubkey"] == pk and l["seq"] == 1 and l["net"].get("records_ready") for l in b.lists()), 60)
         assert b.call("/api/catalog/search?q=peer")[1]["results"]
         relay = probe.get(key)
@@ -263,15 +268,20 @@ def main():
         # A's version 2 is delivered over BEP10; the old pointer must not replace it.
         a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "e" * 40, "title": "New Peer Film"}).encode())
         assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 2
-        second = source.get(key, 1)
-        assert second[b"seq"] == 2, "release did not synchronously expose its new signed pointer"
+        # An established directory peer gets the new signed item as a push. The have
+        # snapshot announcing seq=2 must arrive first; no get is sent by this test peer.
+        source.wait(lambda v: any(k == key and seq == 2 for k, seq in v.get(b"have", [])))
+        pushed = source.wait(lambda v: v.get(b"item", {}).get(b"k") == key and
+                             v.get(b"item", {}).get(b"seq") == 2)
+        second = pushed[b"item"]
+        assert second[b"seq"] == 2, "release did not push its new signed pointer"
         # The old handle retires asynchronously. Empty staging directories not
         # represented by torrent metadata may report delete-failed, not deleted.
         wait(lambda: len(os.listdir(os.path.join(a.data, "lists", ".network"))) == 1
              and a.lists()[0]["net"].get("records_ready"), 30)
         probe.inject(second)
         wait(lambda: any(l["seq"] == 2 and l["net"].get("records_ready") for l in b.lists()), 60)
-        probe.inject(first)
+        probe.push(first)
         time.sleep(2.3)
         assert b.lists()[0]["seq"] == 2 and probe.get(key)[b"seq"] == 2
         print("PASS newer sequence accepted, rollback rejected")

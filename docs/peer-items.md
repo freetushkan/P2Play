@@ -29,6 +29,12 @@ signing rules. No list private key is required for a relay. Legacy pointer files
 containing only `v`, `sig`, `seq` are upgraded by supplying the known key and
 salt and verifying the original signature before use.
 
+An established peer also pushes a pointer when a held list advances. It sends
+the updated `have` snapshot before the matching `item`; a receiver accepts a
+push only when the key and sequence match that peer's latest valid `have`.
+Replies to outstanding `get` requests remain accepted for compatibility and
+for peers that have not yet exchanged a fresh inventory.
+
 ## Acceptance and limits
 
 Items must be canonical, contain exactly the documented keys, have no trailing
@@ -37,11 +43,12 @@ is limited to depth 8 / 64 tokens. Names, hash/signature/key lengths, integer
 kinds/ranges and the exact salt are checked before signature verification.
 Duplicate keys, alternate encodings, invalid signatures and zero hashes fail
 closed. Network messages have a 512-KiB outer cap; `get` has a 128-byte cap.
-Only replies to outstanding keys are queued; unsolicited items are ignored.
+Replies to outstanding `get` requests are accepted. Push items also require an
+exact key/sequence match in the sender's latest `have` snapshot.
 
 Each connection has at most 32 pending requests, retries after 15 ticks, and
-rotates across requested keys. Budgets per tick are 32 served gets, 32 received
-items and two `have` updates. The shared incoming worker queue holds at most
+rotates across requested keys. Budgets per tick are 32 served gets, 32 pushed
+items, 32 received items and two `have` updates. The shared incoming worker queue holds at most
 128 items and deduplicates envelopes. Discovery retains at most 4096 keys and
 256 holder IDs per key. Outbound `have` and request snapshots are bounded to
 4096 entries. Cached pointers are only kept for local/subscribed lists; the

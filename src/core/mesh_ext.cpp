@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 
 #include <libtorrent/bdecode.hpp>
 #include <libtorrent/bencode.hpp>
@@ -91,7 +92,7 @@ namespace p2p {
                         const std::string address = remote.address().to_string();
                         m_endpoint = (remote.address().is_v6() ? "[" + address + "]" : address) + ":" + std::to_string(port);
                     }
-                    sendHave();
+                    sendHave(true);
                     requestItems();
                 }
                 return true;
@@ -117,6 +118,7 @@ namespace p2p {
                 if (have && d.dict_size() == 1 && have.list_size() <= kMaxHave && m_haveBudget > 0) {
                     --m_haveBudget;
                     std::vector<std::pair<std::string, int64_t>> lists;
+                    std::map<std::string, int64_t> remote;
                     for (int i = 0; i < have.list_size(); ++i) {
                         auto e = have.list_at(i);
                         if (e.type() != lt::bdecode_node::list_t || e.list_size() != 2 ||
@@ -124,8 +126,14 @@ namespace p2p {
                             e.list_at(1).type() != lt::bdecode_node::int_t || e.list_at(1).int_value() < 0) {
                             return true;
                         }
-                        lists.emplace_back(std::string(e.list_at(0).string_value()), e.list_at(1).int_value());
+                        std::string key(e.list_at(0).string_value());
+                        const int64_t seq = e.list_at(1).int_value();
+                        if (!remote.emplace(key, seq).second) {
+                            return true;
+                        }
+                        lists.emplace_back(std::move(key), seq);
                     }
+                    m_remoteHave = std::move(remote);
                     const auto &id = m_pc.pid();
                     m_hooks->received(std::string(id.data(), id.size()), lists);
                     requestItems();
@@ -153,10 +161,16 @@ namespace p2p {
                     --m_itemBudget;
                     const std::string key(item.dict_find_string_value("k"));
                     auto pending = m_pending.find(key);
-                    if (pending != m_pending.end()) {
+                    const auto seq = item.dict_find_int("seq");
+                    const auto advertised = m_remoteHave.find(key);
+                    const bool pushed = seq && advertised != m_remoteHave.end() &&
+                                        seq.int_value() == advertised->second;
+                    if (pending != m_pending.end() || pushed) {
                         const auto bytes = item.data_section();
                         m_hooks->itemReceived(std::string(bytes.data(), bytes.size()), m_endpoint);
-                        m_pending.erase(pending);
+                        if (pending != m_pending.end()) {
+                            m_pending.erase(pending);
+                        }
                     }
                 }
                 return true;
@@ -165,11 +179,13 @@ namespace p2p {
             void tick() override {
                 ++m_ticks;
                 m_getBudget = m_itemBudget = kMaxRequests;
+                m_sendItemBudget = kMaxRequests;
                 m_haveBudget = 2;
                 if (m_their) {
                     if (m_ticks % 10 == 0) {
                         sendHave();
                     }
+                    sendQueuedItems();
                     if (m_ticks % 2 == 0) {
                         requestItems();
                     }
@@ -202,11 +218,11 @@ namespace p2p {
                 }
             }
 
-            void send(const lt::entry &msg) {
+            bool send(const lt::entry &msg) {
                 std::vector<char> body;
                 lt::bencode(std::back_inserter(body), msg);
                 if (!m_their || body.size() > kMaxMessage) {
-                    return;
+                    return false;
                 }
                 const std::uint32_t len = static_cast<std::uint32_t>(2 + body.size());
                 char head[6] = {static_cast<char>(len >> 24), static_cast<char>(len >> 16), static_cast<char>(len >> 8),
@@ -214,22 +230,67 @@ namespace p2p {
                                 static_cast<char>(m_their)};
                 m_pc.send_buffer(head, sizeof(head));
                 m_pc.send_buffer(body.data(), static_cast<int>(body.size()));
+                return true;
             }
 
-            void sendHave() {
+            void sendQueuedItems() {
+                for (auto it = m_pushPending.begin(); it != m_pushPending.end() && m_sendItemBudget > 0;) {
+                    const std::string key = it->first;
+                    const int64_t seq = it->second;
+                    std::string raw;
+                    if (m_hooks->item(key, raw) && raw.size() <= MeshExtension::kMaxItem) {
+                        lt::error_code ec;
+                        auto encoded = lt::bdecode(raw, ec, nullptr, 8, 64);
+                        if (!ec && encoded.type() == lt::bdecode_node::dict_t) {
+                            const std::string actualKey(encoded.dict_find_string_value("k"));
+                            const auto actualSeq = encoded.dict_find_int("seq");
+                            if (actualKey == key && actualSeq && actualSeq.int_value() == seq) {
+                                lt::entry msg(lt::entry::dictionary_t);
+                                msg["item"] = encoded;
+                                if (send(msg)) {
+                                    m_pushed[key] = seq;
+                                }
+                            }
+                        }
+                    }
+                    it = m_pushPending.erase(it);
+                    --m_sendItemBudget;
+                }
+            }
+
+            // The initial inventory is pull-based. Later sequence changes are pushed,
+            // but only after the new have snapshot has been sent on this connection.
+            void sendHave(bool initial = false) {
                 lt::entry msg(lt::entry::dictionary_t);
                 auto &have = msg["have"].list();
+                std::set<std::string> announced;
                 for (const auto &l : m_hooks->held()) {
+                    if (l.first.size() != 32 || l.second < 0) {
+                        continue;
+                    }
                     if (have.size() >= kMaxHave) {
                         break;
                     }
-                    if (l.first.size() != 32 || l.second < 0) {
-                        continue;
+                    announced.insert(l.first);
+                    const auto pushed = m_pushed.find(l.first);
+                    const int64_t last = pushed == m_pushed.end() ? -1 : pushed->second;
+                    if (initial) {
+                        m_pushed[l.first] = std::max(last, l.second);
+                    } else if (l.second > last) {
+                        m_pushPending[l.first] = l.second;
                     }
                     lt::entry::list_type item;
                     item.emplace_back(l.first);
                     item.emplace_back(l.second);
                     have.emplace_back(std::move(item));
+                }
+                for (auto it = m_pushed.begin(); it != m_pushed.end();) {
+                    if (!announced.count(it->first)) it = m_pushed.erase(it);
+                    else ++it;
+                }
+                for (auto it = m_pushPending.begin(); it != m_pushPending.end();) {
+                    if (!announced.count(it->first)) it = m_pushPending.erase(it);
+                    else ++it;
                 }
                 std::vector<char> body;
                 lt::bencode(std::back_inserter(body), msg);
@@ -244,7 +305,9 @@ namespace p2p {
             int m_their = 0;
             int64_t m_ticks = 0;
             int m_getBudget = kMaxRequests, m_itemBudget = kMaxRequests, m_haveBudget = 2;
+            int m_sendItemBudget = kMaxRequests;
             std::map<std::string, int64_t> m_pending;
+            std::map<std::string, int64_t> m_remoteHave, m_pushed, m_pushPending;
             std::vector<char> m_sent;
             std::string m_endpoint;
             size_t m_requestCursor = 0;
