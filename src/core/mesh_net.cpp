@@ -417,24 +417,8 @@ namespace p2p {
         if (raw.size() > MeshExtension::kMaxItem || m_stopping) {
             return;
         }
-        constexpr size_t kMaxIncoming = 128;
-        constexpr size_t kMaxIncomingPerSource = 8;
-        constexpr size_t kMaxIncomingFromDht = 32;
-        const std::string sourceKey = source.empty() ? (peer.empty() ? "dht" : peer) : source;
         std::lock_guard<std::mutex> lock(m_meshMutex);
-        if (m_meshIncoming.size() >= kMaxIncoming ||
-            std::any_of(m_meshIncoming.begin(), m_meshIncoming.end(),
-                        [&](const auto &e) { return e.raw == raw; })) {
-            return;
-        }
-        const size_t sourceCount = static_cast<size_t>(std::count_if(
-            m_meshIncoming.begin(), m_meshIncoming.end(),
-            [&](const auto &e) { return (e.source.empty() ? (e.peer.empty() ? "dht" : e.peer) : e.source) == sourceKey; }));
-        const size_t sourceLimit = sourceKey == "dht" ? kMaxIncomingFromDht : kMaxIncomingPerSource;
-        if (sourceCount >= sourceLimit) {
-            return;
-        }
-        m_meshIncoming.push_back({raw, peer, source});
+        m_meshIncoming.push({raw, peer, source});
     }
 
     std::vector<std::pair<std::string, int64_t>> Core::meshRequests() {
@@ -500,34 +484,19 @@ namespace p2p {
 
     void Core::meshWork() {
         std::lock_guard<std::recursive_mutex> lifecycle(m_meshLifecycle);
-        std::vector<MeshIncoming> incoming;
+        std::vector<MeshIncomingQueue::Item> incoming;
         std::vector<std::string> lookups, keys, garbage;
         std::vector<MeshMediaRequest> media;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
-            incoming.swap(m_meshIncoming); garbage.swap(m_meshGarbage); media.swap(m_meshMediaQueue);
+            incoming = m_meshIncoming.take(); garbage.swap(m_meshGarbage); media.swap(m_meshMediaQueue);
             for (auto &e : m_meshNet) {
                 keys.push_back(e.first);
                 if (e.second.pendingGet) { e.second.pendingGet = false; lookups.push_back(e.first); }
             }
         }
-        // Reorder only the detached batch: one item per source per pass. The
-        // libtorrent callback never builds maps/deques or drains under m_meshMutex.
-        std::map<std::string, std::deque<MeshIncoming>> bySource;
-        for (auto &item : incoming) {
-            const std::string source = item.source.empty() ? (item.peer.empty() ? "dht" : item.peer) : item.source;
-            bySource[source].push_back(std::move(item));
-        }
-        std::vector<MeshIncoming> fairIncoming;
-        fairIncoming.reserve(incoming.size());
-        while (!bySource.empty()) {
-            for (auto it = bySource.begin(); it != bySource.end();) {
-                fairIncoming.push_back(std::move(it->second.front()));
-                it->second.pop_front();
-                if (it->second.empty()) it = bySource.erase(it);
-                else ++it;
-            }
-        }
+        // Fairness is applied to the detached batch, outside m_meshMutex.
+        auto fairIncoming = MeshIncomingQueue::roundRobin(std::move(incoming));
         for (const auto &dir : garbage) removeTree(dir);
         for (const auto &pk : lookups) meshGet(pk);
         for (const auto &item : fairIncoming) { if (m_stopping) return; meshReceivePointer(item.raw, item.peer); }

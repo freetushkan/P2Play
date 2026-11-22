@@ -58,6 +58,8 @@ jobs:
 
       - name: MediaMesh stage 3 integration
         run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -Isrc/core tools/mesh-queue-test.cpp -o /tmp/mesh-queue-test
+          /tmp/mesh-queue-test
           python3 -I tools/peer-items-test.py build/src/app/p2playd
           python3 -I tools/mesh-media-test.py build/src/app/p2playd
           python3 -I tools/mesh-selective-test.py build/src/app/p2playd

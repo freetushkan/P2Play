@@ -26,6 +26,7 @@
 #include "../../third_party/nlohmann/json.hpp"
 #include "auth.hpp"
 #include "http.hpp"
+#include "mesh_incoming_queue.hpp"
 #include "mesh.hpp"
 #include "ram_cache.hpp"
 #include "store.hpp"
@@ -244,8 +245,7 @@ namespace p2p {
         std::map<lt::torrent_handle, std::string> m_meshRetired;
         std::vector<std::string> m_meshGarbage;
         std::map<std::string, MeshNet> m_meshNet;
-        struct MeshIncoming { std::string raw, peer, source; };
-        std::vector<MeshIncoming> m_meshIncoming; // bounded network -> idle worker queue
+        MeshIncomingQueue m_meshIncoming; // bounded network -> idle worker queue
         lt::error_code m_meshError;
         lt::torrent_handle m_directory;
         std::mutex m_directoryMutex;

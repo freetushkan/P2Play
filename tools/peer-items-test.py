@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Signed BEP10 pointers without DHT, stdlib only.
 Usage: python3 tools/peer-items-test.py /absolute/path/to/p2playd
-Checks invalid signatures/salt/seq/shapes, rollback/equivocation, publisher-offline
-relay, peer hints and restart persistence using actual BitTorrent wire connections.
+Checks invalid pointers, push/get, missed-push reconnect, queue limits and relay using
+actual BitTorrent wire connections.
 Set KEEP=1 to retain daemon logs on failure.
 """
 import copy
@@ -285,18 +285,35 @@ def main():
         time.sleep(2.3)
         assert b.lists()[0]["seq"] == 2 and probe.get(key)[b"seq"] == 2
         print("PASS newer sequence accepted, rollback rejected")
-        a.stop()
+
+        # B goes offline before the next release. It must recover the missed version
+        # through a fresh BEP 10 get after restart, not rely on the lost push.
         probe.close()
+        peers.remove(probe)
+        b.stop()
+        a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "a" * 40, "title": "Offline update"}).encode())
+        assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 3
+        source.wait(lambda v: any(k == key and seq == 3 for k, seq in v.get(b"have", [])))
+        third = source.wait(lambda v: v.get(b"item", {}).get(b"k") == key and
+                            v.get(b"item", {}).get(b"seq") == 3)[b"item"]
+
+        b.start()
+        assert b.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{a.bt}"]})[0] == 202
+        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in b.lists()), 60)
+        print("PASS reconnect get recovers the pointer missed while offline")
+
+        a.stop()
+        source.close()
         b.stop()
         b.start()
         relay_peer = Peer(b.bt)
         peers.append(relay_peer)
-        assert ben(relay_peer.get(key)) == ben(second)
+        assert ben(relay_peer.get(key)) == ben(third)
         print("PASS received pointer survives restart without publisher or private seed")
         c = Node(daemon, root, "c")
         nodes.append(c)
         assert c.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{b.bt}"]})[0] == 202
-        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 2 and l["net"].get("records_ready") for l in c.lists()), 60)
+        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in c.lists()), 60)
         print("PASS third node subscribes via directory peer hint after publisher exits")
         print("PASS signed peer item network tests")
     finally:
