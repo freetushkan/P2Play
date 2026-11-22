@@ -10,6 +10,8 @@
 #include <tuple>
 
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 
 namespace p2p {
