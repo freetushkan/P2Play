@@ -38,7 +38,7 @@ namespace p2p {
             // calls, disk I/O or downloading. Requests are (key bytes, minimum known seq).
             virtual std::vector<std::pair<std::string, int64_t>> requests() = 0;
             virtual bool item(const std::string &key, std::string &raw) = 0;
-            virtual void itemReceived(const std::string &raw, const std::string &peer) = 0;
+            virtual void itemReceived(const std::string &raw, const std::string &peer, const std::string &source) = 0;
         };
 
         static std::shared_ptr<lt::plugin> make(std::shared_ptr<Hooks> hooks);

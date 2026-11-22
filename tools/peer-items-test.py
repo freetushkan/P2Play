@@ -68,9 +68,12 @@ def free_port():
 
 class Peer:
     """A raw BEP10 test peer. Its extension id differs from the daemon's id."""
-    def __init__(self, port, advertised_port=None):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    def __init__(self, port, advertised_port=None, source_ip=None):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(5)
+        if source_ip:
+            self.sock.bind((source_ip, 0))
+        self.sock.connect(("127.0.0.1", port))
         self.sock.sendall(b"\x13BitTorrent protocol" + b"\0\0\0\0\0\x10\0\0" + DIRECTORY + b"-PI0001-" + os.urandom(12))
         assert self.exact(68)[28:48] == DIRECTORY
         self.send(0, {b"m": {b"mediamesh": 42}, b"p": advertised_port or port})
@@ -129,6 +132,11 @@ class Peer:
         # A push is authorized by an exact key/sequence in this peer's latest HAVE.
         self.send(self.their, {b"have": [[item[b"k"], item[b"seq"]]]})
         self.send(self.their, {b"item": item})
+
+    def push_many(self, items):
+        self.send(self.their, {b"have": [[item[b"k"], item[b"seq"]] for item in items]})
+        for item in items:
+            self.send(self.their, {b"item": item})
 
     def no_item(self, key):
         self.send(self.their, {b"get": key, b"seq": -1})
@@ -285,6 +293,38 @@ def main():
         time.sleep(2.3)
         assert b.lists()[0]["seq"] == 2 and probe.get(key)[b"seq"] == 2
         print("PASS newer sequence accepted, rollback rejected")
+
+        # B misses the next push while disconnected. On reconnect it must request
+        # the current pointer with get rather than assuming HAVE is authoritative.
+        probe.close()
+        peers.remove(probe)
+        a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "f" * 40, "title": "Offline update"}).encode())
+        assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 3
+        source.wait(lambda v: any(k == key and seq == 3 for k, seq in v.get(b"have", [])))
+        third = source.wait(lambda v: v.get(b"item", {}).get(b"k") == key and v.get(b"item", {}).get(b"seq") == 3)[b"item"]
+
+        # More than the global queue capacity is sent from one source IP, using
+        # separate connections so the per-connection BEP 10 budget is respected.
+        attackers = []
+        for i in range(12):
+            attacker = Peer(b.bt, a.bt, source_ip="127.0.0.2")
+            peers.append(attacker)
+            attackers.append(attacker)
+            fake_items = []
+            for j in range(16):
+                fake_items.append({
+                    b"k": hashlib.sha256(f"flood-{i}-{j}".encode()).digest(),
+                    b"salt": b"mediamesh.v1", b"seq": 1, b"sig": b"x" * 64,
+                    b"v": {b"ih": b"z" * 32, b"n": b"flood"},
+                })
+            attacker.push_many(fake_items)
+
+        fallback = Peer(b.bt, a.bt, source_ip="127.0.0.3")
+        peers.append(fallback)
+        fallback.inject(third)  # B's reconnect get is answered despite the other source's flood
+        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in b.lists()), 60)
+        print("PASS reconnect get and per-source queue fairness under pointer flood")
+
         a.stop()
         probe.close()
         b.stop()
@@ -296,7 +336,7 @@ def main():
         c = Node(daemon, root, "c")
         nodes.append(c)
         assert c.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{b.bt}"]})[0] == 202
-        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 2 and l["net"].get("records_ready") for l in c.lists()), 60)
+        wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in c.lists()), 60)
         print("PASS third node subscribes via directory peer hint after publisher exits")
         print("PASS signed peer item network tests")
     finally:
