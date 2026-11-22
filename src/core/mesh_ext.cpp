@@ -87,7 +87,6 @@ namespace p2p {
                 m_their = id > 0 && id <= 255 ? static_cast<int>(id) : 0;
                 if (m_their) {
                     const auto remote = m_pc.remote();
-                    m_source = remote.address().to_string();
                     const int64_t port = h.dict_find_int_value("p", remote.port());
                     if (port > 0 && port <= 65535) {
                         const std::string address = remote.address().to_string();
@@ -168,7 +167,7 @@ namespace p2p {
                                         seq.int_value() == advertised->second;
                     if (pending != m_pending.end() || pushed) {
                         const auto bytes = item.data_section();
-                        m_hooks->itemReceived(std::string(bytes.data(), bytes.size()), m_endpoint, m_source);
+                        m_hooks->itemReceived(std::string(bytes.data(), bytes.size()), m_endpoint);
                         if (pending != m_pending.end()) {
                             m_pending.erase(pending);
                         }
@@ -310,7 +309,6 @@ namespace p2p {
             std::map<std::string, int64_t> m_pending;
             std::map<std::string, int64_t> m_remoteHave, m_pushed, m_pushPending;
             std::vector<char> m_sent;
-            std::string m_source; // actual TCP source address; unlike BEP 10 p, it is not peer-advertised
             std::string m_endpoint;
             size_t m_requestCursor = 0;
         };

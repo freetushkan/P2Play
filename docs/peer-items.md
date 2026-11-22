@@ -48,12 +48,8 @@ exact key/sequence match in the sender's latest `have` snapshot.
 
 Each connection has at most 32 pending requests, retries after 15 ticks, and
 rotates across requested keys. Budgets per tick are 32 served gets, 32 pushed
-items, 32 received items and two `have` updates. The shared incoming worker queue
-holds at most 128 items globally, at most 8 queued items per remote source IP, and
-at most 32 DHT replies in its DHT source bucket. The worker drains source buckets
-round-robin; duplicate envelopes are ignored while queued. The source address is
-the actual TCP address, not the BEP 10 advertised listening port. Peers behind the
-same NAT share a quota. Discovery retains at most 4096 keys and
+items, 32 received items and two `have` updates. The shared incoming worker queue holds at most
+128 items and deduplicates envelopes. Discovery retains at most 4096 keys and
 256 holder IDs per key. Outbound `have` and request snapshots are bounded to
 4096 entries. Cached pointers are only kept for local/subscribed lists; the
 untrusted directory cannot create unlimited download state.
@@ -111,9 +107,7 @@ The first test needs only Python's standard library and uses real BitTorrent
 wire handshakes with a different negotiated extension ID. DHT is disabled on
 all nodes. It exercises owner signing, malformed/signature/salt/sequence/shape
 rejection, version download/search, unchanged signature relay, upgrades,
-rollback protection, reconnect fallback after a missed push, fairness against a
-multi-connection same-IP pointer flood, asynchronous old-generation cleanup after
-a release, persistence after restart, and publisher-offline third-node subscription
-via a directory peer hint. Set `KEEP=1` to keep logs.
+rollback protection, asynchronous old-generation cleanup after a release, persistence
+after restart, and publisher-offline third-node subscription via a directory peer hint. Set `KEEP=1` to keep logs.
 The existing meshnet test exercises the retained DHT path (and requires the
 Python libtorrent binding).

@@ -411,30 +411,15 @@ namespace p2p {
         }
     }
 
-    void Core::meshPeerReceived(const std::string &raw, const std::string &peer, const std::string &source) {
+    void Core::meshPeerReceived(const std::string &raw, const std::string &peer) {
         if (raw.size() > MeshExtension::kMaxItem || m_stopping) {
             return;
         }
-        constexpr size_t kMaxIncoming = 128;
-        constexpr size_t kMaxIncomingPerPeer = 8;
-        constexpr size_t kMaxIncomingFromDht = 32;
-        const std::string sourceKey = source.empty() ? (peer.empty() ? "dht" : peer) : source;
         std::lock_guard<std::mutex> lock(m_meshMutex);
-        if (m_meshIncomingSeen.count(raw) || m_meshIncomingSize >= kMaxIncoming) {
-            return;
+        if (m_meshIncoming.size() < 128 &&
+            std::none_of(m_meshIncoming.begin(), m_meshIncoming.end(), [&](const auto &e) { return e.first == raw; })) {
+            m_meshIncoming.emplace_back(raw, peer);
         }
-        auto it = m_meshIncoming.find(sourceKey);
-        const size_t sourceLimit = sourceKey == "dht" ? kMaxIncomingFromDht : kMaxIncomingPerPeer;
-        if (it == m_meshIncoming.end()) {
-            it = m_meshIncoming.emplace(sourceKey, std::deque<std::pair<std::string, std::string>>{}).first;
-            m_meshIncomingOrder.push_back(sourceKey);
-        }
-        if (it->second.size() >= sourceLimit) {
-            return;
-        }
-        it->second.emplace_back(raw, peer);
-        m_meshIncomingSeen.insert(raw);
-        ++m_meshIncomingSize;
     }
 
     std::vector<std::pair<std::string, int64_t>> Core::meshRequests() {
@@ -505,26 +490,7 @@ namespace p2p {
         std::vector<MeshMediaRequest> media;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
-            // One item per source per pass. Re-enqueue a source with remaining work so
-            // a burst from one peer cannot sit in front of every other source.
-            while (!m_meshIncomingOrder.empty() && m_meshIncomingSize > 0) {
-                const std::string source = std::move(m_meshIncomingOrder.front());
-                m_meshIncomingOrder.pop_front();
-                auto it = m_meshIncoming.find(source);
-                if (it == m_meshIncoming.end() || it->second.empty()) {
-                    continue;
-                }
-                incoming.emplace_back(std::move(it->second.front()));
-                it->second.pop_front();
-                m_meshIncomingSeen.erase(incoming.back().first);
-                --m_meshIncomingSize;
-                if (it->second.empty()) {
-                    m_meshIncoming.erase(it);
-                } else {
-                    m_meshIncomingOrder.push_back(source);
-                }
-            }
-            garbage.swap(m_meshGarbage); media.swap(m_meshMediaQueue);
+            incoming.swap(m_meshIncoming); garbage.swap(m_meshGarbage); media.swap(m_meshMediaQueue);
             for (auto &e : m_meshNet) {
                 keys.push_back(e.first);
                 if (e.second.pendingGet) { e.second.pendingGet = false; lookups.push_back(e.first); }
@@ -863,9 +829,7 @@ namespace p2p {
 
             std::vector<std::pair<std::string, int64_t>> requests() override { return m_core->meshRequests(); }
             bool item(const std::string &key, std::string &raw) override { return m_core->meshPeerItem(key, raw); }
-            void itemReceived(const std::string &raw, const std::string &peer, const std::string &source) override {
-                m_core->meshPeerReceived(raw, peer, source);
-            }
+            void itemReceived(const std::string &raw, const std::string &peer) override { m_core->meshPeerReceived(raw, peer); }
 
             void received(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) override {
                 m_core->meshDiscovered(peer, lists);
