@@ -54,6 +54,7 @@ jobs:
           python3 tools/silo-test.py build/src/app/p2playd
           python3 tools/mesh-test.py build/src/app/p2playd
           python3 tools/meshnet-test.py build/src/app/p2playd
+          python3 -I tools/ui-test.py build/src/app/p2playd
 
       - name: MediaMesh stage 3 integration
         run: |

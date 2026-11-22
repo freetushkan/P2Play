@@ -3,20 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MediaMesh · Silo</title>
-  <link rel="stylesheet" href="/plugins/mediamesh/style.css">
-  <script src="/plugins/mediamesh/app.js" defer></script>
+  <title>MediaMesh</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
 </head>
 <body>
-  <header class="masthead"><a href="/" class="back">Silo</a><h1>MediaMesh</h1><p>Find a release. Keep it in your library.</p></header>
+  <header class="masthead"><a href="/" class="back silo-only" hidden>Silo</a><h1>MediaMesh</h1><p>Find a release. Keep it in your library.</p></header>
   <main>
     <nav aria-label="MediaMesh sections">
       <button type="button" data-view="search" aria-pressed="true">Search</button>
       <button type="button" data-view="lists" aria-pressed="false">Lists</button>
       <button type="button" data-view="settings" aria-pressed="false" id="settings-tab" hidden>Settings</button>
     </nav>
-    <p id="status" role="status" aria-live="polite">Connecting to Silo…</p>
-    <section id="search-view" aria-labelledby="search-heading">
+    <p id="status" role="status" aria-live="polite">Connecting…</p>
+    <section id="login-view" aria-labelledby="login-heading" hidden>
+      <h2 id="login-heading">Log in to this P2Play node</h2>
+      <form id="login-form">
+        <label>User<input id="username" value="owner" maxlength="128" autocomplete="username" spellcheck="false"></label>
+        <label>Password<input id="password" type="password" maxlength="512" autocomplete="current-password"></label>
+        <button type="submit">Log in</button>
+      </form>
+      <p class="hint">The same users as the node's MatriX and Silo APIs. A node without an owner password takes the first one given for <code class="inline">owner</code>.</p>
+    </section>
+    <section id="search-view" aria-labelledby="search-heading" hidden>
       <h2 id="search-heading">Search your catalogs</h2>
       <form id="search-form" class="search-form">
         <label>Title<input id="query" type="search" maxlength="512" placeholder="Film, series or release name"></label>
@@ -35,7 +44,7 @@
         <label>List public key<input id="pubkey" maxlength="64" minlength="64" pattern="[0-9a-fA-F]{64}" required spellcheck="false"></label>
         <button type="submit">Subscribe</button>
       </form>
-      <p class="hint">Subscriptions and refresh requests require a Silo administrator. Refresh requests re-subscribe to the list. This Silo version cannot remove daemon subscriptions from plugins.</p>
+      <p class="hint silo-only" hidden>Subscriptions and refresh requests require a Silo administrator. Refresh requests re-subscribe to the list. This Silo version cannot remove daemon subscriptions from plugins.</p>
     </section>
     <section id="settings-view" aria-labelledby="settings-heading" hidden>
       <h2 id="settings-heading">Daemon connection</h2>

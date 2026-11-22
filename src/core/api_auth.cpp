@@ -3,6 +3,7 @@
 // routes (api_matrix.cpp, a compatibility layer). One set of users for both.
 
 #include "core_torrent.hpp"
+#include "ui_files.hpp"
 
 namespace p2p {
 
@@ -42,8 +43,31 @@ namespace p2p {
             res.text(200, echo());
             return;
         }
+        // the web interface: the Silo plugin's pages (plugins/mediamesh), at /ui/; a browser at /
+        // goes there, anything else gets the node's card. It logs in through /api/auth/login.
         if (get && p == "/") {
-            res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", true}}.dump());
+            if (req.header("accept").find("text/html") != std::string::npos) {
+                res.send(302, "text/plain; charset=utf-8", "/ui/\n", {{"Location", "/ui/"}});
+            } else {
+                res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", true}}.dump());
+            }
+            return;
+        }
+        if (get && (p == "/ui" || p.rfind("/ui/", 0) == 0)) {
+            if (p == "/ui") {
+                res.send(301, "text/plain; charset=utf-8", "/ui/\n", {{"Location", "/ui/"}});
+                return;
+            }
+            const UiFile *f = uiFile(p == "/ui/" ? "/index.html" : p.substr(3));
+            if (!f) {
+                error(res, 404, "not found");
+                return;
+            }
+            // the plugin's policy in Silo, the same here
+            res.send(200, f->type, std::string(reinterpret_cast<const char *>(f->data), f->size),
+                     {{"Cache-Control", "no-cache"}, {"X-Content-Type-Options", "nosniff"}, {"Referrer-Policy", "no-referrer"},
+                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+                                                  "connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"}});
             return;
         }
         if (get && p == "/api/system/ping") {

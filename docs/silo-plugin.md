@@ -5,6 +5,19 @@ iframe, a Go-core patch, or a browser client holding a daemon API token. It adds
 search, list discovery/subscription, and transfer of a selected catalog release
 into the signed-in user's native Silo torrent library.
 
+## One interface, two hosts
+
+`index.html`, `app.js` and `style.css` are also the P2Play core's own web interface:
+`cmake/embed-ui.cmake` builds them into the core, which serves them at `/ui/` (a browser
+at `/` is sent there). There is no second copy. `app.js` tells the host by the address:
+under `/plugins/` it calls this plugin's routes (`service.js`); anywhere else it calls the
+core's `/api` in the same shapes (search, lists, discovery, subscription, adding to the
+signed-in user's library) and logs in through `/api/auth/login`. Elements only Silo has
+(the back link, the daemon settings, Silo's permission notes) carry `silo-only`.
+`index.html` refers to its files relatively, so the page works at `/plugins/mediamesh/`
+and at `/ui/`. `tools/ui-test.py` checks the core side (with `--browser`: the page itself,
+in Chromium).
+
 ## Compatibility pin
 
 Inspected and tested against **YouROK/TorrServer, branch `silo`, commit

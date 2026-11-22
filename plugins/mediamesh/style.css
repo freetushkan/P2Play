@@ -35,7 +35,7 @@ code { display: block; font-size: .78rem; color: #4b6072; overflow-wrap: anywher
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .checkbox { display: flex; gap: .65rem; align-items: center; font-weight: 400; }
 .checkbox input { width: 1.1rem; min-height: 1.1rem; margin: 0; }
-#settings-form button, #subscribe-form button { justify-self: start; }
+#settings-form button, #subscribe-form button, #login-form button { justify-self: start; }
 @media (max-width: 620px) {
   .search-form { grid-template-columns: 1fr; }
   .row { flex-direction: column; align-items: stretch; gap: 1rem; }
@@ -43,3 +43,4 @@ code { display: block; font-size: .78rem; color: #4b6072; overflow-wrap: anywher
   .section-heading { flex-wrap: wrap; }
   main { padding-inline: 1rem; }
 }
+code.inline { display: inline; font-size: inherit; margin: 0; }

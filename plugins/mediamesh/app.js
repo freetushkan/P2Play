@@ -1,20 +1,64 @@
 (function () {
     "use strict";
+    // One page for two hosts: Silo serves it as this plugin (/plugins/mediamesh/, service.js
+    // passes the calls on to a P2Play node) and the P2Play core serves the same files at /ui/
+    // (cmake/embed-ui.cmake), calling its own /api. The host is told by the address.
+    var SILO = location.pathname.indexOf("/plugins/") === 0;
+    var HOST = SILO ? "Silo" : "P2Play";
     var base = "/plugins/mediamesh", session, busy = false;
     var $ = function (id) { return document.getElementById(id); };
     function status(message, bad) { $("status").textContent = message; $("status").className = bad ? "error" : ""; }
-    async function api(path, body) {
+    async function request(url, body, headers) {
         var opts = { credentials: "same-origin", headers: { Accept: "application/json" }, cache: "no-store" };
         if (body !== undefined) {
             opts.method = "POST";
             opts.headers["Content-Type"] = "application/json";
-            opts.headers["X-MediaMesh-CSRF"] = session.csrf;
+            Object.keys(headers || {}).forEach(function (k) { opts.headers[k] = headers[k]; });
             opts.body = JSON.stringify(body);
         }
-        var res = await fetch(base + path, opts), data;
-        try { data = await res.json(); } catch (_) { throw new Error("Silo returned an unreadable response. Sign in and reload this page."); }
+        var res = await fetch(url, opts), data;
+        try { data = await res.json(); } catch (_) { throw new Error(HOST + " returned an unreadable response. Sign in and reload this page."); }
+        if (res.status === 401 && !SILO) { showLogin(); throw new Error("Log in to this P2Play node."); }
         if (!res.ok) throw new Error(data.error || "Request failed.");
         return data;
+    }
+    // the plugin's routes (service.js)
+    function api(path, body) { return request(base + path, body, session ? { "X-MediaMesh-CSRF": session.csrf } : {}); }
+    // the core's own API, in the shapes of the plugin's routes
+    function core(path, body) { return request("/api" + path, body); }
+    function card(r) {
+        return { hash: r.hash, title: r.title || "", size: r.size || 0, files: r.files || 0, tags: r.tags || [],
+            lists: r.lists || [], torrs: r.torrs || "", supported: true };
+    }
+    var host = SILO ? {
+        session: function () { return api("/api/session"); },
+        search: function (q, tag) { return api("/api/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag)); },
+        lists: function () { return api("/api/lists"); },
+        discover: function () { return api("/api/discover"); },
+        subscribe: function (pubkey) { return api("/api/subscribe", { pubkey: pubkey }); },
+        add: function (r) { return api("/api/add", { hash: r.hash }); },
+        settings: function (body) { return api("/api/settings", body); }
+    } : {
+        session: async function () {
+            var me = await core("/auth/me");
+            return { rank: me.rank, csrf: "", can_admin: me.rank >= 50, user: me.username };
+        },
+        search: async function (q, tag) {
+            var data = await core("/catalog/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag) + "&limit=50");
+            return { results: (data.results || []).map(card) };
+        },
+        lists: function () { return core("/lists"); },
+        discover: function () { return core("/lists/discover"); },
+        subscribe: function (pubkey) { return core("/lists/" + encodeURIComponent(pubkey.toLowerCase()), {}); },
+        add: function (r) {
+            // a v1 record has its torrs:// card (title, poster, trackers); a v2 one goes by its hash
+            var link = r.torrs || (r.hash.length === 64 ? "magnet:?xt=urn:btmh:1220" + r.hash : "magnet:?xt=urn:btih:" + r.hash);
+            return core("/torrents", { link: link, title: r.title, save_to_db: true });
+        }
+    };
+    function showLogin() {
+        $("login-view").hidden = false;
+        ["search", "lists", "settings"].forEach(function (id) { $(id + "-view").hidden = true; });
     }
     async function run(action) {
         if (busy) return;
@@ -46,9 +90,9 @@
             var row = el("article", undefined, "row"), copy = el("div", undefined, "row-copy");
             copy.append(el("h3", r.title || r.hash), el("p", bytes(r.size) + (r.files ? " / " + r.files + " files" : "")), el("p", r.tags.join(", "), "hint"));
             var hash = el("code", r.hash); copy.append(hash); row.append(copy);
-            var add = button("Add to Silo", async function (b) {
-                b.disabled = true; status("Adding to your Silo library…");
-                try { await api("/api/add", { hash: r.hash }); b.textContent = "Added"; status("Added to your Silo library."); }
+            var add = button("Add to " + HOST, async function (b) {
+                b.disabled = true; status("Adding to your " + HOST + " library…");
+                try { await host.add(r); b.textContent = "Added"; status("Added to your " + HOST + " library."); }
                 catch (err) { b.disabled = false; throw err; }
             });
             if (!r.supported) { add.disabled = true; add.textContent = "v2 not supported"; }
@@ -64,20 +108,20 @@
                 el("p", "Version " + l.seq + (l.records ? " / " + l.records + " releases" : ""), "hint"), el("code", l.pubkey));
             row.append(copy);
             if (session.can_admin) row.append(button(discovery ? "Subscribe" : "Request refresh", async function () {
-                await api("/api/subscribe", { pubkey: l.pubkey }); status("Subscription requested. Reload lists after the daemon downloads the signed catalog.");
+                await host.subscribe(l.pubkey); status("Subscription requested. Reload lists after the daemon downloads the signed catalog.");
             }));
             target.append(row);
         });
     }
     async function loadLists() {
         status("Loading lists…");
-        var own = await api("/api/lists"); renderLists($("lists"), own.lists, false);
+        var own = await host.lists(); renderLists($("lists"), own.lists, false);
         // Keep subscribed lists visible if discovery is temporarily unavailable.
-        var discovered = await api("/api/discover"); renderLists($("discover"), discovered.lists, true);
+        var discovered = await host.discover(); renderLists($("discover"), discovered.lists, true);
         status("Lists loaded.");
     }
     async function loadSettings() {
-        var cfg = await api("/api/settings"); $("daemon-url").value = cfg.url;
+        var cfg = await host.settings(); $("daemon-url").value = cfg.url;
         $("daemon-token").value = ""; $("clear-token").checked = false;
         $("token-state").textContent = cfg.token_configured ? "A token is stored on the Silo server. It is never returned to this page." : "No daemon token is stored.";
     }
@@ -94,24 +138,34 @@
     });
     $("search-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
         status("Searching…");
-        var data = await api("/api/search?q=" + encodeURIComponent($("query").value) + "&tag=" + encodeURIComponent($("tag").value));
+        var data = await host.search($("query").value, $("tag").value);
         renderResults(data.results); status(data.results.length + " releases found. Showing up to 50 results.");
     }); });
     $("reload-lists").addEventListener("click", function () { run(loadLists); });
     $("subscribe-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
-        await api("/api/subscribe", { pubkey: $("pubkey").value.trim() });
+        await host.subscribe($("pubkey").value.trim());
         status("Subscription requested. Reload lists after the catalog downloads.");
     }); });
     $("settings-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
         var token = $("daemon-token").value;
         $("daemon-token").value = "";
-        await api("/api/settings", { url: $("daemon-url").value.trim(), token: token, clear_token: $("clear-token").checked });
+        await host.settings({ url: $("daemon-url").value.trim(), token: token, clear_token: $("clear-token").checked });
         await loadSettings(); status("Connection saved. Use Search or Lists to check the daemon.");
     }); });
-    run(async function () {
-        session = await api("/api/session");
-        $("settings-tab").hidden = !session.can_admin;
+    $("login-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
+        // the core's login: its token comes back as a cookie (the first login as owner sets the password)
+        await request("/api/auth/login", { username: $("username").value.trim(), password: $("password").value });
+        $("password").value = ""; $("login-view").hidden = true;
+        await start();
+    }); });
+    async function start() {
+        session = await host.session();
+        document.querySelectorAll(".silo-only").forEach(function (n) { n.hidden = !SILO; });
+        $("search-view").hidden = false;
+        $("settings-tab").hidden = !SILO || !session.can_admin;
         $("subscribe-form").hidden = !session.can_admin;
-        status("Search the catalogs subscribed on your daemon.");
-    });
+        status("Search the catalogs subscribed on " + (SILO ? "your daemon." : "this node."));
+    }
+    document.title = "MediaMesh · " + HOST;
+    run(start);
 }());
