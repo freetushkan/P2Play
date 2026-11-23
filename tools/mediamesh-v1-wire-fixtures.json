@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "note": "Bencoded payload fixtures before BitTorrent extended-message framing. The item envelope is validated live using a real signed pointer returned by the publisher.",
+  "extension_handshake": {
+    "bencoded_hex": "64313a6d64393a6d656469616d6573686934326565313a7069363838316565"
+  },
+  "have": {
+    "bencoded_hex": "64343a686176656c6c33323a1111111111111111111111111111111111111111111111111111111111111111693765656565"
+  },
+  "get": {
+    "bencoded_hex": "64333a67657433323a1111111111111111111111111111111111111111111111111111111111111111333a73657169366565"
+  }
+}

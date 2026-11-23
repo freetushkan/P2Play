@@ -105,15 +105,21 @@ a third node to retrieve a relayed pointer and list after the publisher exits.
 ## Tests
 
 ```
-python3 tools/peer-items-test.py /absolute/path/to/p2playd
-python3 tools/meshnet-test.py /absolute/path/to/p2playd
+python3 -I tools/peer-items-test.py /absolute/path/to/p2playd
+python3 -I tools/mediamesh-interop-test.py /absolute/path/to/p2playd
+python3 -I tools/meshnet-test.py /absolute/path/to/p2playd
 ```
 
-The first test needs only Python's standard library and uses real BitTorrent
-wire handshakes with a different negotiated extension ID. DHT is disabled on
-all nodes. It exercises owner signing, malformed/signature/salt/sequence/shape
-rejection, version download/search, unchanged signature relay, upgrades,
-rollback protection, asynchronous old-generation cleanup after a release, persistence
-after restart, and publisher-offline third-node subscription via a directory peer hint. Set `KEEP=1` to keep logs.
-The existing meshnet test exercises the retained DHT path (and requires the
-Python libtorrent binding).
+The `peer-items-test.py` test needs only Python's standard library and exercises
+P2Play-to-P2Play signed pointer exchange, malformed item rejection, push upgrades,
+missed-push recovery after restart, rollback protection and relaying.
+
+The independent `mediamesh-interop-test.py` uses the standalone
+`mediamesh_reference_peer.py` implementation and fixed wire fixtures. It checks
+BEP 10 extension negotiation, canonical `have`/`get` payloads, both directions of
+`item` exchange, subscriber import and byte-identical envelope relay. The reference
+peer does not independently verify Ed25519/BEP 44 signatures; the P2Play receiver
+performs that verification before importing the pointer.
+
+The existing `meshnet-test.py` exercises the retained DHT path (and requires the
+Python libtorrent binding). Set `KEEP=1` on the daemon tests to retain logs.

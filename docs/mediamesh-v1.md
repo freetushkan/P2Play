@@ -160,6 +160,32 @@ A sender's `have` and request snapshots are each bounded to 4,096 keys. These ar
 limits, not protocol negotiation parameters. Implementations SHOULD make limits explicit
 and bounded; changing them requires an interoperability/security review.
 
+### 3.5 Independent wire-peer test (non-normative)
+
+The repository includes `tools/mediamesh_reference_peer.py`, a small reference
+implementation of BitTorrent handshake/framing, BEP 10 extension negotiation and
+bencoding using only the Python standard library. It does not import or link P2Play
+code. Fixed canonical payload fixtures live in
+`tools/mediamesh-v1-wire-fixtures.json`.
+
+Run the live interoperability test with:
+
+```sh
+python3 -I tools/mediamesh-interop-test.py build-linux/src/app/p2playd
+```
+
+The test checks the reference peer's parsing of `have`, its `get` request and the
+returned `item`; then it subscribes a second daemon and has the reference peer answer
+that daemon's `get` with the publisher's signed envelope. The receiver must fetch the
+version torrent through the advertised peer hint and relay the identical envelope.
+
+This is a BEP 10/wire-format interoperability test, not a complete independent
+MediaMesh implementation. The reference peer treats the 64-byte BEP 44 signature as
+opaque; cryptographic signature verification, manifest verification and content-hash
+validation remain the receiving daemon's responsibility and are covered by the
+daemon's security/integration tests. The test does not specify or test a search RPC,
+version-torrent wire implementation, DHT implementation, or pPlay UI.
+
 ## 4. Signed pointer and BEP 44
 
 The pointer is a BEP 44 mutable item under the list public key, with salt `mediamesh.v1`.

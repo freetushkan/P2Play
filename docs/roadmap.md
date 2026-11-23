@@ -37,15 +37,14 @@
 
 ### Этап 3: завершение обмена и эксплуатации
 
-- [ ] Проверить новый push `item` в Linux CI на двух-трёх узлах, включая повторное
-      соединение и восстановление пропущенного push через `get` (тест добавлен, ожидает CI).
-- [ ] Закрепить в CI лимиты очереди: 128 глобально, 8 на TCP source IP, 32 для DHT;
-      unit-тест проверяет квоты между соединениями, дедупликацию, резерв DHT и round-robin
-      (тест добавлен, ожидает CI).
+- [x] Проверить push `item` на нескольких узлах и восстановление пропущенного push через
+      `get` после перезапуска подписчика; сценарий проходит Linux CI.
+- [x] Закрепить в CI лимиты очереди: 128 глобально, 8 на TCP source IP, 32 для DHT;
+      unit-тест проверяет квоты между соединениями, дедупликацию, резерв DHT и round-robin.
 - [x] Подготовлен implementation-profile draft wire-format и формата списка v1:
       `docs/mediamesh-v1.md`. Документ описывает фактическую реализацию P2Play.
-- [ ] Проверить совместимость с независимой BEP 10 реализацией MediaMesh; добавить
-      независимый fixture/reference peer и зафиксировать результаты interop-тестов.
+- [ ] Проверить совместимость с независимой BEP 10 реализацией MediaMesh; reference peer
+      и канонические wire fixtures добавлены, ожидают первого зелёного Linux CI.
 - [ ] Интеграция узла каталога с плагином Silo и проверка полного пользовательского
       пути (поиск, подписка, получение списка, torrs://).
 - [ ] Прогнать PublisherProxy с реальным UDP-capable SOCKS5 и отдельно проверить
@@ -87,6 +86,7 @@
 
 ```sh
 python3 -I tools/peer-items-test.py build-linux/src/app/p2playd
+python3 -I tools/mediamesh-interop-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-selective-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-media-test.py build-linux/src/app/p2playd
