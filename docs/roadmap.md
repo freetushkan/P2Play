@@ -29,7 +29,8 @@
 - [x] Сегменты-шарды, immutable media packs, выбор шардов, лимиты хранения, ленивое
       получение паков, snapshots/compaction и проверки целостности.
 - [x] PublisherProxy на уровне libtorrent-сессии и документированный SOCKS5/UDP
-      ASSOCIATE / VPN deployment; для изоляции сети дополнительно нужен OS kill switch.
+      ASSOCIATE / VPN deployment; автоматическая Linux-проверка OS kill switch
+      выполняется отдельно в disposable network namespace с nftables.
 - [x] Интеграционные тесты `mesh-test.py`, `meshnet-test.py`, `peer-items-test.py`,
       `mesh-media-test.py`, `mesh-selective-test.py` и `proxy-test.py`.
 
@@ -58,12 +59,14 @@
 - [x] Прогнать PublisherProxy через настоящий UDP-capable SOCKS5 (Dante): TCP CONNECT,
       UDP ASSOCIATE, DHT/peer traffic и аудит системных вызовов без прямого обхода;
       сценарий проходит Linux CI.
-- [ ] Проверить OS kill switch через Linux network namespace/firewall:
-      отдельный namespace имеет default route, но nftables разрешает только SOCKS
-      control endpoint и UDP relay. Тест блокирует прямые TCP/UDP probes, проверяет
-      рабочие DHT/peer-соединения через Dante, затем останавливает Dante и проверяет,
-      что P2Play не обходит firewall. Новый CI-сценарий добавлен; статус остаётся
-      открытым до успешного Linux run.
+- [x] Проверен OS kill switch в Linux network namespace с veth и default route:
+      nftables разрешает только TCP к Dante SOCKS endpoint и UDP к ограниченному
+      relay range; прямые TCP/UDP probes блокируются и учитываются drop counter.
+      P2Play выполняет DHT и BitTorrent peer traffic через Dante; после остановки
+      Dante проверяется отсутствие прямого fallback при работающем P2Play и
+      сохранённом firewall. Сценарий проходит Linux CI (tools/proxy-netns-test.py).
+      Граница: это изолированный CI acceptance test, не проверка production firewall
+      или реального WireGuard-провайдера.
 - [ ] Проверить стартовые лимиты сегментов, описаний и постеров на реальном большом
       списке; определить измеряемые дисковые и сетевые бюджеты.
 
