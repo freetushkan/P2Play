@@ -323,9 +323,13 @@ def direct_probe(netns, host_ip, tcp_port, udp_port, dht):
     FIXTURE.check(probe.returncode == 0,
                   "firewall blocks a direct TCP connection to a peer fixture")
     udp_code = (
-        "import socket,sys\n"
+        "import errno,socket,sys\n"
         "s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
-        "s.sendto(b'publisher-direct-egress-probe',(sys.argv[1],int(sys.argv[2])))\n"
+        "try:\n"
+        " s.sendto(b'publisher-direct-egress-probe',(sys.argv[1],int(sys.argv[2])))\n"
+        "except OSError as e:\n"
+        " if e.errno not in (errno.EPERM, errno.EACCES): raise\n"
+        " print('UDP direct probe denied by firewall:',e)\n"
         "s.close()\n"
     )
     netns.run_as_runner("python3", "-c", udp_code, host_ip, str(udp_port), timeout=5)
