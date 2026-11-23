@@ -56,6 +56,8 @@ or that another enabled meta-list still references.
 
 The Silo MediaMesh plugin displays entry annotations and enable state. All enabled children
 are subscribed by the daemon; the client does not need to fan out requests itself.
+`GET /api/lists/:pubkey/status` exposes `net.wanted` and `net.meta_child`, so clients and
+tests can distinguish a meta child queued for follow-up from a disabled entry.
 
 See [mediamesh-v1.md](mediamesh-v1.md#6-manifest-v1) for the signed bencode fields and
 [roadmap.md](roadmap.md) for the remaining client integration work.
