@@ -166,7 +166,7 @@ def main():
         shutil.copytree(sources / collection, bad)
         manifest_path = bad / "manifest.ben"
         manifest = manifest_path.read_bytes()
-        tampered = manifest.replace(b"Curated documentaries", b"Updated documentaries", 1)
+        tampered = manifest.replace(b"Included family films", b"Tampered family films", 1)
         check(tampered != manifest, "meta annotation present in signed manifest fixture")
         manifest_path.write_bytes(tampered)
 
@@ -184,7 +184,7 @@ def main():
               "subscriber exposes meta-list type")
         items = by_key[collection].get("items", [])
         check(len(items) == 2 and items[0]["annotation"] == "Included family films" and
-              items[0]["enabled"] is False and items[1]["enabled"] is True,
+              items[0]["enabled"] is True and items[1]["enabled"] is False,
               "subscriber receives ordered annotations and enable flags")
         check(enabled not in by_key and disabled not in by_key,
               "child catalogs are not imported merely with the parent manifest")
