@@ -187,13 +187,20 @@ class DanteServer:
     def ready(self):
         if self.proc.poll() is not None:
             return False
-        try:
-            with socket.create_connection((self.netns.host_ip, self.port), timeout=0.3) as sock:
-                sock.settimeout(0.3)
-                sock.sendall(b"\x05\x01\x00")
-                return sock.recv(2) == b"\x05\x00"
-        except OSError:
-            return False
+        # Dante's client ACL deliberately accepts only the namespace address.
+        # Probe from the same namespace as P2Play, not from the host runner.
+        probe = (
+            "import socket,sys\n"
+            "s=socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=1.0)\n"
+            "s.settimeout(1.0); s.sendall(b'\\x05\\x01\\x00')\n"
+            "reply=s.recv(2); s.close()\n"
+            "sys.exit(0 if reply==b'\\x05\\x00' else 1)\n"
+        )
+        result = self.netns.run_as_runner(
+            "python3", "-c", probe, self.netns.host_ip, str(self.port),
+            check=False, timeout=4,
+        )
+        return result.returncode == 0
 
     def close(self):
         if self.proc is not None and self.proc.poll() is None:
