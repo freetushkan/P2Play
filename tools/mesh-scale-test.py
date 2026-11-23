@@ -303,9 +303,10 @@ def main():
               "all selected movie segments are present")
         check(unselected and all(not f["selected"] and not f["present"] for f in unselected),
               "unselected series segments are not downloaded")
-        subscriber_media_dir = Path(subscriber.data) / "lists" / pubkey / "media"
+        subscriber_list_dir = Path(subscriber.data) / "lists" / pubkey
+        subscriber_media_dir = subscriber_list_dir / "media"
         media_paths = {
-            item["kind"]: subscriber_media_dir / item["path"]
+            item["kind"]: subscriber_list_dir / item["path"]
             for item in media_packs
         }
         check(set(media_paths) == {"description", "poster"}
