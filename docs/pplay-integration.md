@@ -1,9 +1,12 @@
 # pPlay integration requirements
 
 This document defines mandatory implementation boundaries for the P2Play support
-module in pPlay. It is separate from the Silo plugin contract in
-[silo-plugin.md](silo-plugin.md): pPlay and Silo are different hosts and must not
-share assumptions about source layout, runtime bindings, packaging or identity.
+module in pPlay. The target client repository is
+[`freetushkan/pPlay`](https://github.com/freetushkan/pPlay); its P2Play-specific
+implementation belongs in a separate `src/p2play/` source directory. It is separate
+from the Silo plugin contract in [silo-plugin.md](silo-plugin.md): pPlay and Silo
+are different hosts and must not share assumptions about source layout, runtime
+bindings, packaging or identity.
 
 ## 1. File-level independence from TorrServer
 
