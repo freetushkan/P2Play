@@ -139,6 +139,26 @@ namespace p2p {
         std::string stringValue(const json &j, const char *key, const std::string &fallback = "") {
             auto it = j.find(key); return it != j.end() && it->is_string() ? it->get<std::string>() : fallback;
         }
+        bool validUtf8Text(const std::string &s, size_t limit) {
+            if (s.size() > limit || s.find('\\0') != std::string::npos) return false;
+            for (size_t i = 0; i < s.size();) {
+                unsigned char c = static_cast<unsigned char>(s[i++]);
+                if (c < 0x80) continue;
+                int n = c >= 0xc2 && c <= 0xdf ? 1 : c >= 0xe0 && c <= 0xef ? 2 :
+                        c >= 0xf0 && c <= 0xf4 ? 3 : -1;
+                if (n < 0 || i + static_cast<size_t>(n) > s.size()) return false;
+                uint32_t cp = c & ((1u << (6-n))-1);
+                for (int j = 0; j < n; ++j) {
+                    unsigned char b = static_cast<unsigned char>(s[i++]);
+                    if ((b & 0xc0) != 0x80) return false;
+                    cp = (cp << 6) | (b & 63);
+                }
+                if ((n == 1 && cp < 0x80) || (n == 2 && cp < 0x800) ||
+                    (n == 3 && cp < 0x10000) || cp > 0x10ffff ||
+                    (cp >= 0xd800 && cp <= 0xdfff)) return false;
+            }
+            return true;
+        }
         bool parseRef(const json &j, const std::string &kind, MeshMediaRef &r) {
             if (!j.is_object()) return false;
             r.pack = stringValue(j, "pack"); r.sha256 = stringValue(j, "sha256"); r.type = stringValue(j, "type");
@@ -346,6 +366,25 @@ namespace p2p {
         out.card.name = std::string(m.dict_find_string_value("name")); out.card.desc = std::string(m.dict_find_string_value("desc"));
         out.card.seq = m.dict_find_int_value("seq", -1);
         if (out.card.seq < 0 || out.card.name.empty() || out.card.name.size() > 256 || out.card.desc.size() > 4096) return "bad list metadata";
+        auto metaNode = m.dict_find("meta");
+        auto metaItems = m.dict_find_list("meta");
+        if (metaNode) {
+            if (!metaItems || metaItems.list_size() > static_cast<int>(kMaxMetaItems)) return "bad meta-list items";
+            out.card.meta = true;
+            std::set<std::string> seen;
+            for (int i = 0; i < metaItems.list_size(); ++i) {
+                auto item = metaItems.list_at(i);
+                if (item.type() != lt::bdecode_node::dict_t) return "bad meta-list item";
+                std::string child(item.dict_find_string_value("pk"));
+                std::string annotation(item.dict_find_string_value("note"));
+                auto enabled = item.dict_find_int_value("enabled", -1);
+                if (child.size() != 32 || !validUtf8Text(annotation, kMaxMetaAnnotationBytes) ||
+                    (enabled != 0 && enabled != 1)) return "bad meta-list item";
+                const std::string childPk = hex(child.data(), child.size());
+                if (childPk == out.card.pubkey || !seen.insert(childPk).second) return "self-reference or duplicate meta-list item";
+                out.card.items.push_back({childPk, annotation, enabled == 1});
+            }
+        }
         lt::dht::public_key ownerPk; lt::dht::secret_key ownerSk;
         out.card.own = keys(m_dir, out.card.pubkey, ownerPk, ownerSk);
         struct stat st{}; if (stat((dir + "/manifest.ben").c_str(), &st) == 0) out.card.updated = st.st_mtime;
@@ -523,7 +562,7 @@ namespace p2p {
         return true;
     }
 
-    std::string Mesh::create(const std::string &name, const std::string &desc, std::string &pubkey) {
+    std::string Mesh::create(const std::string &name, const std::string &desc, std::string &pubkey, bool meta) {
         std::lock_guard<std::mutex> writer(m_writeMutex);
         if (name.empty() || name.size() > 256 || desc.size() > 4096) return "a name of 1 to 256 bytes is required";
         auto seed = lt::dht::ed25519_create_seed(); lt::dht::public_key pk; lt::dht::secret_key sk;
@@ -532,6 +571,7 @@ namespace p2p {
         const auto dir = listDir(pubkey); mkdir(dir.c_str(), 0777); mkdir((dir + "/records").c_str(), 0777); mkdir((dir + "/media").c_str(), 0777); makeDirs(m_dir, pubkey);
         lt::entry e(lt::entry::dictionary_t); e["v"] = 1; e["name"] = name; e["desc"] = desc;
         e["pk"] = std::string(pk.bytes.data(), 32); e["seq"] = 0; e["segs"] = lt::entry::list_type(); e["packs"] = lt::entry::list_type();
+        if (meta) e["meta"] = lt::entry::list_type();
         if (!writeFile(dir + "/manifest.ben", encodeSigned(e, pk, sk))) return "cannot write the manifest";
         Loaded l; auto err = read(dir, l); if (!err.empty()) return err;
         std::lock_guard<std::mutex> lock(m_mutex); m_lists[pubkey] = std::move(l); return "";
@@ -567,6 +607,33 @@ namespace p2p {
         std::string text;
         if (!hexString(pubkey, 64) || !readFile(listDir(pubkey) + "/pending.ndjson", text, kMaxVersionTextBytes)) return 0;
         return static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+    }
+
+    bool Mesh::hasPendingMeta(const std::string &pubkey) const {
+        return hexString(pubkey, 64) && fileSize(localDir(m_dir, pubkey) + "/pending-meta.json") >= 0;
+    }
+
+    std::string Mesh::setMetaItems(const std::string &pubkey, const std::vector<MeshMetaItem> &items) {
+        std::lock_guard<std::mutex> writer(m_writeMutex);
+        MeshList parent;
+        if (!list(pubkey, parent) || !parent.own) return "not a list of this node";
+        if (!parent.meta) return "list is not a meta-list";
+        if (items.size() > kMaxMetaItems) return "too many meta-list items";
+        std::set<std::string> seen;
+        json pending = json::array();
+        for (const auto &item : items) {
+            const auto childPk = lowerAscii(item.pubkey);
+            if (!hexString(childPk, 64) || childPk == pubkey || !seen.insert(childPk).second)
+                return "bad, self-referencing or duplicate child key";
+            if (!validUtf8Text(item.annotation, kMaxMetaAnnotationBytes)) return "invalid meta-list annotation";
+            MeshList child;
+            if (!list(childPk, child)) return "child list must already be held by the publisher";
+            if (child.meta) return "nested meta-lists are not allowed";
+            pending.push_back({{"pubkey", childPk}, {"annotation", item.annotation}, {"enabled", item.enabled}});
+        }
+        makeDirs(m_dir, pubkey);
+        const auto path = localDir(m_dir, pubkey) + "/pending-meta.json";
+        return writeFile(path, pending.dump()) ? "" : "cannot write pending meta-list";
     }
 
     std::string Mesh::addMedia(const std::string &pubkey, const std::string &kind, const std::string &type,
@@ -615,8 +682,42 @@ namespace p2p {
         std::string pending;
         auto pendingPath = dir + "/pending.ndjson";
         if (fileSize(pendingPath) >= 0 && !readFile(pendingPath, pending, kMaxVersionTextBytes)) return "pending too large";
-        if (!snapshot && pending.empty()) return "no records to release";
+        const auto pendingMetaPath = localDir(m_dir, pubkey) + "/pending-meta.json";
+        const bool hasPendingMeta = fileSize(pendingMetaPath) >= 0;
+        std::string pendingMetaRaw;
+        json pendingMeta = json::array();
+        if (hasPendingMeta) {
+            if (!readFile(pendingMetaPath, pendingMetaRaw, 1u << 20)) return "pending meta-list too large";
+            pendingMeta = json::parse(pendingMetaRaw, nullptr, false);
+            if (!pendingMeta.is_array() || pendingMeta.size() > kMaxMetaItems) return "bad pending meta-list";
+            if (!old.card.meta) return "list is not a meta-list";
+        }
+        if (!snapshot && pending.empty() && !hasPendingMeta) return "no records or meta changes to release";
         if (snapshot && !pending.empty()) return "release pending records before compaction";
+        if (snapshot && hasPendingMeta) return "release pending meta changes before compaction";
+        if (hasPendingMeta) {
+            lt::entry::list_type entries;
+            std::set<std::string> seen;
+            for (const auto &item : pendingMeta) {
+                if (!item.is_object() || !item.value("pubkey", json()).is_string() ||
+                    !item.value("annotation", json()).is_string() || !item.value("enabled", json()).is_boolean())
+                    return "bad pending meta-list item";
+                const auto childPk = lowerAscii(item["pubkey"].get<std::string>());
+                const auto annotation = item["annotation"].get<std::string>();
+                if (!hexString(childPk, 64) || childPk == pubkey || !seen.insert(childPk).second ||
+                    !validUtf8Text(annotation, kMaxMetaAnnotationBytes)) return "bad pending meta-list item";
+                MeshList child;
+                if (!list(childPk, child)) return "child list is no longer held by the publisher";
+                if (child.meta) return "nested meta-lists are not allowed";
+                std::string childRaw;
+                if (!unhex(childPk, childRaw) || childRaw.size() != 32) return "bad child key";
+                lt::entry entry(lt::entry::dictionary_t);
+                entry["pk"] = childRaw; entry["note"] = annotation;
+                entry["enabled"] = item["enabled"].get<bool>() ? 1 : 0;
+                entries.push_back(entry);
+            }
+            e["meta"] = entries;
+        }
         std::map<std::string, std::string> texts;
         if (snapshot) {
             // Repack only live slices into fresh append-only packs. Never mutate an old
@@ -730,7 +831,9 @@ namespace p2p {
         if (!writeFile(dir + "/manifest.ben", candidate)) return "cannot write manifest";
         tx.committed = true;
         seq = next.card.seq; next.card.updated = time(nullptr);
-        std::remove(pendingPath.c_str()); cleanDirectory(staging, {});
+        std::remove(pendingPath.c_str());
+        if (hasPendingMeta) std::remove(pendingMetaPath.c_str());
+        cleanDirectory(staging, {});
         if (snapshot) prune(pubkey, next, p);
         { std::lock_guard<std::mutex> lock(m_mutex); m_lists[pubkey] = std::move(next); rebuild(); }
         m_log("[Mesh] " + pubkey + " version " + std::to_string(seq) + (snapshot ? " snapshot" : " released"));
@@ -745,10 +848,15 @@ namespace p2p {
         return files;
     }
 
-    std::string Mesh::accept(const std::string &dir, const std::string &expectedPk, int64_t expectedSeq) {
+    std::string Mesh::accept(const std::string &dir, const std::string &expectedPk, int64_t expectedSeq, bool rejectMetaChild) {
         std::lock_guard<std::mutex> writer(m_writeMutex);
         Loaded l; auto err = read(dir, l); if (!err.empty()) return err;
         if ((!expectedPk.empty() && l.card.pubkey != expectedPk) || (expectedSeq >= 0 && l.card.seq != expectedSeq)) return "pointer/manifest key or version mismatch";
+        if (rejectMetaChild && l.card.meta) return "nested meta-lists are not allowed";
+        for (const auto &item : l.card.items) {
+            MeshList child;
+            if (list(item.pubkey, child) && child.meta) return "meta-list cannot include another meta-list";
+        }
         MeshList old; if (list(l.card.pubkey, old) && old.seq >= l.card.seq) return "not newer than the version held (" + std::to_string(old.seq) + ")";
         const auto pk = l.card.pubkey, to = listDir(pk); auto p = policy(pk);
         FileTransaction tx;
