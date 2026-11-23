@@ -198,6 +198,7 @@ namespace p2p {
                     return;
                 }
                 meshForget(at(2));
+                meshSyncMetaSubscriptions();
                 res.json(200, json{{"status", "removed"}}.dump());
             } else if (m == "POST" && n == 3) {
                 if (!admin) { error(res, 403, "insufficient permissions"); return; }
