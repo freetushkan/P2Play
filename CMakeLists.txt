@@ -54,5 +54,11 @@ endif ()
 
 include(cmake/libtorrent.cmake)
 
+# pPlay embeds the reusable core as a static library. In this mode the standalone
+# p2playd/homebrew application is not part of the build graph.
+option(P2P_EMBEDDED_ONLY "Build only p2play_core for embedding in another application" OFF)
+
 add_subdirectory(src/core)
-add_subdirectory(src/app)
+if (NOT P2P_EMBEDDED_ONLY)
+    add_subdirectory(src/app)
+endif ()
