@@ -98,8 +98,13 @@
     function publicLists(data) {
         if (!Array.isArray(data.lists)) fail(502, "Invalid daemon list response.");
         return { lists: data.lists.slice(0, 1000).map(function (l) {
+            var items = Array.isArray(l.items) ? l.items.slice(0, 256).map(function (item) {
+                return { pubkey: text(item.pubkey, 64), annotation: text(item.annotation, 2048),
+                    enabled: item.enabled === true };
+            }).filter(function (item) { return PUBKEY.test(item.pubkey); }) : [];
             return { pubkey: text(l.pubkey, 64), name: text(l.name, 512), description: text(l.description, 2048),
-                seq: l.seq || 0, records: l.records || 0, own: l.own === true, holders: l.holders || 0 };
+                seq: l.seq || 0, records: l.records || 0, own: l.own === true, holders: l.holders || 0,
+                type: l.type === "meta" ? "meta" : "catalog", items: items };
         }).filter(function (l) { return PUBKEY.test(l.pubkey); }) };
     }
     route("get", "/", 10, function (req, res) {
