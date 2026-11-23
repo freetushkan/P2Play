@@ -29,13 +29,20 @@ namespace p2p {
         }
 
         json card(const MeshList &l) {
-            return {{"pubkey", l.pubkey},
-                    {"name", l.name},
-                    {"description", l.desc},
-                    {"seq", l.seq},
-                    {"records", l.records},
-                    {"updated", l.updated},
-                    {"own", l.own}};
+            json j = {{"pubkey", l.pubkey},
+                      {"name", l.name},
+                      {"description", l.desc},
+                      {"seq", l.seq},
+                      {"records", l.records},
+                      {"updated", l.updated},
+                      {"own", l.own},
+                      {"type", l.meta ? "meta" : "catalog"}};
+            if (l.meta) {
+                j["items"] = json::array();
+                for (const auto &item : l.items)
+                    j["items"].push_back({{"pubkey", item.pubkey}, {"annotation", item.annotation}, {"enabled", item.enabled}});
+            }
+            return j;
         }
     }
 
@@ -170,6 +177,7 @@ namespace p2p {
                     error(res, 400, err);
                     return;
                 }
+                meshSyncMetaSubscriptions();
                 res.json(200, json{{"status", "imported"}}.dump());
             } else if (m == "DELETE" && n == 3) {
                 if (!admin) {
@@ -218,7 +226,12 @@ namespace p2p {
             }
             std::string pubkey;
             const std::string desc = b.value("description", json()).is_string() ? b["description"].get<std::string>() : "";
-            const std::string err = m_mesh.create(b["name"].get<std::string>(), desc, pubkey);
+            const auto type = b.value("type", json("catalog"));
+            if (!type.is_string() || (type != "catalog" && type != "meta")) {
+                error(res, 400, "type must be catalog or meta");
+                return;
+            }
+            const std::string err = m_mesh.create(b["name"].get<std::string>(), desc, pubkey, type == "meta");
             if (!err.empty()) {
                 error(res, 400, err);
                 return;
@@ -227,6 +240,34 @@ namespace p2p {
             return;
         }
         MeshList l;
+        if (m == "POST" && n == 4 && at(3) == "meta") {
+            if (!m_mesh.list(at(2), l) || !l.own || !l.meta) {
+                error(res, 404, "not an owned meta-list");
+                return;
+            }
+            auto b = json::parse(req.body, nullptr, false);
+            if (!b.is_object() || !b.value("items", json()).is_array()) {
+                error(res, 400, "items array is required");
+                return;
+            }
+            std::vector<MeshMetaItem> items;
+            for (const auto &item : b["items"]) {
+                if (!item.is_object() || !item.value("pubkey", json()).is_string() ||
+                    !item.value("annotation", json()).is_string() || !item.value("enabled", json()).is_boolean()) {
+                    error(res, 400, "each item requires pubkey, annotation and enabled");
+                    return;
+                }
+                items.push_back({item["pubkey"].get<std::string>(), item["annotation"].get<std::string>(),
+                                 item["enabled"].get<bool>()});
+            }
+            const auto err = m_mesh.setMetaItems(l.pubkey, items);
+            if (!err.empty()) {
+                error(res, 400, err);
+                return;
+            }
+            res.json(200, json{{"status", "pending"}, {"items", items.size()}}.dump());
+            return;
+        }
         if (m == "POST" && n == 5 && at(3) == "media") {
             if (!m_mesh.list(at(2), l) || !l.own) { error(res, 404, "not a list of this node"); return; }
             auto type = req.header("content-type");
@@ -243,6 +284,7 @@ namespace p2p {
         if (get && at(3) == "status") {
             json j = card(l);
             j["pending"] = m_mesh.pending(l.pubkey);
+            j["pending_meta"] = m_mesh.hasPendingMeta(l.pubkey);
             res.json(200, j.dump());
         } else if (m == "POST" && at(3) == "records") {
             std::string err;
