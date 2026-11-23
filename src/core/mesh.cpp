@@ -375,8 +375,11 @@ namespace p2p {
             for (int i = 0; i < metaItems.list_size(); ++i) {
                 auto item = metaItems.list_at(i);
                 if (item.type() != lt::bdecode_node::dict_t) return "bad meta-list item";
-                std::string child(item.dict_find_string_value("pk"));
-                std::string annotation(item.dict_find_string_value("note"));
+                auto childNode = item.dict_find("pk"), noteNode = item.dict_find("note");
+                if (childNode.type() != lt::bdecode_node::string_t || noteNode.type() != lt::bdecode_node::string_t)
+                    return "bad meta-list item";
+                std::string child(childNode.string_value());
+                std::string annotation(noteNode.string_value());
                 auto enabled = item.dict_find_int_value("enabled", -1);
                 if (child.size() != 32 || !validUtf8Text(annotation, kMaxMetaAnnotationBytes) ||
                     (enabled != 0 && enabled != 1)) return "bad meta-list item";
