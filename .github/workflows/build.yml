@@ -70,6 +70,7 @@ jobs:
           python3 -I tools/mediamesh-interop-test.py build/src/app/p2playd
           python3 -I tools/mesh-media-test.py build/src/app/p2playd
           python3 -I tools/mesh-selective-test.py build/src/app/p2playd
+          python3 -I tools/mesh-scale-test.py build/src/app/p2playd
           python3 -I tools/proxy-test.py build/src/app/p2playd
           python3 -I tools/proxy-dante-test.py build/src/app/p2playd --trace
           python3 -I tools/proxy-netns-test.py build/src/app/p2playd
