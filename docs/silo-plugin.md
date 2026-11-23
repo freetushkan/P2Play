@@ -223,6 +223,15 @@ libtorrent seeder. It verifies discovery, subscription, catalog search, native
 torrent addition to the authenticated user's library and byte-for-byte playback
 through Silo's authenticated stream API. It uses no public tracker or public DHT.
 The test is run by Linux CI; it does not replace the host-contract/race tests.
+
+The live test verifies the complete server-side integration path:
+MediaMesh discovery/subscription/search, plugin-triggered torrent addition, the
+native Silo torrent engine's transfer from the local seeder, and byte-for-byte
+Range streaming. It does **not** test browser playback, codec support, FFmpeg
+transcoding, or discovery over the public Internet. The transfer assertion uses
+libtorrent's cumulative payload-upload counter rather than the instantaneous
+peer count, because a peer can disconnect normally as soon as the requested
+range has been served.
 Run it manually from the repository root with
 `python3 tools/silo-live-test.py build-linux/src/app/p2playd` (Go 1.26+,
 Python `libtorrent`, and network access for the pinned upstream checkout and Go

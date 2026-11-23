@@ -222,7 +222,12 @@ class LocalTracker:
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A libtorrent client may close an announce socket as soon
+                    # as its timeout/response processing is complete.
+                    pass
 
             def log_message(self, *_args):
                 pass
@@ -641,8 +646,19 @@ def main():
               and headers.get("Content-Range", "").startswith("bytes 0-4095/"),
               "Silo native stream serves verified bytes from the local BitTorrent seeder")
         check(tracker.announces > 0, "Silo native engine used the local HTTP tracker")
-        check(seeder.handle.status().num_peers > 0,
-              "Silo native engine connected to the loopback libtorrent seeder")
+
+        # num_peers is only a point-in-time snapshot and commonly returns to
+        # zero immediately after the requested range has been delivered. Check
+        # the seeder's cumulative payload counter instead: it proves real
+        # BitTorrent payload crossed the peer connection even after disconnect.
+        def uploaded_payload():
+            count = seeder.handle.status().total_payload_upload
+            return count if count >= 4096 else None
+
+        uploaded = wait_for("Silo received payload from the loopback seeder",
+                            uploaded_payload, 10)
+        check(uploaded >= 4096,
+              f"Silo native engine downloaded payload from the loopback seeder ({uploaded} bytes)")
         print("PASS live Silo + P2Play MediaMesh discovery, subscription, search, add and playback",
               flush=True)
         success = True
