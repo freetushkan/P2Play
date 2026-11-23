@@ -321,23 +321,6 @@ def main():
         metrics["torrent_working_copy_bytes_before_media"] = tree_bytes(network_dir)
         metrics["media_cache_bytes_before_fetch"] = tree_bytes(cache_dir)
 
-        memory_before_restart = proc_memory(subscriber.proc.pid)
-        subscriber.stop()
-        started = time.monotonic()
-        subscriber.start()
-        metrics["cold_start_seconds"] = round(time.monotonic() - started, 3)
-        memory_after_restart = proc_memory(subscriber.proc.pid)
-        status, result = subscriber.call(f"/api/catalog/search?q={query}&limit=5")
-        check(status == 200 and any(r["hash"] == f"{1235:040x}" for r in result["results"]),
-              "large catalog index survives a cold daemon restart")
-        restarted_list = next(x for x in subscriber.lists() if x["pubkey"] == pubkey)
-        check(restarted_list["records"] == MOVIE_RECORDS,
-              "all selected records remain indexed after restart")
-        metrics["rss_before_restart_bytes"] = memory_before_restart.get("VmRSS", 0)
-        metrics["rss_high_water_before_restart_bytes"] = memory_before_restart.get("VmHWM", 0)
-        metrics["rss_after_restart_bytes"] = memory_after_restart.get("VmRSS", 0)
-        metrics["rss_high_water_after_restart_bytes"] = memory_after_restart.get("VmHWM", 0)
-
         before_media = loopback_counters()
         started = time.monotonic()
         poster_path = f"/api/catalog/{1:040x}/poster?list={pubkey}"
@@ -373,6 +356,28 @@ def main():
         check(not any((subscriber_dir / "media").glob("*.bin")) if (subscriber_dir / "media").exists() else True,
               "lazy media requests do not silently enable full-pack mirroring")
 
+        # Media is now verified and cached. Stop the publisher to prove that the
+        # subscriber can cold-start and serve both objects entirely from local cache.
+        memory_before_restart = proc_memory(subscriber.proc.pid)
+        publisher.stop()
+        subscriber.stop()
+        started = time.monotonic()
+        subscriber.start()
+        metrics["cold_start_seconds"] = round(time.monotonic() - started, 3)
+        memory_after_restart = proc_memory(subscriber.proc.pid)
+        status, result = subscriber.call(f"/api/catalog/search?q={query}&limit=5")
+        check(status == 200 and any(r["hash"] == f"{1235:040x}" for r in result["results"]),
+              "large catalog index survives a cold daemon restart")
+        restarted_list = next(x for x in subscriber.lists() if x["pubkey"] == pubkey)
+        check(restarted_list["records"] == MOVIE_RECORDS,
+              "all selected records remain indexed after restart")
+        check(get_raw(subscriber, poster_path)[1] == poster
+              and get_raw(subscriber, description_path)[1] == description,
+              "description and poster remain available offline after restart")
+        metrics["rss_before_restart_bytes"] = memory_before_restart.get("VmRSS", 0)
+        metrics["rss_high_water_before_restart_bytes"] = memory_before_restart.get("VmHWM", 0)
+        metrics["rss_after_restart_bytes"] = memory_after_restart.get("VmRSS", 0)
+        metrics["rss_high_water_after_restart_bytes"] = memory_after_restart.get("VmHWM", 0)
         metrics["profile"] = "20k selected records + 512 unselected records"
         metrics["record_segments"] = len(movie_segments) + len(series_segments)
         metrics["record_budget_bytes"] = RECORD_BUDGET
