@@ -174,9 +174,10 @@ def main():
     nodes = []
     metrics = {}
     try:
-        publisher = Node(daemon, os.path.join(root, "publisher"))
-        subscriber = Node(daemon, os.path.join(root, "subscriber"))
-        nodes.extend((publisher, subscriber))
+        publisher = Node(daemon, root, "publisher")
+        nodes.append(publisher)
+        subscriber = Node(daemon, root, "subscriber")
+        nodes.append(subscriber)
 
         status, created = publisher.call(
             "/api/publish", {"name": "Large catalog resource profile",
