@@ -4,6 +4,7 @@
 //   GET    /api/catalog/search?q=&tag=&limit=   {"results": [record]}
 //   GET    /api/catalog/:infohash               a record and the lists holding it
 //   GET    /api/lists                           {"lists": [card]}
+//   GET    /api/lists/:pubkey/status             signed list card and network subscription state
 //   GET    /api/lists/discover                  the lists of the network: holders, seq
 //   DELETE /api/lists/:pubkey                   a received list dropped
 //   POST   /api/lists/import {"dir"}            a version directory taken (checked) - admins
