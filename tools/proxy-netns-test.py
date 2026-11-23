@@ -191,20 +191,69 @@ class DanteServer:
             )
         FIXTURE.check(True, "Dante process remains running")
 
+    @staticmethod
+    def _descendants(root_pid):
+        # Dante keeps established SOCKS sessions in worker processes.  Killing
+        # only the mother process (or its process group) can leave an existing
+        # UDP ASSOCIATE relay alive, so collect the complete /proc child tree.
+        pending = [root_pid]
+        found = set()
+        while pending:
+            parent = pending.pop()
+            children_file = Path(f"/proc/{parent}/task/{parent}/children")
+            try:
+                children = [int(value) for value in children_file.read_text().split()]
+            except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+                continue
+            for child in children:
+                if child not in found:
+                    found.add(child)
+                    pending.append(child)
+        return found
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().split()
+            return len(fields) > 2 and fields[2] != "Z"
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return False
+
     def close(self):
-        if self.proc is not None and self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+        if self.proc is not None:
+            # Dante deliberately lets worker processes with active SOCKS
+            # sessions outlive the mother process.  Stop every process in this
+            # isolated test server, not just the Popen/mother process.
+            pids = self._descendants(self.proc.pid) | {self.proc.pid}
+            for pid in sorted(pids, reverse=True):
                 try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
+                    os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and any(self._alive(pid) for pid in pids):
+                time.sleep(0.05)
+            survivors = [pid for pid in pids if self._alive(pid)]
+            for pid in survivors:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if self.proc.poll() is None:
                 self.proc.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and any(self._alive(pid) for pid in survivors):
+                time.sleep(0.05)
+            remaining = [pid for pid in survivors if self._alive(pid)]
+            if remaining:
+                raise RuntimeError(f"Dante workers survived shutdown: {remaining}")
+            # Also prove that the SOCKS control endpoint no longer accepts new
+            # sessions before testing application behavior after proxy loss.
+            try:
+                with socket.create_connection((self.netns.host_ip, self.port), timeout=0.2):
+                    raise RuntimeError("Dante still accepts connections after shutdown")
+            except (ConnectionRefusedError, TimeoutError, OSError):
+                pass
         if self.log and not self.log.closed:
             self.log.close()
 
@@ -335,6 +384,24 @@ def direct_probe(netns, host_ip, tcp_port, udp_port, dht):
                   "nftables drop counter records both blocked direct probes")
 
 
+def wait_for_dht_quiet(dht, quiet_seconds=0.75, timeout=3):
+    """Drain datagrams that were already in flight when Dante was stopped."""
+    deadline = time.monotonic() + timeout
+    last_count = len(dht.packets)
+    last_change = time.monotonic()
+    while time.monotonic() < deadline:
+        count = len(dht.packets)
+        if count != last_count:
+            last_count = count
+            last_change = time.monotonic()
+        if time.monotonic() - last_change >= quiet_seconds:
+            return
+        time.sleep(0.05)
+    raise AssertionError(
+        "DHT fixture kept receiving relayed packets after all Dante workers exited"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("daemon", help="built p2playd executable")
@@ -372,19 +439,24 @@ def main():
             lambda: any(b"BitTorrent protocol" in packet for packet in peer.data), 20
         ), "P2Play peer handshake reaches the host fixture through Dante TCP CONNECT")
 
-        # Kill Dante while P2Play and the namespace firewall remain active.
+        # Kill every Dante process, including workers that can keep an
+        # established UDP ASSOCIATE alive after the mother process exits.
+        # Drain datagrams already in flight before starting the outage probes.
         proxy.close()
         proxy = None
+        wait_for_dht_quiet(dht)
+        dht.packets.clear()
+
         peer_after = FIXTURE.PeerTrap()
-        before_dht = len(dht.packets)
         node.add_peer(peer_after, "f")
         time.sleep(4)
         FIXTURE.check(not peer_after.data,
                       "proxy outage cannot expose a direct BitTorrent peer connection")
-        FIXTURE.check(len(dht.packets) == before_dht,
+        FIXTURE.check(not dht.packets,
                       "proxy outage cannot expose direct DHT traffic")
-        FIXTURE.check(netns.drop_count() >= 2,
-                      "OS firewall remains active after proxy shutdown")
+        direct_probe(netns, netns.host_ip, peer.port, dht.port, dht)
+        FIXTURE.check(netns.drop_count() >= 4,
+                      "OS firewall still drops direct TCP/UDP after proxy shutdown")
         print("PASS PublisherProxy Linux namespace/firewall kill switch", flush=True)
         success = True
     except Exception:
