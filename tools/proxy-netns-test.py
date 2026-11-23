@@ -136,15 +136,14 @@ table inet {self.table} {{
 
 
 class DanteServer:
-    def __init__(self, netns, root):
+    def __init__(self, netns, root, port):
         self.netns = netns
         self.directory = Path(root)
         self.config = self.directory / "danted-netns.conf"
         self.pidfile = self.directory / "danted-netns.pid"
         self.log_path = self.directory / "danted-netns.log"
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind((netns.host_ip, 0))
-            self.port = sock.getsockname()[1]
+        # Use the same preselected port that the namespace firewall allows.
+        self.port = port
         self.prefix = netns.privileged
         self.log = self.log_path.open("wb")
         self.proc = None
@@ -358,10 +357,11 @@ def main():
     try:
         http_port = FIXTURE.free_port()
         peer_port = FIXTURE.free_port()
-        netns.setup(http_port, peer_port)
+        proxy_port = FIXTURE.free_port()
+        netns.setup(http_port, proxy_port)
         direct_probe(netns, netns.host_ip, peer.port, dht.port, dht)
 
-        proxy = DanteServer(netns, root)
+        proxy = DanteServer(netns, root, proxy_port)
         node = NamespacedPublisher(
             netns, daemon, root, http_port, peer_port, dht, proxy.port,
         )
