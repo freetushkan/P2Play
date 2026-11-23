@@ -167,7 +167,7 @@ def main():
         source = ReferencePeer(publisher.bt, advertised_port=publisher.bt)
         peers.append(source)
         _, have_message, _ = source.wait_for(
-            lambda ext, message: ext == source.remote_extension_id and
+            lambda ext, message: ext == source.local_extension_id and
             isinstance(message, dict) and b"have" in message,
             20
         )
@@ -190,7 +190,7 @@ def main():
         relay = ReferencePeer(subscriber.bt, advertised_port=publisher.bt)
         peers.append(relay)
         _, get_message, _ = relay.wait_for(
-            lambda ext, message: ext == relay.remote_extension_id and
+            lambda ext, message: ext == relay.local_extension_id and
             isinstance(message, dict) and b"get" in message and message[b"get"] == key,
             20
         )

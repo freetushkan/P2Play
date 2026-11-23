@@ -199,6 +199,7 @@ class ReferencePeer:
         self.sock = socket.create_connection(("127.0.0.1", int(port)), timeout=timeout)
         self.sock.settimeout(timeout)
         self.pending = deque()
+        self.local_extension_id = LOCAL_EXTENSION_ID
         self.remote_extension_id = None
         peer_id = b"-MMREF01-" + os.urandom(11)
         handshake = b"\x13BitTorrent protocol" + b"\x00\x00\x00\x00\x00\x10\x00\x00"
@@ -294,7 +295,7 @@ class ReferencePeer:
     def request_item(self, key, known_seq=-1):
         self.send({b"get": key, b"seq": known_seq})
         _, message, raw = self.wait_for(
-            lambda ext, value: ext == self.remote_extension_id and
+            lambda ext, value: ext == self.local_extension_id and
             isinstance(value, dict) and b"item" in value and
             value[b"item"].get(b"k") == key
         )
