@@ -105,7 +105,15 @@
         lists.forEach(function (l) {
             var row = el("article", undefined, "row"), copy = el("div", undefined, "row-copy");
             copy.append(el("h3", l.name || "Unnamed list"), el("p", l.description || "No description"),
-                el("p", "Version " + l.seq + (l.records ? " / " + l.records + " releases" : ""), "hint"), el("code", l.pubkey));
+                el("p", "Version " + l.seq + (l.records ? " / " + l.records + " releases" : ""), "hint"),
+                el("p", l.type === "meta" ? "Meta-list · enabled entries are subscribed automatically" : "Catalog list", "hint"),
+                el("code", l.pubkey));
+            if (l.type === "meta" && Array.isArray(l.items)) {
+                l.items.forEach(function (item) {
+                    var label = item.enabled ? "Included" : "Disabled";
+                    copy.append(el("p", label + " · " + (item.annotation || "No annotation") + " · " + item.pubkey, "hint"));
+                });
+            }
             row.append(copy);
             if (session.can_admin) row.append(button(discovery ? "Subscribe" : "Request refresh", async function () {
                 await host.subscribe(l.pubkey); status("Subscription requested. Reload lists after the daemon downloads the signed catalog.");
