@@ -545,7 +545,7 @@ namespace p2p {
                         const auto local = m_store.dir() + "/mesh-local/" + pk;
                         mkdir(local.c_str(), 0700);
                         if (!writeAll(local + "/original.pending.torrent", originalTorrent(*ti, n.fetchPointer))) failure = "cannot persist original version metadata";
-                        else failure = m_mesh.accept(n.fetchDir + "/" + pk, pk, n.fetchSeq);
+                        else failure = m_mesh.accept(n.fetchDir + "/" + pk, pk, n.fetchSeq, !n.metaParents.empty());
                         if (failure.empty()) {
                             n.accepted = true; n.seeding = h; n.fetching = {}; n.versionIh = n.fetchIh;
                             n.netError.clear(); newlyAccepted = true;
@@ -629,21 +629,36 @@ namespace p2p {
                 n.pendingGet = m_meshNet[pk].pendingGet; n.requested = n.requested || m_meshNet[pk].requested;
                 m_meshNet[pk] = std::move(n);
             }
-            if (newlyAccepted) meshPut(pk);
+            if (newlyAccepted) {
+                meshSyncMetaSubscriptions();
+                meshPut(pk);
+            }
         }
     }
 
-    std::string Core::meshSubscribe(const std::string &pk, const std::vector<std::string> &peers) {
+    std::string Core::meshSubscribe(const std::string &pk, const std::vector<std::string> &peers,
+                                    const std::string &metaParent) {
         std::lock_guard<std::recursive_mutex> lifecycle(m_meshLifecycle);
         std::array<char, 32> key;
         if (!unhexTo(pk, key.data(), 32)) {
             return "a list key is 64 hex digits";
         }
+        if (!metaParent.empty()) {
+            MeshList parent;
+            if (!m_mesh.list(metaParent, parent) || !parent.meta) return "parent is not a held meta-list";
+            auto item = std::find_if(parent.items.begin(), parent.items.end(),
+                                     [&](const MeshMetaItem &entry) { return entry.pubkey == pk; });
+            if (item == parent.items.end() || !item->enabled) return "child is not enabled by the parent meta-list";
+            MeshList child;
+            if (m_mesh.list(pk, child) && child.meta) return "nested meta-lists are not allowed";
+        }
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             MeshNet &n = m_meshNet[pk];
-            n.wanted = true;
-            n.peers.assign(peers.begin(), peers.begin() + std::min<size_t>(peers.size(), 128));
+            if (metaParent.empty()) n.directWanted = true;
+            else n.metaParents.insert(metaParent);
+            n.wanted = n.directWanted || !n.metaParents.empty();
+            if (!peers.empty()) n.peers.assign(peers.begin(), peers.begin() + std::min<size_t>(peers.size(), 128));
         }
         // Hints also bootstrap the directory connection when DHT/LSD are unavailable.
         for (size_t i = 0; i < peers.size() && i < 128; ++i) {
@@ -655,6 +670,45 @@ namespace p2p {
         log("[Mesh] list %s: asking peers and the DHT for its version", pk.substr(0, 16).c_str());
         meshGet(pk);
         return "";
+    }
+
+    // Reconstruct the enabled one-level relationships from signed manifests. A child
+    // already known to be a meta-list is never followed. Unknown children are tagged before
+    // their first pointer fetch, so the worker can reject a meta manifest before accepting it.
+    void Core::meshSyncMetaSubscriptions() {
+        std::lock_guard<std::recursive_mutex> lifecycle(m_meshLifecycle);
+        std::map<std::string, std::set<std::string>> parents;
+        for (const auto &parent : m_mesh.lists()) {
+            if (!parent.meta) continue;
+            for (const auto &item : parent.items) {
+                if (!item.enabled) continue;
+                MeshList child;
+                if (m_mesh.list(item.pubkey, child) && child.meta) {
+                    log("[Mesh] refusing nested meta-list %s from %s",
+                        item.pubkey.substr(0, 16).c_str(), parent.pubkey.substr(0, 16).c_str());
+                    continue;
+                }
+                parents[item.pubkey].insert(parent.pubkey);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            for (auto &entry : m_meshNet) {
+                entry.second.metaParents.clear();
+                entry.second.wanted = entry.second.directWanted;
+            }
+            for (const auto &entry : parents) {
+                auto &net = m_meshNet[entry.first];
+                net.metaParents = entry.second;
+                net.wanted = net.directWanted || !net.metaParents.empty();
+            }
+        }
+        for (const auto &entry : parents) {
+            const auto parent = *entry.second.begin();
+            const auto err = meshSubscribe(entry.first, {}, parent);
+            if (!err.empty()) log("[Mesh] meta child %s not subscribed: %s",
+                                  entry.first.substr(0, 16).c_str(), err.c_str());
+        }
     }
 
     // Metadata only initially. default_dont_download closes the metadata-alert race:
@@ -780,6 +834,7 @@ namespace p2p {
                 meshGet(l.pubkey);
             }
         }
+        meshSyncMetaSubscriptions();
         std::vector<std::string> wanted;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
