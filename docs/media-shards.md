@@ -125,10 +125,10 @@ record text in a selected version.
 
 Linux CI runs `tools/mesh-scale-test.py` against two real `p2playd` processes. The
 publisher creates 20,000 records in the selected `movies` shard and 512 records in an
-unselected `series` shard. Every movie references one shared description at the 64 KiB
-object limit and one shared JPEG poster at the 2 MiB limit. The test also verifies that
-one-byte-over-limit objects are rejected. The record payload crosses the publisher's
-8 MiB chunking boundary and produces multiple immutable segments.
+unselected `series` shard. Near-limit titles make the normalized records cross the
+publisher's 8 MiB chunking boundary; one representative movie references a shared
+description at the 64 KiB object limit and a shared JPEG poster at the 2 MiB limit.
+The test also verifies that one-byte-over-limit media objects are rejected.
 
 The subscriber uses explicit local peer hints with DHT disabled and a bounded test policy:
 64 MiB of selected compressed records, 8 MiB of retained media and 8 MiB of cache. The
