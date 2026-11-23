@@ -302,5 +302,17 @@ throughput, IPv6 peer routing, proxy recovery after long backoff, provider-speci
 relay/NAT behavior, console builds, or a real WireGuard/netns deployment. Those need
 operator tests with the actual service and packet captures. Run the existing mesh,
 media and peer-item tests as separate protocol regression coverage; their direct
-fixtures are not a SOCKS anonymity test. The namespace/WireGuard commands above are
-operational recipes, not actions performed by the automated test.
+fixtures are not a SOCKS anonymity test. The automated Linux CI scenario `tools/proxy-netns-test.py` creates a disposable
+network namespace with a veth and a default route, then applies an nftables output
+policy which permits only TCP to the local Dante endpoint and UDP to its bounded
+relay range. It first verifies that direct TCP and UDP probes are dropped, runs
+P2Play inside the namespace and checks that DHT and BitTorrent peer traffic reach
+host-side fixtures through Dante, then stops Dante and verifies that neither
+traffic class can fall back to a direct connection. It requires root (or
+passwordless sudo), iproute2, nftables, util-linux/setpriv and dante-server. The
+scenario is deliberately separate from the Dante smoke test: it tests the OS
+firewall boundary, not merely the application's SOCKS settings.
+
+The namespace/WireGuard commands above remain deployment recipes; the automated
+namespace test validates the proxy-only nftables pattern on Linux CI, not a
+production host's firewall policy or a real WireGuard provider.

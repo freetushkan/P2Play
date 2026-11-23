@@ -32,7 +32,7 @@ jobs:
       - name: Create build environment
         run: |
           sudo apt-get update || true
-          sudo apt-get install -y cmake ninja-build xz-utils curl python3-pip dante-server strace
+          sudo apt-get install -y cmake ninja-build xz-utils curl python3-pip dante-server strace iproute2 nftables util-linux
           pip3 install --break-system-packages libtorrent
 
       - name: Cache Boost headers
@@ -72,6 +72,7 @@ jobs:
           python3 -I tools/mesh-selective-test.py build/src/app/p2playd
           python3 -I tools/proxy-test.py build/src/app/p2playd
           python3 -I tools/proxy-dante-test.py build/src/app/p2playd --trace
+          python3 -I tools/proxy-netns-test.py build/src/app/p2playd
           node --check plugins/mediamesh/service.js
           node --check plugins/mediamesh/app.js
 

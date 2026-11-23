@@ -50,15 +50,20 @@
 - [x] Реализован Silo plugin: поиск/обнаружение/подписка, server-side daemon adapter,
       защищённые настройки и native add contract; тесты проверяют закреплённый Silo
       runtime, auth/CSRF, ZIP loader и API.
-- [ ] Проверить полный live-путь Silo ↔ P2Play с реальным daemon и native torrent engine:
-      поиск, подписка, получение каталога, добавление и фактическое воспроизведение.
-      Для этого добавляется сквозной Linux CI-сценарий с закреплённым Silo, локальным
-      tracker/seeder и настоящим stream API; статус остаётся открытым до зелёного CI.
-- [ ] Прогнать PublisherProxy через настоящий UDP-capable SOCKS5 (Dante): TCP CONNECT,
-      UDP ASSOCIATE, DHT/peer traffic и аудит системных вызовов без прямого обхода
-      (тест добавлен, ожидает Linux CI).
-- [ ] Отдельно проверить OS kill switch через Linux network namespace/firewall:
-      без default route и без разрешённого выхода мимо proxy даже при остановке proxy.
+- [x] Проверен полный live-путь Silo ↔ P2Play с реальным daemon и native torrent engine:
+      поиск, подписка, получение каталога, добавление торрента и передача медиаданных
+      через authenticated stream API. Linux CI собирает закреплённый Silo, запускает
+      три узла MediaMesh, локальные tracker/seeder и проверяет реальные payload bytes.
+      Граница: это серверный live acceptance test, не браузерное декодирование видео.
+- [x] Прогнать PublisherProxy через настоящий UDP-capable SOCKS5 (Dante): TCP CONNECT,
+      UDP ASSOCIATE, DHT/peer traffic и аудит системных вызовов без прямого обхода;
+      сценарий проходит Linux CI.
+- [ ] Проверить OS kill switch через Linux network namespace/firewall:
+      отдельный namespace имеет default route, но nftables разрешает только SOCKS
+      control endpoint и UDP relay. Тест блокирует прямые TCP/UDP probes, проверяет
+      рабочие DHT/peer-соединения через Dante, затем останавливает Dante и проверяет,
+      что P2Play не обходит firewall. Новый CI-сценарий добавлен; статус остаётся
+      открытым до успешного Linux run.
 - [ ] Проверить стартовые лимиты сегментов, описаний и постеров на реальном большом
       списке; определить измеряемые дисковые и сетевые бюджеты.
 
@@ -102,6 +107,7 @@ python3 -I tools/mesh-selective-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-media-test.py build-linux/src/app/p2playd
 python3 -I tools/proxy-test.py build-linux/src/app/p2playd --trace
 python3 -I tools/proxy-dante-test.py build-linux/src/app/p2playd --trace
+python3 -I tools/proxy-netns-test.py build-linux/src/app/p2playd
 python3 -I tools/ui-test.py build-linux/src/app/p2playd
 python3 tools/silo-live-test.py build-linux/src/app/p2playd
 ```
