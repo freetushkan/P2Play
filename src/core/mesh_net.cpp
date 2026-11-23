@@ -861,10 +861,12 @@ namespace p2p {
         std::lock_guard<std::mutex> lock(m_meshMutex);
         auto it = m_meshNet.find(pk);
         if (it == m_meshNet.end()) {
-            return json{{"seeding", false}};
+            return json{{"seeding", false}, {"fetching", false}, {"wanted", false}, {"meta_child", false}};
         }
         json j = {{"seeding", it->second.seeding.is_valid()}, {"fetching", it->second.fetching.is_valid()},
-                  {"selective", true}, {"records_ready", it->second.recordsReady}, {"media_pending", it->second.mediaDeadlines.size()}, {"error", it->second.netError}};
+                  {"wanted", it->second.wanted}, {"meta_child", !it->second.metaParents.empty()},
+                  {"selective", true}, {"records_ready", it->second.recordsReady},
+                  {"media_pending", it->second.mediaDeadlines.size()}, {"error", it->second.netError}};
         if (!it->second.versionIh.is_all_zeros()) {
             j["version_ih"] = hexOf(it->second.versionIh.data(), 32);
         }
