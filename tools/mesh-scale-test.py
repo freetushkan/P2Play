@@ -128,17 +128,21 @@ def proc_memory(pid):
 def build_records(description_ref, poster_ref):
     lines = []
     for i in range(MOVIE_RECORDS):
+        # Near-limit titles make the normalized NDJSON cross the publisher's
+        # 8 MiB split boundary without duplicating two media references in
+        # every record. One representative record exercises both media refs.
         record = {
             "ih": f"{i + 1:040x}",
-            "title": f"Catalog Feature {i:06d} 2026",
+            "title": f"Catalog Feature {i:06d} " + ("x" * 300),
             "shard": "movies",
             "size": 1_400_000_000 + i,
             "files": 1,
             "date": 1_760_000_000 - i,
             "tags": ["benchmark", "feature"],
-            "description_ref": description_ref,
-            "poster_ref": poster_ref,
         }
+        if i == 0:
+            record["description_ref"] = description_ref
+            record["poster_ref"] = poster_ref
         lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     for i in range(SERIES_RECORDS):
         record = {
