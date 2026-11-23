@@ -174,7 +174,7 @@ static void run(const fs::path &root) {
     check(a.create("Hostile parent","test receiver depth guard",maliciousPk,true).empty(),"create parent for adversarial manifest");
     auto hostile=manifest(fs::path(a.listDir(maliciousPk)));
     hostile["seq"]=1;
-    std::string childRaw(32,'\\0');
+    std::string childRaw(32,'\0');
     auto nibble=[](char c)->int{return c>='0'&&c<='9'?c-'0':c-'a'+10;};
     for(int i=0;i<32;++i) childRaw[i]=static_cast<char>((nibble(metaPk[2*i])<<4)|nibble(metaPk[2*i+1]));
     lt::entry child(lt::entry::dictionary_t); child["pk"]=childRaw; child["note"]="nested"; child["enabled"]=1;
