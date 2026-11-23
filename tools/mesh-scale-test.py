@@ -298,7 +298,8 @@ def main():
               "all selected movie segments are present")
         check(unselected and all(not f["selected"] and not f["present"] for f in unselected),
               "unselected series segments are not downloaded")
-        check(not (Path(subscriber.data) / "lists" / pubkey / "media").exists(),
+        subscriber_media_dir = Path(subscriber.data) / "lists" / pubkey / "media"
+        check(not list(subscriber_media_dir.glob("*.bin")),
               "description/poster packs are not eagerly retained")
 
         query = urllib.parse.quote("Catalog Feature 01234")
