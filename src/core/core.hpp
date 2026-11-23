@@ -83,7 +83,8 @@ namespace p2p {
         // a catalog node: the lists and the search only, no streamer
         bool catalogOnly() const { return m_settings.catalogOnly; }
 
-        static const char *version();
+        static const char *version();       // TorrServer MatriX-compatible version string
+        static const char *productVersion(); // native P2Play version, sourced from CMake
 
         // /echo: the version and the platform
         std::string echo() const;

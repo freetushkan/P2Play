@@ -42,9 +42,13 @@ contracts. Existing TorrServer-compatible ping endpoints remain available and
 must keep their existing response formats, including their compatibility
 identifiers/prefixes.
 
-P2Play MUST additionally expose its own read-only, public version endpoint:
+P2Play exposes its own read-only, public version endpoint:
 
 `GET /api/p2play/version`
+
+The route is handled before the native API token check, so clients can identify
+the product before configuring credentials. Its implementation is separate from
+the legacy ping and Silo/MatriX version routes.
 
 Canonical response:
 
@@ -87,5 +91,5 @@ The implementation is complete only when tests prove all of the following:
    changing the application version source updates this endpoint without
    changing legacy ping responses.
 
-These are architectural constraints for future pPlay work, not a claim that the
-pPlay module or the native version endpoint is already implemented.
+The native P2Play version endpoint is implemented in the P2Play server. The
+pPlay-specific module and its file-isolated client integration remain future work.

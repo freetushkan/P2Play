@@ -188,6 +188,14 @@ def main():
         status, _, echo = http("/echo")
         check(status == 200 and b"MatriX" in echo, f"/echo: {echo.decode()}")
 
+        status, _, native_version = http("/api/p2play/version", auth=False)
+        version_data = json.loads(native_version) if status == 200 else {}
+        check(status == 200 and version_data == {"name": "P2Play", "version": "0.1"},
+              f"public native P2Play version endpoint: HTTP {status} {version_data}")
+        status, _, legacy_ping = http("/api/system/ping", auth=False)
+        check(status == 200 and json.loads(legacy_ping) == {"status": "ok"},
+              "legacy Silo ping response remains unchanged")
+
         st = api("/torrents", {"action": "add", "link": magnet, "title": "Show", "poster": "http://p/1.jpg",
                                "data": "{\"lampa\":true}", "save_to_db": True})
         check(st["hash"] == ih, "add: hash " + st["hash"])

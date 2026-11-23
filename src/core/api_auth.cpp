@@ -74,6 +74,12 @@ namespace p2p {
             res.json(200, json{{"status", "ok"}}.dump());
             return;
         }
+        // Native product identity is intentionally separate from the TorrServer/Silo
+        // compatibility endpoints below. Keep this probe public for client discovery.
+        if (get && p == "/api/p2play/version") {
+            res.json(200, json{{"name", "P2Play"}, {"version", productVersion()}}.dump());
+            return;
+        }
         if (post && p == "/api/auth/login") {
             json body = json::parse(req.body, nullptr, false);
             const std::string name = body.is_object() ? body.value("username", "") : "";

@@ -283,6 +283,10 @@ namespace p2p {
         return "MatriX.141 P2Play/0.1";
     }
 
+    const char *Core::productVersion() {
+        return P2P_NATIVE_VERSION;
+    }
+
     std::string Core::hashOfLink(const std::string &link) {
         Torrs th;
         if (link.rfind("torrs://", 0) == 0) {

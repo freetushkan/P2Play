@@ -25,4 +25,5 @@ add_library(p2play_core STATIC
 target_include_directories(p2play_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(p2play_core PUBLIC torrent-rasterbar)
 target_compile_definitions(p2play_core PRIVATE ${P2P_PLATFORM_DEFINES}
+        "P2P_NATIVE_VERSION=\"${VERSION_MAJOR}.${VERSION_MINOR}\""
         P2P_COMPAT_MATRIX=$<IF:$<BOOL:${P2P_COMPAT_MATRIX}>,1,0>)

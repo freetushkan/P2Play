@@ -42,7 +42,8 @@ numbered again at the start from the metadata kept, its progress moved along by 
 
 | Route | |
 | --- | --- |
-| `GET /api/system/ping` | public |
+| `GET /api/system/ping` | public TorrServer/Silo compatibility probe |
+| `GET /api/p2play/version` | public native P2Play identity/version (`name: P2Play`, `version: 0.1`); no compatibility prefix |
 | `POST /api/auth/login` | `{"username","password"}` → `{"user","token"}` and the `silo_token` cookie; `POST /api/auth/logout`, `GET /api/auth/me` |
 | `GET /api/system/version`, `GET /api/system/stats`, `POST /api/system/shutdown` | shutdown: the owner |
 | `GET /api/torrents` | `{"torrents": [status]}`: the user's library |
