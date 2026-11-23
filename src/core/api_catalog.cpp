@@ -259,6 +259,10 @@ namespace p2p {
                 error(res, 400, "items array is required");
                 return;
             }
+            if (b["items"].size() > Mesh::kMaxMetaItems) {
+                error(res, 400, "too many meta-list items");
+                return;
+            }
             std::vector<MeshMetaItem> items;
             for (const auto &item : b["items"]) {
                 if (!item.is_object() || !item.value("pubkey", json()).is_string() ||
