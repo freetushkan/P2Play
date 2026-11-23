@@ -75,11 +75,16 @@ class Peer:
         assert self.exact(68)[28:48] == DIRECTORY
         self.send(0, {b"m": {b"mediamesh": 42}, b"p": advertised_port or port})
         self.their = None
+        self.inbox = []
         end = time.monotonic() + 10
         while self.their is None and time.monotonic() < end:
-            kind, value = self.receive()
+            kind, value = self._receive_wire()
             if kind == 0:
                 self.their = value.get(b"m", {}).get(b"mediamesh")
+            else:
+                # HAVE/GET may arrive immediately after the extension handshake.
+                # Preserve them while the raw test peer finishes negotiation.
+                self.inbox.append((kind, value))
         assert self.their, "daemon did not negotiate mediamesh"
 
     def exact(self, count):
@@ -95,7 +100,7 @@ class Peer:
         body = bytes((20, kind)) + ben(value)
         self.sock.sendall(struct.pack(">I", len(body)) + body)
 
-    def receive(self):
+    def _receive_wire(self):
         while True:
             length, = struct.unpack(">I", self.exact(4))
             assert length < 1024 * 1024
@@ -104,6 +109,11 @@ class Peer:
             body = self.exact(length)
             if body[0] == 20:
                 return body[1], unben(body[2:])
+
+    def receive(self):
+        if self.inbox:
+            return self.inbox.pop(0)
+        return self._receive_wire()
 
     def wait(self, predicate, seconds=20):
         end = time.monotonic() + seconds
