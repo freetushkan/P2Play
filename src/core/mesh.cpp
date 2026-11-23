@@ -392,6 +392,8 @@ namespace p2p {
         auto segs = m.dict_find_list("segs"), packs = m.dict_find_list("packs");
         if (!segs || segs.list_size() > kMaxSegments || (packs && packs.list_size() > kMaxSegments)) return "too many or missing descriptors";
         if (m.dict_find("packs") && !packs) return "bad packs";
+        if (out.card.meta && (segs.list_size() != 0 || (packs && packs.list_size() != 0)))
+            return "meta-list cannot contain record segments or media packs";
         std::map<std::string, MeshFile> media;
         std::set<std::string> paths;
         for (int i = 0; i < segs.list_size(); ++i) {
@@ -580,6 +582,7 @@ namespace p2p {
     int Mesh::addPending(const std::string &pubkey, const std::string &ndjson, std::string &error) {
         std::lock_guard<std::mutex> writer(m_writeMutex); error.clear();
         MeshList l; if (!list(pubkey, l) || !l.own) { error = "not a list of this node"; return -1; }
+        if (l.meta) { error = "meta-lists cannot publish catalog records"; return -1; }
         if (ndjson.size() > kMaxSegmentBytes * 4) { error = "request too big"; return -1; }
         std::string checked; int count = 0; size_t pos = 0, lineNo = 0;
         while (pos < ndjson.size()) {
@@ -640,6 +643,7 @@ namespace p2p {
                                const std::string &bytes, MeshMediaRef &ref) {
         std::lock_guard<std::mutex> writer(m_writeMutex);
         MeshList l; if (!list(pubkey, l) || !l.own) return "not a list of this node";
+        if (l.meta) return "meta-lists cannot publish media packs";
         if (!validMedia(kind, type, bytes)) return "invalid or oversized media";
         makeDirs(m_dir, pubkey); auto staging = localDir(m_dir, pubkey) + "/staging";
         auto p = policy(pubkey); int64_t total = 0;
