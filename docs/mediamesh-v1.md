@@ -235,11 +235,19 @@ A mismatch is a failed import, even if the manifest has a valid signature of its
 | `desc` | bytes | Description, at most 4,096 bytes |
 | `segs` | list | Record segment descriptors, at most 4,096 |
 | `packs` | list | Optional media pack descriptors, at most 4,096 |
+| `meta` | list | Optional signed meta-list entries; presence marks this list as a meta-list |
 | `sig` | bytes64 | Ed25519 signature |
 
 The signature covers canonical bencoding of the entire manifest dictionary with `sig`
 removed. Implementations MUST verify the signature against `pk` before trusting any file
 descriptor, count, name or metadata.
+
+The optional `meta` field is a list of at most 256 entries. Its presence (including an empty
+list) identifies a meta-list; ordinary catalog lists omit the field. Each entry is a bencoded
+dictionary containing `pk` (32-byte public key of a child catalog), `note` (UTF-8 annotation,
+at most 2,048 bytes) and `enabled` (integer 0 or 1). Child keys MUST be unique and MUST NOT
+equal the parent key. The complete array and every enable flag / annotation are covered by
+the parent's Ed25519 signature.
 
 New record segment descriptors contain:
 
@@ -272,6 +280,31 @@ or `poster_ref` objects with `pack`, `offset`, `length`, `sha256` and `type`. Th
 must remain within the named signed pack; its object hash and media type are checked before
 serving. See [media-shards.md](media-shards.md) for the exact reference JSON, accepted MIME
 types and API routes.
+
+### Meta-list behavior
+
+A meta-list is a signed collection of references, not a catalog shard. It cannot contain
+record segments or media packs. Create one with `POST /api/publish` and
+`{"name":"Curated collection","type":"meta"}`. Replace its pending entries with
+`POST /api/publish/:pk/meta` and a body such as:
+
+```json
+{
+  "items": [
+    {"pubkey":"<64 lowercase hex>","annotation":"Feature films","enabled":true},
+    {"pubkey":"<64 lowercase hex>","annotation":"Archived","enabled":false}
+  ]
+}
+```
+
+The publisher must already hold each referenced catalog and verify that it is not itself a
+meta-list. A metadata-only `POST /api/publish/:pk/release` signs the staged items at the next
+sequence. Subscribers automatically request enabled child lists; disabled entries remain
+visible as signed annotations but are not followed. A child manifest that identifies itself
+as a meta-list is rejected before its version is accepted. A meta-list already held locally
+cannot be referenced as a child. Together these rules cap the graph at one meta-list level and
+prevent recursive/cyclic subscription. A meta-list can still be subscribed to directly as a
+root collection.
 
 An optional `snapshot` integer records the previous sequence when a publisher compacts a
 list. Normal releases append history. Snapshots rewrite the live logical contents into a
