@@ -307,8 +307,10 @@ def main():
         metrics["search_seconds"] = round(time.monotonic() - started, 4)
         check(status == 200 and any(r["hash"] == f"{1235:040x}" for r in result["results"]),
               "large catalog is searchable by indexed title")
-        check(all(f["bytes"] <= RECORD_BUDGET for f in selected),
+        selected_record_bytes = sum(f["bytes"] for f in selected)
+        check(selected_record_bytes <= RECORD_BUDGET,
               "selected record segments fit the configured 64 MiB record budget")
+        metrics["selected_record_bytes"] = selected_record_bytes
 
         subscriber_dir = Path(subscriber.data) / "lists" / pubkey
         network_dir = Path(subscriber.data) / "lists" / ".network"
@@ -342,7 +344,7 @@ def main():
             lambda: (lambda response: response if response[0] == 200 else None)(
                 get_raw(subscriber, poster_path)
             ),
-            seconds=90, interval=0.3, label="lazy maximum-size poster fetch"
+            seconds=90, interval=1.0, label="lazy maximum-size poster fetch"
         )
         metrics["poster_fetch_seconds"] = round(time.monotonic() - started, 3)
         check(poster_result[1] == poster, "lazy poster fetch returns verified 2 MiB bytes")
@@ -354,7 +356,7 @@ def main():
             lambda: (lambda response: response if response[0] == 200 else None)(
                 get_raw(subscriber, description_path)
             ),
-            seconds=60, interval=0.3, label="lazy maximum-size description fetch"
+            seconds=60, interval=1.0, label="lazy maximum-size description fetch"
         )
         metrics["description_fetch_seconds"] = round(time.monotonic() - started, 3)
         check(description_result[1] == description, "lazy description fetch returns verified 64 KiB bytes")
