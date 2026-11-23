@@ -691,16 +691,36 @@ namespace p2p {
                 parents[item.pubkey].insert(parent.pubkey);
             }
         }
+        std::vector<std::string> cancel;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             for (auto &entry : m_meshNet) {
-                entry.second.metaParents.clear();
-                entry.second.wanted = entry.second.directWanted;
+                const bool wasMetaChild = !entry.second.metaParents.empty();
+                auto current = parents.find(entry.first);
+                if (current == parents.end()) {
+                    if (wasMetaChild && !entry.second.directWanted && entry.second.fetching.is_valid())
+                        cancel.push_back(entry.first);
+                    entry.second.metaParents.clear();
+                    entry.second.wanted = entry.second.directWanted;
+                } else {
+                    entry.second.metaParents = current->second;
+                    entry.second.wanted = entry.second.directWanted || !entry.second.metaParents.empty();
+                }
             }
             for (const auto &entry : parents) {
                 auto &net = m_meshNet[entry.first];
                 net.metaParents = entry.second;
                 net.wanted = net.directWanted || !net.metaParents.empty();
+            }
+        }
+        for (const auto &pk : cancel) {
+            meshDetach(pk);
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            auto &net = m_meshNet[pk];
+            if (!net.directWanted && net.metaParents.empty()) {
+                net.pointer.clear();
+                net.pointerSeq = -1;
+                net.wanted = false;
             }
         }
         for (const auto &entry : parents) {
