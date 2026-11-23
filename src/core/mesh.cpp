@@ -113,7 +113,7 @@ namespace p2p {
         bool validMedia(const std::string &kind, const std::string &type, const std::string &s) {
             if (!mediaType(kind, type) || s.empty()) return false;
             if (kind == "description") {
-                if (s.size() > Mesh::kMaxDescriptionBytes || s.find('\0') != std::string::npos) return false;
+                if (s.size() > Mesh::kMaxDescriptionBytes || s.find(static_cast<char>(0)) != std::string::npos) return false;
                 // Reject invalid UTF-8, overlong encodings, surrogates and out-of-range codepoints.
                 for (size_t i = 0; i < s.size();) {
                     unsigned char c = s[i++]; if (c < 128) continue;

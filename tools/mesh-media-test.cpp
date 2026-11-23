@@ -180,10 +180,14 @@ static void run(const fs::path &root) {
     lt::entry child(lt::entry::dictionary_t); child["pk"]=childRaw; child["note"]="nested"; child["enabled"]=1;
     lt::entry::list_type children; children.push_back(child); hostile["meta"]=children;
     sign(hostile,root/"a",maliciousPk); save(fs::path(a.listDir(maliciousPk)),hostile);
+    fs::create_directories(root/"c2");
     Mesh c2; c2.load((root/"c2").string(),log);
-    check(c2.accept(a.listDir(metaPk),metaPk,metaSeq).empty(),"subscriber can hold a meta-list as a root");
+    const auto rootMetaError = c2.accept(a.listDir(metaPk),metaPk,metaSeq);
+    check(rootMetaError.empty(), "subscriber can hold a meta-list as a root" +
+          (rootMetaError.empty() ? std::string() : ": " + rootMetaError));
     check(c2.accept(a.listDir(maliciousPk),maliciousPk,1)=="meta-list cannot include another meta-list",
           "receiver rejects signed reference to an already-held meta-list");
+    fs::create_directories(root/"child-guard");
     Mesh childGuard; childGuard.load((root/"child-guard").string(),log);
     check(childGuard.accept(a.listDir(metaPk),metaPk,metaSeq,true)=="nested meta-lists are not allowed",
           "network child acceptance refuses meta-lists before commit");
