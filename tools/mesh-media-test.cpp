@@ -149,6 +149,45 @@ static void run(const fs::path &root) {
     auto held=read(src/"manifest.ben");
     check(!a.release(pk,seq).empty() && read(src/"manifest.ben")==held && a.pending(pk)==1,"failed publish leaves committed manifest and pending work intact");
     check(!a.compact(pk,seq).empty(),"snapshot cannot discard unreleased pending work");
+
+    // Meta-lists are signed one-level references, not catalogs with another record payload.
+    std::string metaPk, nestedPk, maliciousPk;
+    check(a.create("Curated collection","signed references",metaPk,true).empty(),"create an explicit meta-list");
+    check(a.create("Nested collection","must remain a root",nestedPk,true).empty(),"create standalone nested meta-list");
+    check(a.setMetaItems(metaPk,{{pk,"Feature films",true}}).empty(),"stage a reference to a held ordinary catalog");
+    int64_t metaSeq=0;
+    check(a.release(metaPk,metaSeq).empty() && metaSeq==1,"metadata-only release signs meta items");
+    MeshList metaCard;
+    check(a.list(metaPk,metaCard) && metaCard.meta && metaCard.items.size()==1 &&
+          metaCard.items[0].pubkey==pk && metaCard.items[0].annotation=="Feature films" && metaCard.items[0].enabled,
+          "signed meta items round-trip through manifest verification");
+    check(!a.setMetaItems(metaPk,{{metaPk,"self",true}}).empty(),"publisher refuses self-reference");
+    check(!a.setMetaItems(metaPk,{{std::string(64,'f'),"unknown",true}}).empty(),"publisher refuses unknown child key");
+    check(!a.setMetaItems(metaPk,{{nestedPk,"nested",true}}).empty(),"publisher refuses nested meta-list reference");
+    check(!a.setMetaItems(metaPk,{{pk,"first",true},{pk,"duplicate",false}}).empty(),"publisher refuses duplicate child keys");
+    check(a.addPending(metaPk,json{{"ih",ih},{"title","not a catalog record"}}.dump(),err)<0,
+          "meta-list cannot accept catalog records");
+    check(a.addMedia(metaPk,"description","text/plain; charset=utf-8","not a media pack",d1).find("meta-lists")!=std::string::npos,
+          "meta-list cannot accept media packs");
+
+    // Even a correctly signed hostile manifest cannot point at a meta-list already held locally.
+    check(a.create("Hostile parent","test receiver depth guard",maliciousPk,true).empty(),"create parent for adversarial manifest");
+    auto hostile=manifest(fs::path(a.listDir(maliciousPk)));
+    hostile["seq"]=1;
+    std::string childRaw(32,'\\0');
+    auto nibble=[](char c)->int{return c>='0'&&c<='9'?c-'0':c-'a'+10;};
+    for(int i=0;i<32;++i) childRaw[i]=static_cast<char>((nibble(metaPk[2*i])<<4)|nibble(metaPk[2*i+1]));
+    lt::entry child(lt::entry::dictionary_t); child["pk"]=childRaw; child["note"]="nested"; child["enabled"]=1;
+    lt::entry::list_type children; children.push_back(child); hostile["meta"]=children;
+    sign(hostile,root/"a",maliciousPk); save(fs::path(a.listDir(maliciousPk)),hostile);
+    Mesh c2; c2.load((root/"c2").string(),log);
+    check(c2.accept(a.listDir(metaPk),metaPk,metaSeq).empty(),"subscriber can hold a meta-list as a root");
+    check(c2.accept(a.listDir(maliciousPk),maliciousPk,1)=="meta-list cannot include another meta-list",
+          "receiver rejects signed reference to an already-held meta-list");
+    Mesh childGuard; childGuard.load((root/"child-guard").string(),log);
+    check(childGuard.accept(a.listDir(metaPk),metaPk,metaSeq,true)=="nested meta-lists are not allowed",
+          "network child acceptance refuses meta-lists before commit");
+
     check(!a.remove(pk).empty() && bRestart.remove(pk).empty(),"owner protected; received catalog and local media removed");
     std::cout<<"PASS "<<checks<<" checks\n";
 }
