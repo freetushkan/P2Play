@@ -227,13 +227,13 @@ def main():
         metrics["poster_bytes"] = len(poster)
 
         started = time.monotonic()
-        status, accepted = post_raw(
+        status, accepted, _ = post_raw(
             publisher, f"/api/publish/{pubkey}/records",
             ndjson, "application/x-ndjson"
         )
         check(status == 200 and json.loads(accepted)["count"] == MOVIE_RECORDS + SERIES_RECORDS,
               "all large-catalog records accepted")
-        status, released, _ = publisher.call(f"/api/publish/{pubkey}/release", {})
+        status, released = publisher.call(f"/api/publish/{pubkey}/release", {})
         check(status == 200 and released["records"] == MOVIE_RECORDS + SERIES_RECORDS,
               "multi-shard version released")
         metrics["publish_seconds"] = round(time.monotonic() - started, 3)
