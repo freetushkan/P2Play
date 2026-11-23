@@ -146,6 +146,14 @@ def main():
         check(current["enabled"] is True and current["annotation"] == "Curated documentaries",
               "updated annotation and enabled state appear in signed result")
 
+        status, result = publisher.call(endpoint, {"items": [
+            {"pubkey": enabled, "annotation": "Included family films", "enabled": True},
+            {"pubkey": disabled, "annotation": "Temporarily hidden", "enabled": False}
+        ]})
+        check(status == 200, "meta-list selection can be restored")
+        status, released = publisher.call(f"/api/publish/{collection}/release", {})
+        check(status == 200 and released.get("seq") == 3, "restored selection released as sequence 3")
+
         # Import the enabled leaf and collection on a second node. The disabled leaf is
         # intentionally absent: syncing the collection must not subscribe to that entry.
         sources = root / "sources"
@@ -157,7 +165,7 @@ def main():
         shutil.copytree(sources / collection, bad)
         manifest_path = bad / "manifest.ben"
         manifest = manifest_path.read_bytes()
-        tampered = manifest.replace(b"Curated documentaries", b"Tampered documentaries", 1)
+        tampered = manifest.replace(b"Curated documentaries", b"Updated documentaries", 1)
         check(tampered != manifest, "meta annotation present in signed manifest fixture")
         manifest_path.write_bytes(tampered)
 
