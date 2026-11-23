@@ -181,25 +181,29 @@ class DanteServer:
         )
         if not FIXTURE.wait(self.ready, 10):
             self.close()
-            raise RuntimeError("Dante did not start:\n" + self.log_path.read_text(errors="replace"))
+            raise RuntimeError(
+                "Dante TCP listener was not reachable from the namespace. "
+                "Last readiness probe: " + getattr(self, "last_probe", "<not run>")
+                + "\nDante log:\n" + self.log_path.read_text(errors="replace")
+            )
         FIXTURE.check(True, "Dante listens on the namespace veth address")
 
     def ready(self):
         if self.proc.poll() is not None:
             return False
-        # Dante's client ACL deliberately accepts only the namespace address.
-        # Probe from the same namespace as P2Play, not from the host runner.
+        # Probe only TCP reachability here. The full SOCKS5 negotiation and
+        # UDP/TCP forwarding are verified later by P2Play itself; duplicating a
+        # protocol client in this readiness loop adds no coverage.
         probe = (
             "import socket,sys\n"
             "s=socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=1.0)\n"
-            "s.settimeout(1.0); s.sendall(b'\\x05\\x01\\x00')\n"
-            "reply=s.recv(2); s.close()\n"
-            "sys.exit(0 if reply==b'\\x05\\x00' else 1)\n"
+            "s.close()\n"
         )
         result = self.netns.run_as_runner(
             "python3", "-c", probe, self.netns.host_ip, str(self.port),
             check=False, timeout=4,
         )
+        self.last_probe = result.stdout
         return result.returncode == 0
 
     def close(self):
