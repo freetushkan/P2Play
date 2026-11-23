@@ -121,6 +121,37 @@ at once). There are at most 4096 segment descriptors and 4096 pack descriptors, 
 manifest, 64 KiB record lines, one million decoded records, and 256 MiB aggregate decoded
 record text in a selected version.
 
+## Large-catalog resource profile
+
+Linux CI runs `tools/mesh-scale-test.py` against two real `p2playd` processes. The
+publisher creates 20,000 records in the selected `movies` shard and 512 records in an
+unselected `series` shard. Every movie references one shared description at the 64 KiB
+object limit and one shared JPEG poster at the 2 MiB limit. The test also verifies that
+one-byte-over-limit objects are rejected. The record payload crosses the publisher's
+8 MiB chunking boundary and produces multiple immutable segments.
+
+The subscriber uses explicit local peer hints with DHT disabled and a bounded test policy:
+64 MiB of selected compressed records, 8 MiB of retained media and 8 MiB of cache. The
+acceptance checks prove that:
+
+* all selected movie records are indexed, while the series records and their segment
+  files remain absent;
+* the initial subscription does not mirror description/poster packs;
+* a poster and description request fetches and verifies the corresponding whole packs,
+  populates content-addressed object cache entries and survives a cold restart;
+* the selected record payload fits its configured disk budget.
+
+The run reports publication and subscription time, segment count and compressed bytes,
+publisher/subscriber file bytes, torrent working-copy bytes, cache bytes, search latency,
+cold-start time and process RSS. Linux loopback RX/TX deltas are captured separately for
+the initial subscription and lazy media requests. Those counters include BitTorrent
+protocol and local HTTP test traffic; they are not a pure payload counter.
+
+No hard wall-clock or RSS pass/fail threshold is imposed by this first profile because
+the GitHub runner class and concurrent load can vary. The first green CI measurements
+establish a repeatable baseline before introducing platform-sensitive performance
+budgets. Protocol and per-list storage limits remain hard assertions in the test.
+
 ## HTTP API
 
 The existing native API authentication applies. Publishing, selection changes, local file
