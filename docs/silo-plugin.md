@@ -214,10 +214,14 @@ with the normal runner and with `--race` (no race reports).
    authenticated user's ID and save option; injected browser IDs/URLs are ignored.
 5. Actual `Manager.InstallPlugin` ZIP loader and asynchronous plugin startup.
 
-**Test boundary:** only `ts.torrent.add` is replaced with a recording function in
-one transfer test, to avoid starting a real torrent engine/network download. Its
-input is parsed by the actual upstream parser. This is not a live playback,
-BitTorrent-transfer, DHT-discovery, or browser-rendering test. The real daemon's
-network engine is covered separately by the native project's tests; these tests
-exercise the integration's precise host contracts and HTTP calls. Browser files
-also pass `node --check`; a browser layout/screenshot test has not been run.
+**Test boundary:** the Go host-contract suite still replaces `ts.torrent.add` with a
+recording function in one focused transfer test. It verifies the exact native call
+without starting a download. The separate `tools/silo-live-test.py` acceptance
+test builds this pinned Silo server and runs the installed plugin against real
+P2Play daemons, a real Silo torrent engine, a local HTTP tracker and a loopback
+libtorrent seeder. It verifies discovery, subscription, catalog search, native
+torrent addition to the authenticated user's library and byte-for-byte playback
+through Silo's authenticated stream API. It uses no public tracker or public DHT.
+The test is run by Linux CI; it does not replace the host-contract/race tests.
+Browser files also pass `node --check`; a browser layout/screenshot test has not
+been run.

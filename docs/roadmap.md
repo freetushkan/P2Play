@@ -52,6 +52,8 @@
       runtime, auth/CSRF, ZIP loader и API.
 - [ ] Проверить полный live-путь Silo ↔ P2Play с реальным daemon и native torrent engine:
       поиск, подписка, получение каталога, добавление и фактическое воспроизведение.
+      Для этого добавляется сквозной Linux CI-сценарий с закреплённым Silo, локальным
+      tracker/seeder и настоящим stream API; статус остаётся открытым до зелёного CI.
 - [ ] Прогнать PublisherProxy через настоящий UDP-capable SOCKS5 (Dante): TCP CONNECT,
       UDP ASSOCIATE, DHT/peer traffic и аудит системных вызовов без прямого обхода
       (тест добавлен, ожидает Linux CI).
