@@ -219,6 +219,17 @@ class DanteServer:
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             return False
 
+    def _signal_process(self, pid, sig):
+        # Dante's privileged workers are root-owned when CI invokes it through
+        # sudo.  Escalate signalling through the same already-required
+        # passwordless sudo path instead of calling os.kill as the runner.
+        result = self.netns.root("kill", f"-{sig}", str(pid),
+                                 check=False, timeout=5)
+        if result.returncode and self._alive(pid):
+            raise RuntimeError(
+                f"could not send SIG{sig} to Dante pid {pid}: {result.stdout}"
+            )
+
     def close(self):
         if self.proc is not None:
             # Dante deliberately lets worker processes with active SOCKS
@@ -226,19 +237,13 @@ class DanteServer:
             # isolated test server, not just the Popen/mother process.
             pids = self._descendants(self.proc.pid) | {self.proc.pid}
             for pid in sorted(pids, reverse=True):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                self._signal_process(pid, "TERM")
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and any(self._alive(pid) for pid in pids):
                 time.sleep(0.05)
             survivors = [pid for pid in pids if self._alive(pid)]
             for pid in survivors:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self._signal_process(pid, "KILL")
             if self.proc.poll() is None:
                 self.proc.wait(timeout=5)
             deadline = time.monotonic() + 5
