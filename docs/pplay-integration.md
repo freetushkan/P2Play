@@ -3,10 +3,11 @@
 This document defines mandatory implementation boundaries for the P2Play support
 module in pPlay. The target client repository is
 [`freetushkan/pPlay`](https://github.com/freetushkan/pPlay); its P2Play-specific
-implementation belongs in a separate `src/p2play/` source directory. It is separate
-from the Silo plugin contract in [silo-plugin.md](silo-plugin.md): pPlay and Silo
-are different hosts and must not share assumptions about source layout, runtime
-bindings, packaging or identity.
+implementation may live in separate files such as `src/net/p2play.h` and
+`src/net/p2play.cpp` alongside pPlay's neutral networking helpers. A dedicated
+directory is optional, not mandatory. It is separate from the Silo plugin contract
+in [silo-plugin.md](silo-plugin.md): pPlay and Silo are different hosts and must not
+share assumptions about source layout, runtime bindings, packaging or identity.
 
 ## 1. File-level independence from TorrServer
 
@@ -82,12 +83,15 @@ The implementation is complete only when tests prove all of the following:
 
 1. The P2Play module can be built, packaged, updated and removed without reading
    from or writing to the TorrServer source tree.
-2. A clean TorrServer checkout is not modified by a pPlay module build/test.
-3. Legacy TorrServer ping responses remain byte/contract compatible with their
+2. P2Play-owned files (including byte-for-byte copied implementations) have their
+   own paths and compile/package entries. No `torrserve.*` implementation file,
+   symlink, hard link or generated source overlay is reused.
+3. A clean TorrServer checkout is not modified by a pPlay module build/test.
+4. Legacy TorrServer ping responses remain byte/contract compatible with their
    existing tests.
-4. `GET /api/p2play/version` is independently reachable and returns the native
+5. `GET /api/p2play/version` is independently reachable and returns the native
    P2Play version without compatibility prefixes.
-5. The returned native version matches the version embedded in the P2Play build;
+6. The returned native version matches the version embedded in the P2Play build;
    changing the application version source updates this endpoint without
    changing legacy ping responses.
 

@@ -90,15 +90,20 @@
       смены selection, отказа от meta→meta и восстановления после перезапуска. Linux,
       Switch, Android, PS4, PS5, PS5 package и отдельный Silo plugin CI jobs прошли.
       Спецификация: `docs/meta-lists.md` и `docs/mediamesh-v1.md`.
-- [ ] Отдельный публичный endpoint идентичности и версии P2Play — интеграционный
-      prerequisite для pPlay:
-      `GET /api/p2play/version`. Возвращает native P2Play name/version без
-      MatriX/TorrServer/Silo compatibility prefixes; legacy ping endpoints не меняются.
+- [x] Отдельный публичный endpoint идентичности и версии P2Play:
+      `GET /api/p2play/version` возвращает `{"name":"P2Play","version":"0.1"}` без
+      MatriX/TorrServer/Silo compatibility prefixes. Версия берётся из единственного
+      CMake VERSION_MAJOR/MINOR источника. Endpoint работает без токена; legacy
+      `/api/system/ping`, `/api/system/version` и MatriX `/echo` не изменены.
+      Реализован в PR #12; CI и проверки совместимости прошли.
 - [ ] Интерфейс pPlay: отдельный P2Play network module с поиском/просмотром списков,
       подпиской, фильтром по тегам, карточками с постером/описанием и «продолжить
-      просмотр». Реализуется в репозитории `freetushkan/pPlay`, каталог исходников
-      `src/p2play/`; модуль обязан быть файлово независим от TorrServer, в том числе
-      при чистой копипасте. Контракт и критерии приёмки: `docs/pplay-integration.md`.
+      просмотр». Реализуется в репозитории `freetushkan/pPlay`, отдельные файлы
+      `src/net/p2play.h` и `src/net/p2play.cpp` (или эквивалентные отдельные файлы
+      в `src/net/`). Общие нейтральные HTTP-утилиты можно использовать, но файлы
+      TorrServer `torrserve.*` не подключать и не переиспользовать — даже при копипасте
+      код P2Play обязан иметь собственные файлы. Контракт и критерии приёмки:
+      `docs/pplay-integration.md`.
 - [ ] Встраивание ядра в pPlay на целевых платформах с сохранением режима внешнего ядра.
 
 ### Этап 5: наполнение каталога
