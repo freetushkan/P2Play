@@ -37,6 +37,7 @@ class Node:
         (self.data / "auth.json").write_text(json.dumps({
             "users": [{"username": "owner", "password": "test", "api_token": TOKEN}]
         }))
+        (self.data / "settings.json").write_text(json.dumps({"DisableDHT": True}))
 
     def call(self, path, body=None, method=None):
         payload = None if body is None else json.dumps(body, ensure_ascii=False).encode()
