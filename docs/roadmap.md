@@ -103,6 +103,7 @@ python3 -I tools/mesh-media-test.py build-linux/src/app/p2playd
 python3 -I tools/proxy-test.py build-linux/src/app/p2playd --trace
 python3 -I tools/proxy-dante-test.py build-linux/src/app/p2playd --trace
 python3 -I tools/ui-test.py build-linux/src/app/p2playd
+python3 tools/silo-live-test.py build-linux/src/app/p2playd
 ```
 
 `meshnet-test.py` additionally uses the Python `libtorrent` binding; protocol tests that

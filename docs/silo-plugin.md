@@ -223,5 +223,10 @@ libtorrent seeder. It verifies discovery, subscription, catalog search, native
 torrent addition to the authenticated user's library and byte-for-byte playback
 through Silo's authenticated stream API. It uses no public tracker or public DHT.
 The test is run by Linux CI; it does not replace the host-contract/race tests.
-Browser files also pass `node --check`; a browser layout/screenshot test has not
-been run.
+Run it manually from the repository root with
+`python3 tools/silo-live-test.py build-linux/src/app/p2playd` (Go 1.26+,
+Python `libtorrent`, and network access for the pinned upstream checkout and Go
+modules are required). The runner intentionally uses the normal Python site
+configuration: CI installs `libtorrent` with `pip3`, and Python's isolated
+`-I` mode excludes user-site packages. Browser files also pass `node --check`;
+a browser layout/screenshot test has not been run.

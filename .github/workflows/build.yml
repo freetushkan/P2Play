@@ -78,7 +78,9 @@ jobs:
       # This builds the pinned Silo host and runs the real plugin + torrent engine
       # against a local P2Play catalog, tracker and seeder.
       - name: Live Silo MediaMesh playback
-        run: python3 -I tools/silo-live-test.py build/src/app/p2playd
+        run: |
+          python3 -c "import libtorrent; print('libtorrent import OK')"
+          python3 tools/silo-live-test.py build/src/app/p2playd
 
       # The storage harness reads Makefile compile flags; keep this separate from Ninja.
       - name: MediaMesh storage sanitizers
