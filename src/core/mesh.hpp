@@ -36,12 +36,19 @@ namespace p2p {
         nlohmann::json json() const;
     };
 
+    struct MeshMetaItem {
+        std::string pubkey, annotation;
+        bool enabled = true;
+    };
+
     struct MeshList {
         std::string pubkey, name, desc;
         int64_t seq = 0;
         int records = 0;
         int64_t updated = 0;
         bool own = false;
+        bool meta = false;
+        std::vector<MeshMetaItem> items;
     };
 
     // Local state, not part of a signed version or its torrent. Empty shards means none;
@@ -73,17 +80,22 @@ namespace p2p {
         static constexpr size_t kMaxDescriptionBytes = 64u << 10;
         static constexpr size_t kMaxPosterBytes = 2u << 20;
         static constexpr size_t kMaxVersionTextBytes = 256u << 20;
+        static constexpr size_t kMaxMetaItems = 256;
+        static constexpr size_t kMaxMetaAnnotationBytes = 2048;
 
         void load(const std::string &dataDir, std::function<void(const std::string &)> log);
         std::vector<MeshList> lists() const;
         bool list(const std::string &pubkey, MeshList &out) const;
         std::vector<MeshRecord> search(const std::string &query, const std::string &tag, size_t limit) const;
         bool record(const std::string &ih, MeshRecord &out) const;
-        std::string create(const std::string &name, const std::string &desc, std::string &pubkey);
+        std::string create(const std::string &name, const std::string &desc, std::string &pubkey, bool meta = false);
         int addPending(const std::string &pubkey, const std::string &ndjson, std::string &error);
         int pending(const std::string &pubkey) const;
+        std::string setMetaItems(const std::string &pubkey, const std::vector<MeshMetaItem> &items);
+        bool hasPendingMeta(const std::string &pubkey) const;
         std::string release(const std::string &pubkey, int64_t &seq);
-        std::string accept(const std::string &dir, const std::string &expectedPk = "", int64_t expectedSeq = -1);
+        std::string accept(const std::string &dir, const std::string &expectedPk = "", int64_t expectedSeq = -1,
+                           bool rejectMetaChild = false);
         std::string remove(const std::string &pubkey);
         std::string listDir(const std::string &pubkey) const;
 
