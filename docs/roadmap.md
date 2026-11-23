@@ -43,12 +43,20 @@
       unit-тест проверяет квоты между соединениями, дедупликацию, резерв DHT и round-robin.
 - [x] Подготовлен implementation-profile draft wire-format и формата списка v1:
       `docs/mediamesh-v1.md`. Документ описывает фактическую реализацию P2Play.
-- [ ] Проверить совместимость с независимой BEP 10 реализацией MediaMesh; reference peer
-      и канонические wire fixtures добавлены, ожидают первого зелёного Linux CI.
-- [ ] Интеграция узла каталога с плагином Silo и проверка полного пользовательского
-      пути (поиск, подписка, получение списка, torrs://).
-- [ ] Прогнать PublisherProxy с реальным UDP-capable SOCKS5 и отдельно проверить
-      отсутствие обходного сетевого маршрута средствами namespace/firewall.
+- [x] Проверить wire-совместимость BEP 10 с независимым reference peer в Linux CI:
+      handshake, канонические `have`/`get`, обмен `item` в обе стороны и relay.
+      Граница проверки (без собственной реализации BEP 44/DHT/v2 transfer) описана
+      в `docs/mediamesh-v1.md`.
+- [x] Реализован Silo plugin: поиск/обнаружение/подписка, server-side daemon adapter,
+      защищённые настройки и native add contract; тесты проверяют закреплённый Silo
+      runtime, auth/CSRF, ZIP loader и API.
+- [ ] Проверить полный live-путь Silo ↔ P2Play с реальным daemon и native torrent engine:
+      поиск, подписка, получение каталога, добавление и фактическое воспроизведение.
+- [ ] Прогнать PublisherProxy через настоящий UDP-capable SOCKS5 (Dante): TCP CONNECT,
+      UDP ASSOCIATE, DHT/peer traffic и аудит системных вызовов без прямого обхода
+      (тест добавлен, ожидает Linux CI).
+- [ ] Отдельно проверить OS kill switch через Linux network namespace/firewall:
+      без default route и без разрешённого выхода мимо proxy даже при остановке proxy.
 - [ ] Проверить стартовые лимиты сегментов, описаний и постеров на реальном большом
       списке; определить измеряемые дисковые и сетевые бюджеты.
 

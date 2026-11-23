@@ -254,8 +254,27 @@ Build the normal Linux target and run:
 python3 -I tools/proxy-test.py /absolute/path/to/p2playd --trace
 ```
 
-The test has no Python libtorrent dependency. It starts local-only SOCKS, peer and
-DHT fixtures and checks:
+A separate smoke test uses the real **Dante** SOCKS server (Ubuntu package
+`dante-server`, binary `danted`) rather than the Python protocol fixture. Run it on
+Linux after installing `dante-server` and `strace`:
+
+```sh
+python3 -I tools/proxy-dante-test.py /absolute/path/to/p2playd --trace
+```
+
+The script starts a temporary, loopback-only Dante server with a bounded UDP relay
+port range, verifies a real SOCKS5 `UDP ASSOCIATE` and UDP request/response, then
+starts P2Play with that server as `PublisherProxy`. It checks that the daemon's DHT
+traffic reaches a local DHT fixture through UDP relay and a BitTorrent peer handshake
+reaches a local peer fixture through TCP CONNECT. With `--trace`, the P2Play process
+is audited: direct peer/DHT destinations must not appear; only the Dante control
+endpoint and its configured client-facing UDP relay range are permitted (plus the
+documented packet-free interface route lookup). This is a real SOCKS server smoke
+test, not a provider-specific Internet connectivity test or a network-namespace
+firewall test.
+
+The deterministic fixture test has no Python libtorrent dependency. It starts
+local-only SOCKS, peer and DHT fixtures and checks:
 
 * malformed JSON, field types, endpoint/port limits, credential limits, NUL/unknown
   options, and DNS-unsafe DHT bootstrap fail startup;
