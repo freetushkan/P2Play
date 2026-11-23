@@ -77,7 +77,69 @@ Do not change legacy ping responses to make them look like the native P2Play
 version endpoint. Do not make pPlay infer the native P2Play version by parsing a
 TorrServer compatibility string.
 
-## 3. Acceptance checks
+## 3. Embedded pPlay mode
+
+pPlay has two distinct network entries:
+
+- `P2Play`: the existing external-server client.
+- `P2Play_embedded`: the same P2Play service hosted inside the pPlay process.
+
+The embedded entry MUST use the static `p2play_core` library, not launch or bundle
+the standalone `p2playd` application. pPlay's build workflow clones the P2Play
+repository into its build workspace and checks out a pinned commit; source files
+are not manually copied from one repository into the other. A dedicated
+`P2P_EMBEDDED_ONLY` CMake configuration should build the embeddable core/API
+without the standalone application target.
+
+### Activation and storage
+
+- The embedded core starts only after the user selects `P2Play_embedded`. Merely
+  launching pPlay or selecting the external `P2Play` network MUST NOT start it.
+- When the user leaves the embedded network for another module, pPlay stops the
+  embedded server after in-flight HTTP handlers and active media streams have
+  drained. It must not terminate a stream halfway through or leave a listener
+  running after deactivation.
+- The embedded server uses a dedicated data directory owned by pPlay. It must not
+  share the data directory of an external P2Play daemon or any TorrServer data.
+- The C API is the lifecycle boundary: pPlay starts, observes and stops the core
+  in-process. The standalone daemon remains independently buildable and usable.
+
+### LAN access and authentication
+
+The embedded HTTP server is a LAN service, not a loopback-only service. It MUST
+listen on an address reachable by other devices on the same local network; binding
+only to `127.0.0.1` is not acceptable. pPlay should display or expose the LAN
+address and port. It must not silently configure router port forwarding or claim
+that LAN visibility implies safe Internet exposure.
+
+The username and password entered in the `P2Play_embedded` network settings are
+the actual credentials of the embedded server's owner account. The username is
+user-defined and MUST NOT be hard-coded to `owner`. The backend may retain a
+stable internal owner ID (for example, `id=owner`), but Basic login, native API
+login, tokens and account display must use the configured username.
+
+On first initialization, the configured username/password provision the persistent
+owner account and the password is stored only as a password hash. On subsequent
+starts, the stored account is authoritative: the embedded core must verify that
+the configured credentials still identify that owner and MUST NOT silently reset
+or overwrite an existing account database. A credential mismatch must be surfaced
+as a startup/configuration error, not bypassed by creating a new owner.
+
+### Additional users and roles
+
+The embedded server must expose creation of additional server users from pPlay's
+user-facing settings/management UI, using the existing authenticated user-management
+API where possible. The created users and their permissions must persist across
+embedded-server restarts. The owner remains protected from deletion or demotion.
+
+The current backend already has user management and a numeric hierarchical
+`rank` field. That rank is a coarse privilege level, not a named-role system or a
+per-action capability matrix. A later access-control milestone must define explicit
+roles and permissions (including which actions each role may perform) before pPlay
+presents role assignment as a user-friendly feature. Do not describe the current
+numeric rank as if named roles were already implemented.
+
+## 4. Acceptance checks
 
 The implementation is complete only when tests prove all of the following:
 
@@ -94,6 +156,22 @@ The implementation is complete only when tests prove all of the following:
 6. The returned native version matches the version embedded in the P2Play build;
    changing the application version source updates this endpoint without
    changing legacy ping responses.
+7. The embedded build links the static core through the pinned P2Play checkout and
+   can omit the standalone daemon target without changing the standalone build.
+8. Selecting `P2Play_embedded` starts the service lazily; leaving it drains active
+   streams, stops the service and releases its listening port. Selecting any other
+   network does not start the embedded service.
+9. A second device on the same LAN can reach the embedded HTTP service. The service
+   is not restricted to loopback and does not set up public WAN port forwarding.
+10. The username/password from pPlay's embedded-network settings authenticate the
+    actual owner account, including when its username is not `owner`. The first
+    initialization persists the owner; later starts do not silently overwrite
+    existing credentials or user data.
+11. The owner can create additional server users through the pPlay management UI;
+    their accounts persist across restarts and the owner cannot be deleted.
+12. The current numeric `rank` hierarchy is documented as such. A separate
+    follow-up defines named roles and an explicit capability/permission matrix.
 
-The native P2Play version endpoint is implemented in the P2Play server. The
-pPlay-specific module and its file-isolated client integration remain future work.
+The native P2Play version endpoint is implemented in the P2Play server. The external
+pPlay client baseline exists; the embedded lifecycle, LAN deployment, owner
+provisioning and pPlay-facing user-management UI remain implementation work.
