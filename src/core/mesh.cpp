@@ -1006,7 +1006,9 @@ namespace p2p {
         std::remove((listDir(pk) + "/manifest.ben").c_str()); std::remove((listDir(pk) + "/pointer.ben").c_str());
         rmdir((listDir(pk) + "/records").c_str()); rmdir((listDir(pk) + "/media").c_str()); rmdir(listDir(pk).c_str());
         auto local = localDir(m_dir, pk); cleanDirectory(local + "/staging", {}); cleanDirectory(local + "/cache", {});
-        rmdir((local + "/staging").c_str()); rmdir((local + "/cache").c_str()); std::remove((local + "/policy.json").c_str()); rmdir(local.c_str());
+        rmdir((local + "/staging").c_str()); rmdir((local + "/cache").c_str());
+        std::remove((local + "/policy.json").c_str()); std::remove((local + "/pending-meta.json").c_str());
+        rmdir(local.c_str());
         std::lock_guard<std::mutex> lock(m_mutex); m_lists.erase(pk); rebuild(); return "";
     }
 }
