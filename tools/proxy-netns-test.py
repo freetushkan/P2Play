@@ -106,7 +106,7 @@ table inet {self.table} {{
     ct state established,related accept
     ip daddr {self.host_ip} tcp dport {proxy_port} accept
     ip daddr {self.host_ip} udp dport {RELAY_FIRST}-{RELAY_LAST} accept
-    counter comment "PublisherProxy direct-egress kill switch" drop
+    counter drop
   }}
 }}
 """
