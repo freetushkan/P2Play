@@ -145,18 +145,31 @@ class DanteServer:
                 b"a": {b"id": b"R" * 20},
             })
             udp.bind(("127.0.0.1", 0))
-            udp.sendto(FIXTURE.envelope(FIXTURE.local_ip(), dht.port, query),
+            udp.sendto(FIXTURE.envelope("127.0.0.1", dht.port, query),
                        (relay_host, relay_port))
-            udp.settimeout(6)
+            # The local DHT fixture is reachable on loopback. Avoid routing this
+            # smoke packet through the runner's external interface: Dante's
+            # external address is deliberately 127.0.0.1 as well.
+            udp.settimeout(0.25)
             response = None
             deadline = time.monotonic() + 6
             while time.monotonic() < deadline:
-                packet, _source = udp.recvfrom(65536)
+                try:
+                    packet, _source = udp.recvfrom(65536)
+                except socket.timeout:
+                    continue
                 host, port, payload = FIXTURE.udp_address(packet)
                 if payload.startswith(b"d") and b"1:y1:r" in payload:
                     response = (host, port, payload)
                     break
-            FIXTURE.check(response is not None, "UDP payload and response traverse real Dante relay")
+            if response is None:
+                dante_log = self.log_path.read_text(errors="replace")
+                raise AssertionError(
+                    "Dante UDP relay did not return the DHT ping; "
+                    f"local DHT fixture received {len(dht.packets)} datagram(s). "
+                    "Dante log follows:\\n" + dante_log
+                )
+            FIXTURE.check(True, "UDP payload and response traverse real Dante relay")
             FIXTURE.check(response[2].find(transaction) >= 0,
                           "UDP relay returns the matching DHT transaction")
         finally:
@@ -210,10 +223,14 @@ def main():
 
         # Now exercise the actual libtorrent session through the real SOCKS server.
         dht.packets.clear()
-        node = FIXTURE.Publisher(args, root, FIXTURE.config(server, dht))
+        settings = FIXTURE.config(server, dht)
+        settings["P2PDhtBootstrap"] = f"127.0.0.1:{dht.port}"
+        node = FIXTURE.Publisher(args, root, settings)
         FIXTURE.check(FIXTURE.wait(lambda: bool(dht.packets), 15),
                       "P2Play DHT bootstrap traverses real Dante UDP ASSOCIATE")
-        node.add_peer(peer, suffix="e")
+        magnet = "magnet:?xt=urn:btih:" + "e" * 40 + f"&x.pe=127.0.0.1:{peer.port}"
+        status, _ = node.call("/torrents", {"action": "add", "link": magnet})
+        FIXTURE.check(status == 200, "loopback peer magnet accepted")
         FIXTURE.check(FIXTURE.wait(lambda: any(
             b"BitTorrent protocol" in handshake for handshake in peer.data
         ), 20), "P2Play TCP BitTorrent handshake traverses real Dante CONNECT")

@@ -264,7 +264,9 @@ python3 -I tools/proxy-dante-test.py /absolute/path/to/p2playd --trace
 
 The script starts a temporary, loopback-only Dante server with a bounded UDP relay
 port range, verifies a real SOCKS5 `UDP ASSOCIATE` and UDP request/response, then
-starts P2Play with that server as `PublisherProxy`. It checks that the daemon's DHT
+starts P2Play with that server as `PublisherProxy`. Both the standalone UDP probe and
+P2Play use `127.0.0.1` for the local DHT/peer fixtures; the smoke test does not depend
+on routing to the runner's outward-facing interface. It checks that the daemon's DHT
 traffic reaches a local DHT fixture through UDP relay and a BitTorrent peer handshake
 reaches a local peer fixture through TCP CONNECT. With `--trace`, the P2Play process
 is audited: direct peer/DHT destinations must not appear; only the Dante control
