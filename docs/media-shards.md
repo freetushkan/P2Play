@@ -152,6 +152,36 @@ the GitHub runner class and concurrent load can vary. The first green CI measure
 establish a repeatable baseline before introducing platform-sensitive performance
 budgets. Protocol and per-list storage limits remain hard assertions in the test.
 
+### First observed baseline (Linux CI run #103)
+
+The first green run, associated with master commit `8e4c8d68b35eac1588d8a2a8263cef2c5ef11f0d`,
+completed the full profile. These are observations from one GitHub-hosted runner, not
+performance guarantees or admission thresholds:
+
+| Measurement | Run #103 |
+| --- | ---: |
+| Publish time | 1.141 s |
+| Subscribe time | 6.776 s |
+| Search time | 0.0244 s |
+| Cold daemon start | 0.402 s |
+| Uploaded record text | 9,649,544 B |
+| Selected movie record segments | 2 / 413,283 B compressed |
+| Selected record files on subscriber | 414,270 B |
+| Publisher list directory, final | 2,585,059 B |
+| Subscriber data, final | 2,576,958 B |
+| Torrent working copy, before / after media | 414,049 B / 2,576,737 B |
+| Media cache after the two requests | 2,162,688 B |
+| Loopback RX/TX, initial subscription | 562,287 B / 562,287 B |
+| Loopback RX/TX, lazy media requests | 4,509,236 B / 4,509,236 B |
+| Subscriber RSS, before / after cold restart | 116,215,808 B / 76,402,688 B |
+
+The fixture contains 20,000 selected `movies` records and 512 unselected `series`
+records. The second shard is not downloaded or indexed. The reported media-cache size
+corresponds to the verified 2 MiB poster and 64 KiB description, stored in their two
+signed packs. RSS high-water marks were 124,342,272 B before restart and 134,705,152 B
+after restart; these runner-specific values are retained as context, not limits.
+
+
 ## HTTP API
 
 The existing native API authentication applies. Publishing, selection changes, local file
