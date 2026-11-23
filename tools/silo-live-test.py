@@ -331,6 +331,23 @@ class SiloServer:
         path = self.root / "silo.log"
         return path.read_text(errors="replace") if path.exists() else ""
 
+    def stop(self):
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                self.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                self.proc.wait(timeout=5)
+        if self.log and not self.log.closed:
+            self.log.close()
+
     def set_isolated_torrent_config(self):
         status, config, _ = self.call("/api/system/torrent-config")
         check(status == 200 and isinstance(config, dict), "read Silo torrent config")
