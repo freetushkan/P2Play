@@ -63,7 +63,7 @@ class Node:
         self.log = (self.data / "stdout.log").open("a")
         self.proc = subprocess.Popen(
             [self.daemon, "--data", str(self.data), "--port", str(self.port)],
-            stdout=self.log, stderr=subprocess.STDOUT, cwd=self.data)
+            stdout=self.log, stderr=subprocess.STDOUT, cwd=os.getcwd())
         for _ in range(200):
             if self.proc.poll() is not None:
                 raise RuntimeError("daemon exited: " + (self.data / "stdout.log").read_text()[-4000:])
