@@ -108,7 +108,9 @@ namespace p2p {
             bool requested = false;          // ask directory peers as well as the DHT
             int64_t pointerSeq = -1;          // signed high-water mark, including in-flight versions
             std::string pointer;             // verified BEP 44 envelope, ready to relay
-            bool wanted = false;             // subscribed, no version yet
+            bool wanted = false;             // subscribed directly or through a meta-list
+            bool directWanted = false;       // explicit user subscription, survives meta edits
+            std::set<std::string> metaParents; // signed meta-lists which reference this list
             std::vector<std::string> peers;  // hints: ip:port of nodes holding it
             bool importing = false;          // finished version queued on the joined worker
             lt::torrent_handle fetching;
@@ -133,7 +135,9 @@ namespace p2p {
         void meshRefresh(const std::string &pk);
         bool meshMediaRequest(const std::string &pk, const std::string &ih, const std::string &kind);
         void meshForget(const std::string &pk);
-        std::string meshSubscribe(const std::string &pk, const std::vector<std::string> &peers);
+        std::string meshSubscribe(const std::string &pk, const std::vector<std::string> &peers,
+                                  const std::string &metaParent = "");
+        void meshSyncMetaSubscriptions();
         void meshFetch(const std::string &pk, const lt::sha256_hash &ih, int64_t seq, const std::string &pointer);
         bool meshAlert(lt::alert *a);
         void meshTick(bool start);
