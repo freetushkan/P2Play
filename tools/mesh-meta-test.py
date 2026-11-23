@@ -171,8 +171,6 @@ def main():
         manifest_path.write_bytes(tampered)
 
         subscriber.start()
-        status, result = subscriber.call("/api/lists/import", {"dir": str(sources / enabled)})
-        check(status == 200, "ordinary child list imported")
         status, result = subscriber.call("/api/lists/import", {"dir": str(sources / nested)})
         check(status == 200, "standalone meta-list can be imported as a root")
         status, result = subscriber.call("/api/lists/import", {"dir": str(bad)})
@@ -188,8 +186,16 @@ def main():
         check(len(items) == 2 and items[0]["annotation"] == "Included family films" and
               items[0]["enabled"] is False and items[1]["enabled"] is True,
               "subscriber receives ordered annotations and enable flags")
-        check(enabled in by_key and disabled not in by_key,
-              "only enabled child is followed; disabled child is not subscribed")
+        check(enabled not in by_key and disabled not in by_key,
+              "child catalogs are not imported merely with the parent manifest")
+        status, enabled_state = subscriber.call(f"/api/lists/{enabled}/status")
+        status_disabled, disabled_state = subscriber.call(f"/api/lists/{disabled}/status")
+        check(status == 200 and enabled_state["net"]["wanted"] is True and
+              enabled_state["net"]["meta_child"] is True,
+              "enabled child is automatically queued as a one-level subscription")
+        check(status_disabled == 200 and disabled_state["net"]["wanted"] is False and
+              disabled_state["net"]["meta_child"] is False,
+              "disabled child is not queued for subscription")
         check(nested in by_key and by_key[nested]["type"] == "meta",
               "a meta-list may exist independently as a root")
 
@@ -197,8 +203,13 @@ def main():
         subscriber.start()
         lists = subscriber.call("/api/lists")[1].get("lists", [])
         by_key = {item["pubkey"]: item for item in lists}
-        check(collection in by_key and by_key[collection]["items"][1]["enabled"],
+        enabled_state = subscriber.call(f"/api/lists/{enabled}/status")[1]
+        disabled_state = subscriber.call(f"/api/lists/{disabled}/status")[1]
+        check(collection in by_key and by_key[collection]["items"][1]["enabled"] is False,
               "meta-list and child policy survive daemon restart")
+        check(enabled_state["net"]["wanted"] is True and enabled_state["net"]["meta_child"] is True and
+              disabled_state["net"]["wanted"] is False,
+              "enabled-child subscription policy is rebuilt on restart")
         print("PASS")
     finally:
         publisher.stop()
