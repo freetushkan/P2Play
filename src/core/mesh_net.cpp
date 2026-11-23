@@ -698,7 +698,7 @@ namespace p2p {
                 const bool wasMetaChild = !entry.second.metaParents.empty();
                 auto current = parents.find(entry.first);
                 if (current == parents.end()) {
-                    if (wasMetaChild && !entry.second.directWanted && entry.second.fetching.is_valid())
+                    if (wasMetaChild && !entry.second.directWanted)
                         cancel.push_back(entry.first);
                     entry.second.metaParents.clear();
                     entry.second.wanted = entry.second.directWanted;
