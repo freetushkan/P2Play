@@ -113,6 +113,13 @@ namespace p2p {
         }
 
         if (at(1) == "lists") {
+            if (get && n == 4 && at(3) == "status") {
+                MeshList l;
+                json j = m_mesh.list(at(2), l) ? card(l) : json{{"pubkey", at(2)}};
+                j["net"] = meshState(at(2));
+                res.json(200, j.dump());
+                return;
+            }
             if (n == 4 && (at(3) == "files" || at(3) == "policy")) {
                 MeshList l;
                 if (!m_mesh.list(at(2), l)) {
