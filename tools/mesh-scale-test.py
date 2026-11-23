@@ -304,8 +304,13 @@ def main():
         check(unselected and all(not f["selected"] and not f["present"] for f in unselected),
               "unselected series segments are not downloaded")
         subscriber_media_dir = Path(subscriber.data) / "lists" / pubkey / "media"
-        check(not list(subscriber_media_dir.glob("*.bin")),
-              "description/poster packs are not eagerly retained")
+        media_paths = {
+            item["kind"]: subscriber_media_dir / item["path"]
+            for item in media_packs
+        }
+        check(set(media_paths) == {"description", "poster"}
+              and all(not path.exists() for path in media_paths.values()),
+              "description/poster packs remain absent before either object is requested")
 
         query = urllib.parse.quote("Catalog Feature 01234")
         started = time.monotonic()
@@ -339,6 +344,13 @@ def main():
         check(poster_result[1] == poster, "lazy poster fetch returns verified 2 MiB bytes")
         check((cache_dir / poster_ref["sha256"]).stat().st_size == POSTER_LIMIT,
               "poster object cached by content hash")
+        check(media_paths["poster"].is_file()
+              and media_paths["poster"].stat().st_size == next(
+                  item["bytes"] for item in media_packs if item["kind"] == "poster"
+              ),
+              "poster request fetches and verifies its complete signed pack")
+        check(not media_paths["description"].exists(),
+              "description pack remains absent until its object is requested")
         started = time.monotonic()
         description_path = f"/api/catalog/{1:040x}/description?list={pubkey}"
         description_result = wait_for(
@@ -358,8 +370,13 @@ def main():
         metrics["torrent_working_copy_bytes_after_media"] = tree_bytes(network_dir)
         check(metrics["subscriber_media_cache_bytes"] == DESCRIPTION_LIMIT + POSTER_LIMIT,
               "lazy cache is bounded to the two requested media objects")
-        check(not any((subscriber_dir / "media").glob("*.bin")) if (subscriber_dir / "media").exists() else True,
-              "lazy media requests do not silently enable full-pack mirroring")
+        check(media_paths["description"].is_file()
+              and media_paths["description"].stat().st_size == next(
+                  item["bytes"] for item in media_packs if item["kind"] == "description"
+              ),
+              "description request fetches its complete signed pack")
+        check(media_paths["poster"].is_file(),
+              "previously fetched poster pack remains available")
 
         # Media is now verified and cached. Stop the publisher to prove that the
         # subscriber can cold-start and serve both objects entirely from local cache.
