@@ -854,6 +854,7 @@ namespace p2p {
         std::lock_guard<std::recursive_mutex> lifecycle(m_meshLifecycle);
         meshSeed(pk, nullptr);
         meshPut(pk);
+        meshSyncMetaSubscriptions();
     }
 
     json Core::meshState(const std::string &pk) {
