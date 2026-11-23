@@ -33,9 +33,11 @@ accepted. Therefore a meta-list may be used as a root collection, but its entrie
 ordinary leaf catalogs. A child cannot recursively introduce another meta-list and form a
 cycle.
 
-Disabling an entry prevents future automatic subscription after the updated parent version
-is accepted. It does not delete a child catalog that the user already subscribed to directly
-or that another enabled meta-list still references.
+Disabling an entry prevents new automatic subscription after the updated parent version
+is accepted, and cancels a pending automatic child fetch when there is no other enabled
+parent reference. It does not delete a child catalog already held locally; that catalog
+remains available as a local list. A direct subscription or another enabled meta-list also
+keeps its subscription active.
 
 ## API and client surface
 
