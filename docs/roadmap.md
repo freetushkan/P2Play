@@ -98,7 +98,8 @@ python3 -I tools/mediamesh-interop-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-selective-test.py build-linux/src/app/p2playd
 python3 -I tools/mesh-media-test.py build-linux/src/app/p2playd
-python3 -I tools/proxy-test.py build-linux/src/app/p2playd
+python3 -I tools/proxy-test.py build-linux/src/app/p2playd --trace
+python3 -I tools/proxy-dante-test.py build-linux/src/app/p2playd --trace
 python3 -I tools/ui-test.py build-linux/src/app/p2playd
 ```
 
