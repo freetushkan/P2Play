@@ -199,17 +199,36 @@ def main():
         check(nested in by_key and by_key[nested]["type"] == "meta",
               "a meta-list may exist independently as a root")
 
+        # Publish a new selection while the child request is still pending. The
+        # subscriber must drop the former automatic subscription and queue the new one.
+        status, result = publisher.call(endpoint, {"items": [
+            {"pubkey": enabled, "annotation": "Temporarily hidden", "enabled": False},
+            {"pubkey": disabled, "annotation": "Curated documentaries", "enabled": True}
+        ]})
+        check(status == 200, "meta-list child can be disabled in a later version")
+        status, changed = publisher.call(f"/api/publish/{collection}/release", {})
+        check(status == 200 and changed.get("seq") == 4, "changed child selection is signed")
+        changed_source = root / "changed-meta"
+        shutil.copytree(publisher.data / "lists" / collection, changed_source)
+        status, result = subscriber.call("/api/lists/import", {"dir": str(changed_source)})
+        check(status == 200, "subscriber accepts newer meta-list selection")
+        enabled_state = subscriber.call(f"/api/lists/{enabled}/status")[1]
+        disabled_state = subscriber.call(f"/api/lists/{disabled}/status")[1]
+        check(enabled_state["net"]["wanted"] is False and enabled_state["net"]["meta_child"] is False and
+              disabled_state["net"]["wanted"] is True and disabled_state["net"]["meta_child"] is True,
+              "new signed selection cancels the disabled child and queues the enabled child")
+
         subscriber.stop()
         subscriber.start()
         lists = subscriber.call("/api/lists")[1].get("lists", [])
         by_key = {item["pubkey"]: item for item in lists}
         enabled_state = subscriber.call(f"/api/lists/{enabled}/status")[1]
         disabled_state = subscriber.call(f"/api/lists/{disabled}/status")[1]
-        check(collection in by_key and by_key[collection]["items"][1]["enabled"] is False,
-              "meta-list and child policy survive daemon restart")
-        check(enabled_state["net"]["wanted"] is True and enabled_state["net"]["meta_child"] is True and
-              disabled_state["net"]["wanted"] is False,
-              "enabled-child subscription policy is rebuilt on restart")
+        check(collection in by_key and by_key[collection]["items"][0]["enabled"] is False,
+              "latest meta-list selection survives daemon restart")
+        check(enabled_state["net"]["wanted"] is False and disabled_state["net"]["wanted"] is True and
+              disabled_state["net"]["meta_child"] is True,
+              "latest child-subscription policy is rebuilt on restart")
         print("PASS")
     finally:
         publisher.stop()
