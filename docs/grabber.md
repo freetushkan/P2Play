@@ -16,15 +16,13 @@ formats and sample files will be supplied later; do not invent them now.
 
 ## Input formats
 
-The grabber must parse several source formats. Their exact list, fixtures and
-sample files are intentionally pending; concrete format support is not guessed
-before examples are supplied.
-
-Adapters should map available source fields into a common item model: stable
-source ID/GUID, infohash or magnet, title, publication time, size, category/tags,
-tracker/source identity, description, poster/image hints and useful source
-metadata. Malformed input and invalid hashes must be reported, not silently
-converted into publishable records.
+The DOCX names these adapter families; sample fixtures are pending:
+RuTracker XML/HTML dumps, Rutor JSON dumps, dirty line-oriented text dumps
+(non-media entries may be tagged Other), RSS feeds, tracker pages and APIs.
+Adapters keep an ID/date checkpoint and fetch only new/changed entries. Normalize
+hashes to lowercase hex, title, size, file count, dates and categories mapped to
+publisher tags. Deduplicate by infohash and resolve conflicts through configured
+source priorities. Malformed input and invalid hashes must be reported.
 
 ## Recent releases: RSS and Torznab
 
@@ -73,8 +71,9 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
 
 ## Normalization and publishing
 
-- Normalize hashes, magnets, title, tags/categories, timestamps and tracker URLs
-  into the P2Play publisher's accepted record model.
+- Normalize hashes, title, size, file count, dates, tags and tracker URLs.
+- Optional enrichment: missing metadata via BEP 9; poster WebP thumbnails
+  (initial target 300 px / 30 KiB); strip markup from descriptions (initial 2 KiB).
 - Preserve safe provenance (source/indexer/feed and GUID) for resuming polls and
   diagnosing duplicates; never publish tracker credentials.
 - Validate description/poster MIME, size and content; upload through existing
@@ -88,7 +87,8 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
 
 - Use human-editable local configuration for sources, interval, categories, limits,
   paths and secrets (select exact config format during implementation).
-- Support dry-run/preview, one-shot import and repeatable polling.
+- Support dry-run/preview, one-shot import and repeatable polling. Schedule via
+  systemd timer; run through the same SOCKS5 or WireGuard/netns tunnel as publisher.
 - Persist checkpoints, deduplication state and retry scheduling.
 - Bound timeouts, result count, download size and concurrency; respect rate limits.
 - Log source status without keys, cookies, credential-bearing URLs or private data.
