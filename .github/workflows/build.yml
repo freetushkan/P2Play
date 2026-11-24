@@ -31,6 +31,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           sudo apt-get update || true
           sudo apt-get install -y cmake ninja-build xz-utils curl python3-pip dante-server strace iproute2 nftables util-linux
           pip3 install --break-system-packages libtorrent
@@ -46,6 +47,7 @@ jobs:
 
       - name: Build
         run: |
+          exec > >(tee -a job.log) 2>&1
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           cmake --build build --target p2play_release -j$(nproc)
 
@@ -53,6 +55,7 @@ jobs:
       # than the file (pieces dropped and downloaded again), disk storage
       - name: Core test
         run: |
+          exec > >(tee -a job.log) 2>&1
           python3 tools/core-test.py build/src/app/p2playd
           python3 tools/core-test.py build/src/app/p2playd --cache16
           python3 tools/core-test.py build/src/app/p2playd --disk
@@ -66,6 +69,7 @@ jobs:
 
       - name: MediaMesh stage 3 integration
         run: |
+          exec > >(tee -a job.log) 2>&1
           c++ -std=c++17 -Wall -Wextra -Werror -Isrc/core tools/mesh-queue-test.cpp -o /tmp/mesh-queue-test
           /tmp/mesh-queue-test
           python3 -I tools/peer-items-test.py build/src/app/p2playd
@@ -83,12 +87,14 @@ jobs:
       # against a local P2Play catalog, tracker and seeder.
       - name: Live Silo MediaMesh playback
         run: |
+          exec > >(tee -a job.log) 2>&1
           python3 -c "import libtorrent; print('libtorrent import OK')"
           python3 tools/silo-live-test.py build/src/app/p2playd
 
       # The storage harness reads Makefile compile flags; keep this separate from Ninja.
       - name: MediaMesh storage sanitizers
         run: |
+          exec > >(tee -a job.log) 2>&1
           cmake -S . -B build-mesh-storage -G 'Unix Makefiles' -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           cmake --build build-mesh-storage --target torrent-rasterbar -j$(nproc)
           python3 -I tools/mesh-media-test.py --build-dir build-mesh-storage --sanitize
@@ -106,6 +112,9 @@ jobs:
           path: build/symbols/*
           retention-days: 90
 
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play Linux" job.log
   switch:
     runs-on: ubuntu-24.04
     container: devkitpro/devkita64:latest
@@ -117,6 +126,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           apt-get update || true
           apt-get install -y cmake curl xz-utils patch
 
@@ -131,21 +141,12 @@ jobs:
 
       - name: Build
         run: |
+          exec > >(tee -a job.log) 2>&1
           cmake -S . -B build -G "Unix Makefiles" -DPLATFORM_SWITCH=ON -DCMAKE_BUILD_TYPE=Release \
             -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2play_release -j$(nproc) -- -k 2>&1 | tee build.log
           /opt/devkitpro/devkitA64/bin/aarch64-none-elf-readelf -S build/symbols/p2play.elf | grep -q "\.debug_info"
-
-      - name: Error summary
-        if: failure()
-        run: |
-          {
-            echo "### Switch: unique errors"
-            echo '```'
-            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -167,6 +168,9 @@ jobs:
           path: build/symbols/*
           retention-days: 90
 
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play Switch" job.log
   ps4:
     runs-on: ubuntu-24.04
     steps:
@@ -177,6 +181,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           sudo apt-get update || true
           sudo apt-get install -y pacman-package-manager libarchive-tools cmake make curl xz-utils
 
@@ -204,22 +209,13 @@ jobs:
 
       - name: Build
         run: |
+          exec > >(tee -a job.log) 2>&1
           export OPENORBIS=/opt/pacbrew/ps4/openorbis
           cmake -S . -B build -G "Unix Makefiles" -DPLATFORM_PS4=ON -DCMAKE_BUILD_TYPE=Release \
             -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2play_release -j$(nproc) -- -k 2>&1 | tee build.log
           ci/ps4-check-sections.sh build/src/app/p2play
-
-      - name: Error summary
-        if: failure()
-        run: |
-          {
-            echo "### PS4: unique errors"
-            echo '```'
-            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -242,6 +238,9 @@ jobs:
           path: build/symbols/*
           retention-days: 90
 
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play PS4" job.log
   ps5:
     runs-on: ubuntu-24.04
     env:
@@ -254,6 +253,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           sudo apt-get update || true
           sudo apt-get install -y clang-18 lld-18 build-essential cmake curl xz-utils wget
 
@@ -273,21 +273,12 @@ jobs:
 
       - name: Build
         run: |
+          exec > >(tee -a job.log) 2>&1
           /opt/ps5-payload-sdk/bin/prospero-cmake -S . -B build -DPLATFORM_PS5=ON -DCMAKE_BUILD_TYPE=Release \
             -DPS5_PAYLOAD_SDK=/opt/ps5-payload-sdk -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           set -o pipefail
           cmake --build build --target p2play_release -j$(nproc) -- -k 2>&1 | tee build.log
           readelf -S build/symbols/p2play.elf | grep -q "\.debug_info"
-
-      - name: Error summary
-        if: failure()
-        run: |
-          {
-            echo "### PS5: unique errors"
-            echo '```'
-            grep -E "error:|error [A-Z]|undefined (symbol|reference)" build.log | sed -E 's#^.*/(third_party|src|compat|boost)/#\1/#' | sort | uniq -c | sort -rn | head -60
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -310,6 +301,10 @@ jobs:
           retention-days: 90
 
   # PS5 package: a PS4 "gd" package which sends p2play.elf to elfldr (src/app/ps5/launcher)
+
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play PS5" job.log
   ps5-pkg:
     needs: ps5
     runs-on: ubuntu-24.04
@@ -319,6 +314,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           sudo apt-get update || true
           sudo apt-get install -y pacman-package-manager libarchive-tools cmake make
 
@@ -339,6 +335,7 @@ jobs:
 
       - name: Build
         run: |
+          exec > >(tee -a job.log) 2>&1
           export OPENORBIS=/opt/pacbrew/ps4/openorbis
           cmake -S src/app/ps5/launcher -B build-ps5pkg \
             -DCMAKE_TOOLCHAIN_FILE=${OPENORBIS}/cmake/ps4.cmake \
@@ -357,6 +354,10 @@ jobs:
           path: release/*.pkg
 
   # Android: one APK (arm64-v8a, armeabi-v7a), p2playd run by a foreground service
+
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play PS5 package" job.log
   android:
     runs-on: ubuntu-24.04
     steps:
@@ -375,6 +376,7 @@ jobs:
 
       - name: Create build environment
         run: |
+          exec > >(tee -a job.log) 2>&1
           sudo apt-get update || true
           sudo apt-get install -y cmake ninja-build xz-utils curl
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
@@ -393,6 +395,7 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
+          exec > >(tee -a job.log) 2>&1
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/p2play.keystore"
             echo "ANDROID_KEYSTORE=$RUNNER_TEMP/p2play.keystore" >> $GITHUB_ENV
@@ -404,19 +407,10 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          exec > >(tee -a job.log) 2>&1
           echo "NDK: $ANDROID_NDK_HOME"
           set -o pipefail
           ci/android-apk.sh "$BOOST_HEADERS" 2>&1 | tee build.log
-
-      - name: Error summary
-        if: failure()
-        run: |
-          {
-            echo "### Android: unique errors"
-            echo '```'
-            grep -E "error:|error [A-Z]|undefined (symbol|reference)|FAILED|What went wrong" -A3 build.log | sed -E 's#^.*/(third_party|src|compat|boost|android)/#\1/#' | sort | uniq -c | sort -rn | head -60
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
@@ -438,3 +432,7 @@ jobs:
           path: |
             release/arm64-v8a
             release/armeabi-v7a
+
+      - name: Build diagnostics summary
+        if: always()
+        run: bash ci/summarize-diagnostics.sh "P2Play Android" job.log
