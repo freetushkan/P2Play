@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "publisher": {
+    "category_map": {},
+    "shard_policy": {
+      "default": "default",
+      "category_map": {}
+    }
+  },
+  "sources": [
+    {
+      "id": "torrents-csv-data",
+      "type": "csv",
+      "enabled": false,
+      "priority": 10,
+      "repo": "../sources/torrents-csv-data",
+      "data_file": "torrents.csv",
+      "date_field": "created_unix",
+      "filters": {
+        "title_regex": {
+          "mode": "any",
+          "include": [
+            "(?i)\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob|iso)(?:$|[\\s)\\]])",
+            "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b"
+          ],
+          "exclude": []
+        }
+      }
+    },
+    {
+      "id": "rutor",
+      "type": "rutor",
+      "enabled": false,
+      "priority": 20,
+      "path": "../sources/rutor.ls",
+      "size_unit": "binary",
+      "remote_enabled": false,
+      "url": "",
+      "timeout": 30
+    },
+    {
+      "id": "rutracker",
+      "type": "rutracker",
+      "enabled": false,
+      "priority": 30
+    },
+    {
+      "id": "jackett-torznab",
+      "type": "jackett-torznab",
+      "enabled": false,
+      "priority": 40
+    }
+  ]
+}

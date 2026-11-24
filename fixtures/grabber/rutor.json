@@ -1,0 +1,20 @@
+[
+  {
+    "Hash": "cccccccccccccccccccccccccccccccccccccccc",
+    "Magnet": "magnet:?xt=urn:btih:cccccccccccccccccccccccccccccccccccccccc&tr=udp%3A%2F%2Ftracker.example%3A80%2Fannounce&tr=https%3A%2F%2Ftracker.example%2Fannounce",
+    "Title": "Rutor title",
+    "CreateDate": "2024-01-02T03:04:05+02:00",
+    "Size": "1.5 GB",
+    "Categories": ["Movies"],
+    "Seed": 4,
+    "Peer": 2
+  },
+  {
+    "Hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "Magnet": "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "Title": "Higher priority title",
+    "CreateDate": "2024-01-03T00:00:00Z",
+    "Size": "2 MB",
+    "Categories": ["Movies"]
+  }
+]
