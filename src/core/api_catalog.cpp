@@ -334,6 +334,17 @@ namespace p2p {
                 return;
             }
             res.json(200, json{{"count", count}, {"pending", m_mesh.pending(l.pubkey)}}.dump());
+        } else if (m == "POST" && at(3) == "replace") {
+            int64_t seq = 0;
+            int inputRecords = 0;
+            const std::string err = m_mesh.replace(l.pubkey, req.body, seq, inputRecords);
+            if (!err.empty()) { error(res, 400, err); return; }
+            meshReleased(l.pubkey);
+            m_mesh.list(l.pubkey, l);
+            json j = card(l);
+            j["input_records"] = inputRecords;
+            j["net"] = meshState(l.pubkey);
+            res.json(200, j.dump());
         } else if (m == "POST" && (at(3) == "release" || at(3) == "snapshot")) {
             int64_t seq = 0;
             const std::string err = at(3) == "snapshot" ? m_mesh.compact(l.pubkey, seq) : m_mesh.release(l.pubkey, seq);

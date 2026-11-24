@@ -91,6 +91,8 @@ namespace p2p {
         bool record(const std::string &ih, MeshRecord &out) const;
         std::string create(const std::string &name, const std::string &desc, std::string &pubkey, bool meta = false);
         int addPending(const std::string &pubkey, const std::string &ndjson, std::string &error);
+        std::string replace(const std::string &pubkey, const std::string &ndjson,
+                            int64_t &seq, int &inputRecords);
         int pending(const std::string &pubkey) const;
         std::string setMetaItems(const std::string &pubkey, const std::vector<MeshMetaItem> &items);
         bool hasPendingMeta(const std::string &pubkey) const;
@@ -124,7 +126,8 @@ namespace p2p {
         };
         std::string read(const std::string &dir, Loaded &out, const std::string *manifest = nullptr,
                          const MeshPolicy *policyOverride = nullptr) const;
-        std::string publish(const std::string &pubkey, bool snapshot, int64_t &seq);
+        std::string publish(const std::string &pubkey, bool snapshot, int64_t &seq,
+                            const std::string *replacement = nullptr, int *inputRecords = nullptr);
         void rebuild();
         void prune(const std::string &pubkey, const Loaded &version, const MeshPolicy &policy);
         std::string m_dir;

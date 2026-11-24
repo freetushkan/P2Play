@@ -682,19 +682,32 @@ namespace p2p {
     std::string Mesh::release(const std::string &pubkey, int64_t &seq) { return publish(pubkey, false, seq); }
     std::string Mesh::compact(const std::string &pubkey, int64_t &seq) { return publish(pubkey, true, seq); }
 
-    std::string Mesh::publish(const std::string &pubkey, bool snapshot, int64_t &seq) {
+    std::string Mesh::replace(const std::string &pubkey, const std::string &ndjson,
+                              int64_t &seq, int &inputRecords) {
+        inputRecords = 0;
+        return publish(pubkey, true, seq, &ndjson, &inputRecords);
+    }
+
+    std::string Mesh::publish(const std::string &pubkey, bool snapshot, int64_t &seq,
+                              const std::string *replacement, int *inputRecords) {
         std::lock_guard<std::mutex> writer(m_writeMutex);
         lt::dht::public_key pk; lt::dht::secret_key sk; if (!keys(m_dir, pubkey, pk, sk)) return "not a list of this node";
         const auto dir = listDir(pubkey), staging = localDir(m_dir, pubkey) + "/staging";
         FileTransaction tx;
         Loaded old; auto err = read(dir, old); if (!err.empty()) return err;
+        if (replacement && old.card.meta) return "meta-lists cannot publish catalog records";
         for (const auto &f : old.files) if (f.kind == "records" && (!f.selected || !f.present)) return "publishing needs all record shards";
         std::string raw; if (!readFile(dir + "/manifest.ben", raw, kMaxManifest)) return "no manifest";
         lt::error_code ec; auto m = lt::bdecode(raw, ec); lt::entry e; e = m;
         if (old.card.seq == INT64_MAX) return "sequence exhausted";
         std::string pending;
         auto pendingPath = dir + "/pending.ndjson";
-        if (fileSize(pendingPath) >= 0 && !readFile(pendingPath, pending, kMaxVersionTextBytes)) return "pending too large";
+        if (replacement) {
+            if (replacement->size() > kMaxVersionTextBytes) return "replacement catalog is too large";
+            pending = *replacement;
+        } else if (fileSize(pendingPath) >= 0 && !readFile(pendingPath, pending, kMaxVersionTextBytes)) {
+            return "pending too large";
+        }
         const auto pendingMetaPath = localDir(m_dir, pubkey) + "/pending-meta.json";
         const bool hasPendingMeta = fileSize(pendingMetaPath) >= 0;
         std::string pendingMetaRaw;
@@ -706,7 +719,7 @@ namespace p2p {
             if (!old.card.meta) return "list is not a meta-list";
         }
         if (!snapshot && pending.empty() && !hasPendingMeta) return "no records or meta changes to release";
-        if (snapshot && !pending.empty()) return "release pending records before compaction";
+        if (snapshot && !pending.empty() && !replacement) return "release pending records before compaction";
         if (snapshot && hasPendingMeta) return "release pending meta changes before compaction";
         if (hasPendingMeta) {
             lt::entry::list_type entries;
@@ -732,7 +745,32 @@ namespace p2p {
             e["meta"] = entries;
         }
         std::map<std::string, std::string> texts;
-        if (snapshot) {
+        int replacementCount = 0;
+        if (snapshot && replacement) {
+            std::set<std::string> seen;
+            size_t pos = 0, lineNo = 0;
+            while (pos < pending.size()) {
+                auto end = pending.find('\n', pos);
+                if (end == std::string::npos) end = pending.size();
+                ++lineNo;
+                if (end - pos > kMaxLine) return "replacement line " + std::to_string(lineNo) + ": too long";
+                auto line = pending.substr(pos, end - pos);
+                pos = end + 1;
+                if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+                MeshRecord r;
+                std::string removed;
+                err = parseRecord(json::parse(line, nullptr, false), r, removed);
+                if (!err.empty()) return "replacement line " + std::to_string(lineNo) + ": " + err;
+                if (!removed.empty()) return "replacement accepts live records only; omit deleted infohashes";
+                if (!seen.insert(r.ih).second) return "replacement contains duplicate infohash " + r.ih;
+                if (!r.date) r.date = time(nullptr);
+                auto normalized = recordJson(r).dump();
+                if (normalized.size() > kMaxLine) return "replacement record too long";
+                texts[r.shard] += normalized + "\n";
+                ++replacementCount;
+            }
+            e["segs"] = lt::entry::list_type();
+        } else if (snapshot) {
             // Repack only live slices into fresh append-only packs. Never mutate an old
             // pack in place: record refs and pack descriptors switch in one signed commit.
             std::map<std::string, std::string> active;
@@ -844,6 +882,7 @@ namespace p2p {
         if (!writeFile(dir + "/manifest.ben", candidate)) return "cannot write manifest";
         tx.committed = true;
         seq = next.card.seq; next.card.updated = time(nullptr);
+        if (inputRecords) *inputRecords = replacementCount;
         std::remove(pendingPath.c_str());
         if (hasPendingMeta) std::remove(pendingMetaPath.c_str());
         cleanDirectory(staging, {});

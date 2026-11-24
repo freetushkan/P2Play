@@ -171,6 +171,14 @@ class P2PlayApi:
             raise PublisherError("server returned an invalid import response")
         return value
 
+    def replace_records(self, pubkey: str, records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        body = "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+                       for row in records).encode("utf-8")
+        value = self.request("POST", f"/api/publish/{pubkey}/replace", body, "application/x-ndjson")
+        if not isinstance(value, dict):
+            raise PublisherError("server returned an invalid replacement response")
+        return value
+
     def release(self, pubkey: str) -> Dict[str, Any]:
         value = self.request("POST", f"/api/publish/{pubkey}/release", b"{}", "application/json")
         if not isinstance(value, dict):
@@ -517,7 +525,8 @@ def normalize_row(raw: Any, line: int, base_dir: Path, whitelist: set,
 
 
 def prepare_import(path: str, whitelist: set, category_map: Dict[str, Any],
-                   default_shard: str, shard_map: Optional[Dict[str, str]] = None) -> PreparedImport:
+                   default_shard: str, shard_map: Optional[Dict[str, str]] = None,
+                   allow_empty: bool = False) -> PreparedImport:
     source = Path(path)
     try:
         if source.stat().st_size > MAX_IMPORT_BYTES:
@@ -571,7 +580,7 @@ def prepare_import(path: str, whitelist: set, category_map: Dict[str, Any],
         uploads.append(media)
         if len(rows) > MAX_RECORDS:
             raise PublisherError(f"input exceeds {MAX_RECORDS} records")
-    if not rows:
+    if not rows and not allow_empty:
         raise PublisherError("input contains no publishable records")
     return PreparedImport(rows, uploads, duplicates, dropped_fields)
 
@@ -612,13 +621,18 @@ def publish_import(args: Any) -> int:
     if not SHARD_RE.fullmatch(default_shard):
         raise PublisherError("--shard/profile default must match [a-z0-9_-] and be 1..64 characters")
     shard_map = {str(k).casefold(): v for k, v in shard_policy.get("category_map", {}).items()}
-    prepared = prepare_import(args.import_path, whitelist, mapping, default_shard, shard_map)
+    prepared = prepare_import(args.import_path, whitelist, mapping, default_shard, shard_map,
+                              allow_empty=args.replace)
     preview(prepared, args.dry_run)
+    if args.replace:
+        print("FULL REPLACEMENT: records absent from this file will be deleted.")
     if args.dry_run:
         print("No network requests made.")
         return 0
     if bool(args.list) == bool(args.create_list):
         raise PublisherError("choose exactly one of --list PUBKEY or --create-list NAME")
+    if args.replace and args.create_list:
+        raise PublisherError("--replace requires an existing --list")
     if args.create_list and (
         not args.create_list.strip() or len(args.create_list.encode("utf-8")) > 256
     ):
@@ -645,18 +659,24 @@ def publish_import(args: Any) -> int:
     for row, items in zip(prepared.records, prepared.uploads):
         for item in items:
             row[item.field] = api.upload_media(pubkey, item)
-    result = api.add_records(pubkey, prepared.records)
-    if result.get("count") != len(prepared.records):
-        raise PublisherError(
-            "server accepted an unexpected record count; inspect publisher status before retrying"
-        )
-    print(f"Staged {result.get('count')} records in {pubkey}; pending: {result.get('pending')}")
-    if args.release:
-        released = api.release(pubkey)
-        print(f"Released sequence {released.get('seq')} ({released.get('records')} live records)")
+    if args.replace:
+        released = api.replace_records(pubkey, prepared.records)
+        if released.get("input_records") != len(prepared.records):
+            raise PublisherError("publisher replaced an unexpected record count; inspect list status")
+        print(f"Replaced catalog {pubkey} at sequence {released.get('seq')} ({released.get('records')} live records)")
     else:
-        status = api.status(pubkey)
-        print(f"Release not requested; pending: {status.get('pending')}")
+        result = api.add_records(pubkey, prepared.records)
+        if result.get("count") != len(prepared.records):
+            raise PublisherError(
+                "server accepted an unexpected record count; inspect publisher status before retrying"
+            )
+        print(f"Staged {result.get('count')} records in {pubkey}; pending: {result.get('pending')}")
+        if args.release:
+            released = api.release(pubkey)
+            print(f"Released sequence {released.get('seq')} ({released.get('records')} live records)")
+        else:
+            status = api.status(pubkey)
+            print(f"Release not requested; pending: {status.get('pending')}")
     print("The private Ed25519 key stayed on the P2Play server.")
     return 0
 
@@ -682,8 +702,11 @@ def build_parser():
     publish.add_argument("--category-map", help="JSON object mapping category names to tag(s); overrides profile")
     publish.add_argument("--field-whitelist", help="JSON array of canonical fields to retain; overrides profile")
     publish.add_argument("--shard", help="default shard for records; overrides profile")
-    publish.add_argument("--release", action="store_true",
-                         help="sign and publish the next version after import")
+    mode = publish.add_mutually_exclusive_group()
+    mode.add_argument("--release", action="store_true",
+                      help="sign and publish the next append-only version after import")
+    mode.add_argument("--replace", action="store_true",
+                      help="replace the complete existing catalog; omitted records are deleted")
     publish.add_argument("--dry-run", action="store_true",
                          help="validate and summarize input without contacting the server")
     publish.add_argument("--allow-insecure-http", action="store_true",
