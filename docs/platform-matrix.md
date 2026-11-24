@@ -7,11 +7,11 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
 
 | Platform | P2Play runtime | pPlay integration | Silo MediaMesh plugin |
 | --- | --- | --- | --- |
-| Linux | Standalone `p2playd` | External `P2Play` client exists; `P2Play_embedded` is planned | Supported with an external P2Play daemon; Linux live acceptance test passes |
-| Android | Standalone P2Play server is packaged in the Android APK and launched as a foreground service | External client builds; `P2Play_embedded` is planned | Android Silo server binaries and plugin runtime source exist; installation/use with an Android P2Play service is plausible but not yet device-verified |
-| Switch | No standalone daemon is part of the target product layout | `P2Play_embedded` is the target | Not a target |
-| PS4 | No standalone daemon is part of the target product layout | `P2Play_embedded` is the target | Not a target |
-| PS5 | No standalone daemon is part of the target product layout | `P2Play_embedded` is the target | Not a target |
+| Linux | Standalone `p2playd` | External `P2Play` client and `P2Play_embedded` are implemented; embedded core passes CI, device lifecycle acceptance pending | Supported with an external P2Play daemon; Linux live acceptance test passes |
+| Android | Standalone P2Play server is packaged in the Android APK and launched as a foreground service | External client and `P2Play_embedded` are implemented; embedded core is included in Android CI, device acceptance pending | Android Silo server binaries and plugin runtime source exist; installation/use with an Android P2Play service is plausible but not yet device-verified |
+| Switch | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
+| PS4 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
+| PS5 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
 
 ## Current evidence
 
@@ -29,11 +29,16 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
   However, no Android device/emulator acceptance test currently proves plugin
   installation, route mounting or the local P2Play HTTP call. Treat this as a
   feasible candidate, not a completed deployment.
-- pPlay PR #6 established the PR workflow for Linux, Android, Switch, PS4 and PS5.
-  Subsequent PR #8 (per-network user management) and PR #9 (per-user progress sync,
-  duration fallback and backend isolation) also passed that five-platform workflow.
-  External `P2Play` is implemented; the targets do not yet link `p2play_core` and there is
-  no `P2Play_embedded` module in pPlay today.
+- pPlay `dev` commit `61e9e8513b6f1f2e87af2c873b1cfceb49fc66bd` includes
+  `src/net/p2play_embedded.cpp/.h`, the separate `P2Play_embedded` mode and static
+  `p2play_core` linkage. `ci/prepare-p2play-embedded.sh` clones P2Play and checks out
+  the pinned core commit `b6c7b74916e36a873663fa55d27a9aaa209e7cfe`; standalone
+  `p2playd` is not built into pPlay. The embedded lifecycle starts lazily, stops accepting
+  new requests on deactivation, drains active HTTP/stream requests before stopping and
+  uses a dedicated data directory. The C API log callback is routed into `pplay.log`
+  with the `P2Play:` prefix; owner password is applied through
+  `p2play_config.owner_password`. The full five-platform pPlay workflow and PS5 package
+  job passed in run #1475 on this exact `dev` SHA.
 - The Silo MediaMesh plugin is an HTTP client for an external P2Play daemon. The
   current Goja plugin API exposes no process launcher or `p2play_core` C API.
   To let the plugin manage its own local core, add a host-level native lifecycle
@@ -46,8 +51,9 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
    foreground service on the device. The Silo MediaMesh plugin can be configured
    to call the daemon through `http://127.0.0.1:8090` when Silo and P2Play run
    on that same device, or use a reachable remote daemon.
-2. **pPlay embedded (planned):** link the static `p2play_core` into pPlay's
-   Android native application and control it through the pPlay network module.
+2. **pPlay embedded (implemented):** the Android native application links the
+   static `p2play_core` through the pPlay network module; build integration is covered
+   by the five-platform CI. Device-level lifecycle/LAN acceptance remains pending.
 3. **Silo-managed embedded core (not implemented):** would need a native host
    lifecycle API or launcher. Plugin JavaScript alone cannot spawn a daemon or
    call the P2Play C API with the bindings currently exposed.
@@ -63,4 +69,5 @@ background operation, stop/restart and persistent data.
 - Android targets pPlay embedded and may also host the Silo plugin connected to a
   separately running P2Play Android service; the latter remains unverified.
 - Switch, PS4 and PS5 target the embedded pPlay core, not a separately deployed
-  Silo/plugin stack.
+  Silo/plugin stack. Embedded code/build integration is complete; physical-device
+  LAN and lifecycle acceptance remains separate from CI build evidence.
