@@ -241,24 +241,31 @@
 - [ ] Репрезентативный большой набор данных и измерения размера сегментов, индекса,
       паков и времени поиска; на их основе уточнить лимиты клиентов.
 
-### Этап 6: улучшение входящей P2P-достижимости за NAT
+### Этап 6: проверка входящей P2P-достижимости за NAT
 
 - [x] Разделить два разных порта/назначения: HTTP API ядра слушает wildcard
       (`INADDR_ANY`) и доступен в LAN по обычной маршрутизации/firewall. Для него
-      не требуется проброс портов на роутере. Автоматический mapping относится к
-      libtorrent peer-listen портам (TCP и UDP/uTP), чтобы другие узлы могли сами
-      устанавливать входящее P2P-соединение с клиентом за NAT.
-- [ ] Проверить и документировать действующее поведение UPnP/NAT-PMP в обычном
-      non-console режиме, статусы mapping и отказоустойчивость при отключении/
-      смене интерфейса. Mapping peer-портов полезен: клиент за NAT сможет принимать
-      новые входящие соединения и надёжнее раздавать MediaMesh данные, а не только
-      отвечать по уже установленным исходящим соединениям. Это улучшение, не
-      prerequisite для API или исходящих DHT/peer соединений.
-- [ ] Исследовать PCP отдельно: определить, поддерживается ли он используемой
-      версией libtorrent и какие нужны API/тесты. Не считать PCP реализованным,
-      пока нет подтверждённого mapping и тестов на совместимом router/NAT.
-      SOCKS proxy и console режимы, где автоматический mapping намеренно отключён,
-      должны сохранить отсутствие прямого обхода proxy/политики.
+      не требуется проброс портов на роутере. Mapping относится к libtorrent peer-
+      listen портам (TCP и UDP/uTP), а не к HTTP API.
+- [x] Автоматический mapping уже включён в обычном non-console режиме по умолчанию:
+      `Core` устанавливает `enable_upnp` и `enable_natpmp`, если не задан
+      `DisableUPNP=true`. Это распространяется и на embedded Linux/Android
+      (`console=0`). UPnP пробует пробросить BitTorrent listen и DHT порты.
+      В закреплённом libtorrent 2.0.11 NAT-PMP mapper сначала отправляет PCP request,
+      а при неподдерживаемой версии откатывается к NAT-PMP; отдельная интеграция PCP
+      в P2Play не нужна. См. исходники
+      [P2Play core](https://github.com/freetushkan/P2Play/blob/master/src/core/core.cpp)
+      и [pinned libtorrent NAT-PMP/PCP mapper](https://github.com/arvidn/libtorrent/blob/9d7443f467147d1784fb7516d2a882db1abb5a8b/src/natpmp.cpp).
+- [ ] Runtime acceptance: проверить реальные mapping success/error/renewal и входящие
+      TCP/uTP соединения на роутерах с UPnP, PCP и NAT-PMP; проверить поведение при
+      смене интерфейса и перезапуске сетевого стека. Port mapping даёт возможность
+      узлам за NAT принимать новые peer-соединения и устойчивее раздавать MediaMesh,
+      а не только отвечать по уже установленным исходящим соединениям. За CGNAT PCP
+      поможет только при поддержке со стороны сети оператора.
+- [x] SOCKS proxy и console режимы сохраняют отключение UPnP/NAT-PMP/PCP: mapping
+      не должен обходить proxy/firewall политику. В console-режиме mapping отключён
+      намеренно; это отдельное ограничение платформ, а не отсутствие поддержки
+      протокола в используемом libtorrent.
       Справка: [libtorrent UPnP/NAT-PMP settings](https://libtorrent.org/reference-Settings.html)
       и [session port mapping](https://libtorrent.org/reference-Session.html).
 
