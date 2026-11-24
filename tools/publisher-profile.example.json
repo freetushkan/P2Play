@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "publisher": {
+    "field_whitelist": [
+      "ih",
+      "title",
+      "shard",
+      "date",
+      "size",
+      "files",
+      "tags",
+      "trackers",
+      "description_ref",
+      "poster_ref",
+      "del"
+    ],
+    "category_map": {
+      "Movie": [
+        "movie",
+        "video"
+      ],
+      "TVShow": [
+        "series",
+        "video"
+      ],
+      "CartoonMovie": [
+        "animation",
+        "movie"
+      ]
+    },
+    "shard_policy": {
+      "default": "default",
+      "category_map": {
+        "Movie": "movies",
+        "TVShow": "series",
+        "CartoonMovie": "animation"
+      }
+    }
+  },
+  "sources": [
+    {
+      "id": "torrents-csv-data",
+      "enabled": true,
+      "priority": 10
+    },
+    {
+      "id": "rutor",
+      "enabled": true,
+      "priority": 20
+    },
+    {
+      "id": "rutracker",
+      "enabled": false,
+      "priority": 30
+    },
+    {
+      "id": "jackett-torznab",
+      "enabled": true,
+      "priority": 40
+    }
+  ]
+}

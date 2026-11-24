@@ -218,6 +218,67 @@ def load_whitelist(path: Optional[str]) -> set:
     return allowed
 
 
+def load_profile(path: Optional[str]) -> Dict[str, Any]:
+    if not path:
+        return {}
+    profile = _load_object(path, "publisher profile")
+    if profile.get("version") != 1:
+        raise PublisherError("publisher profile version must be 1")
+    allowed = {"version", "publisher", "sources"}
+    if set(profile) - allowed:
+        raise PublisherError("unknown publisher profile keys: " +
+                             ", ".join(sorted(set(profile) - allowed)))
+    publisher = profile.get("publisher", {})
+    if not isinstance(publisher, dict) or set(publisher) - {
+        "field_whitelist", "category_map", "shard_policy"
+    }:
+        raise PublisherError("profile publisher must contain only field_whitelist, category_map and shard_policy")
+    whitelist = publisher.get("field_whitelist")
+    if whitelist is not None:
+        if not isinstance(whitelist, list) or not all(isinstance(x, str) for x in whitelist):
+            raise PublisherError("profile field_whitelist must be an array of strings")
+        unsupported = set(whitelist) - DEFAULT_WHITELIST
+        if unsupported or not {"ih", "title", "del"}.issubset(set(whitelist)):
+            raise PublisherError("profile field_whitelist has unsupported fields or removes required identity fields")
+    mapping = publisher.get("category_map", {})
+    if not isinstance(mapping, dict):
+        raise PublisherError("profile category_map must be an object")
+    for key, value in mapping.items():
+        if not isinstance(key, str) or not key.strip() or not (
+            isinstance(value, str) or
+            isinstance(value, list) and all(isinstance(x, str) for x in value)
+        ):
+            raise PublisherError("profile category_map values must be strings or arrays of strings")
+    shard_policy = publisher.get("shard_policy", {})
+    if not isinstance(shard_policy, dict) or set(shard_policy) - {"default", "category_map"}:
+        raise PublisherError("profile shard_policy supports only default and category_map")
+    default_shard = shard_policy.get("default", "default")
+    shard_map = shard_policy.get("category_map", {})
+    if not isinstance(default_shard, str) or not SHARD_RE.fullmatch(default_shard):
+        raise PublisherError("profile shard_policy.default is invalid")
+    if not isinstance(shard_map, dict) or any(
+        not isinstance(k, str) or not isinstance(v, str) or not SHARD_RE.fullmatch(v)
+        for k, v in shard_map.items()
+    ):
+        raise PublisherError("profile shard_policy.category_map must map category names to valid shard names")
+    sources = profile.get("sources", [])
+    if not isinstance(sources, list):
+        raise PublisherError("profile sources must be an array")
+    seen = set()
+    for item in sources:
+        if not isinstance(item, dict) or set(item) != {"id", "enabled", "priority"}:
+            raise PublisherError("each source must contain exactly id, enabled and priority")
+        if not isinstance(item["id"], str) or not item["id"] or item["id"] in seen:
+            raise PublisherError("source IDs must be non-empty and unique")
+        if not isinstance(item["enabled"], bool) or isinstance(item["priority"], bool) or not isinstance(item["priority"], int):
+            raise PublisherError("source enabled must be boolean and priority must be integer")
+        seen.add(item["id"])
+    priorities = [x["priority"] for x in sources if x["enabled"]]
+    if len(priorities) != len(set(priorities)):
+        raise PublisherError("enabled source priorities must be unique")
+    return profile
+
+
 def _timestamp(value: Any, line: int) -> int:
     if isinstance(value, bool):
         raise PublisherError(f"line {line}: date must be a Unix timestamp or ISO-8601 string")
@@ -323,7 +384,8 @@ def _media_ref(value: Any, kind: str, line: int) -> Dict[str, Any]:
 
 
 def normalize_row(raw: Any, line: int, base_dir: Path, whitelist: set,
-                  category_map: Dict[str, Any], default_shard: str) -> Tuple[Dict[str, Any], List[MediaUpload], int]:
+                  category_map: Dict[str, Any], default_shard: str,
+                  shard_map: Dict[str, str]) -> Tuple[Dict[str, Any], List[MediaUpload], int]:
     if not isinstance(raw, dict):
         raise PublisherError(f"line {line}: expected a JSON object")
     unknown = set(raw) - INPUT_FIELDS
@@ -333,7 +395,11 @@ def normalize_row(raw: Any, line: int, base_dir: Path, whitelist: set,
     for key in DROPPED_SOURCE_FIELDS:
         raw.pop(key, None)
 
-    shard = raw.get("shard", default_shard)
+    source_categories = raw.get("category", [])
+    category_values = [source_categories] if isinstance(source_categories, str) else source_categories
+    routed_shard = next((shard_map[x.casefold()] for x in category_values
+                         if isinstance(x, str) and x.casefold() in shard_map), default_shard)
+    shard = raw.get("shard", routed_shard)
     if not isinstance(shard, str) or not SHARD_RE.fullmatch(shard):
         raise PublisherError(f"line {line}: invalid shard name")
     row: Dict[str, Any] = {}
@@ -426,7 +492,7 @@ def normalize_row(raw: Any, line: int, base_dir: Path, whitelist: set,
 
 
 def prepare_import(path: str, whitelist: set, category_map: Dict[str, Any],
-                   default_shard: str) -> PreparedImport:
+                   default_shard: str, shard_map: Optional[Dict[str, str]] = None) -> PreparedImport:
     source = Path(path)
     try:
         if source.stat().st_size > MAX_IMPORT_BYTES:
@@ -453,7 +519,8 @@ def prepare_import(path: str, whitelist: set, category_map: Dict[str, Any],
         except json.JSONDecodeError as exc:
             raise PublisherError(f"line {line_no}: invalid JSON: {exc.msg}") from exc
         row, media, dropped = normalize_row(
-            raw, line_no, source.resolve().parent, whitelist, category_map, default_shard
+            raw, line_no, source.resolve().parent, whitelist, category_map, default_shard,
+            shard_map or {}
         )
         dropped_fields += dropped
         identity = row.get("ih") or row.get("del")
@@ -507,11 +574,20 @@ def preview(prepared: PreparedImport, dry_run: bool) -> None:
 
 
 def publish_import(args: Any) -> int:
-    if not SHARD_RE.fullmatch(args.shard):
-        raise PublisherError("--shard must match [a-z0-9_-] and be 1..64 characters")
-    whitelist = load_whitelist(args.field_whitelist)
-    mapping = {str(k).casefold(): v for k, v in _load_object(args.category_map, "category map").items()}
-    prepared = prepare_import(args.import_path, whitelist, mapping, args.shard)
+    profile = load_profile(args.profile)
+    publisher = profile.get("publisher", {})
+    shard_policy = publisher.get("shard_policy", {})
+    profile_whitelist = publisher.get("field_whitelist")
+    whitelist = load_whitelist(args.field_whitelist) if args.field_whitelist else (
+        set(profile_whitelist) if profile_whitelist is not None else set(DEFAULT_WHITELIST)
+    )
+    raw_mapping = _load_object(args.category_map, "category map") if args.category_map else publisher.get("category_map", {})
+    mapping = {str(k).casefold(): v for k, v in raw_mapping.items()}
+    default_shard = args.shard or shard_policy.get("default", "default")
+    if not SHARD_RE.fullmatch(default_shard):
+        raise PublisherError("--shard/profile default must match [a-z0-9_-] and be 1..64 characters")
+    shard_map = {str(k).casefold(): v for k, v in shard_policy.get("category_map", {}).items()}
+    prepared = prepare_import(args.import_path, whitelist, mapping, default_shard, shard_map)
     preview(prepared, args.dry_run)
     if args.dry_run:
         print("No network requests made.")
@@ -577,9 +653,10 @@ def build_parser():
     target.add_argument("--list", help="existing owned catalog list public key")
     target.add_argument("--create-list", metavar="NAME", help="create a new catalog list")
     publish.add_argument("--description", default="", help="description for a new catalog list")
-    publish.add_argument("--category-map", help="JSON object mapping category names to tag(s)")
-    publish.add_argument("--field-whitelist", help="JSON array of canonical fields to retain")
-    publish.add_argument("--shard", default="default", help="default shard for records")
+    publish.add_argument("--profile", help="versioned JSON publisher profile")
+    publish.add_argument("--category-map", help="JSON object mapping category names to tag(s); overrides profile")
+    publish.add_argument("--field-whitelist", help="JSON array of canonical fields to retain; overrides profile")
+    publish.add_argument("--shard", help="default shard for records; overrides profile")
     publish.add_argument("--release", action="store_true",
                          help="sign and publish the next version after import")
     publish.add_argument("--dry-run", action="store_true",

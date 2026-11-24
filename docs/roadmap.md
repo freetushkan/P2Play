@@ -186,10 +186,14 @@
 
 - [x] HTTP publishing API уже реализован: создание списка/ключа, NDJSON records,
       media upload, release, snapshot, status, meta-list и shard policy.
-- [ ] Отдельный publisher tool: CLI `p2play publish --import` в первую очередь,
-      затем GUI. Приватный ключ остаётся в P2Play; whitelist полей, mapping
-      категорий, приоритеты источников, shard policy, расписание/порог выпуска и
-      compaction. См. `docs/publisher.md`.
+- [x] Publisher CLI `p2play publish --import`: dry-run, локальная валидация,
+      whitelist, mapping категорий, загрузка описаний/постеров, staging и явный release.
+      Приватный ключ остаётся на сервере. Реализовано в PR #27.
+- [ ] Версионируемый JSON publisher profile: whitelist, category mapping, source
+      enablement/priorities и default/category shard policy. CLI читает профиль;
+      source merge остаётся обязанностью Python grabber. GUI, scheduler/threshold
+      release, compaction и редактор policy остаются следующими задачами. См.
+      `docs/publisher.md`.
 
 - [ ] Ближе к завершению разработки: вывести собственный версионированный HTTP API
       P2Play (например, `/api/v1/...`) и мигрировать pPlay, web UI, embedded и внешние

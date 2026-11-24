@@ -19,7 +19,7 @@ The standard-library CLI now lives in `tools/p2play` and
 local validation, dry-run, owned-list selection or list creation, Bearer login,
 category mapping, output whitelist, description/poster upload and an explicit
 `--release` switch. It does not contain or receive the Ed25519 private key.
-The GUI wrapper, scheduler and policy editor remain future work. Qt belongs
+The GUI wrapper, scheduler and policy editor remain future work. A versioned JSON profile (`--profile`) now supplies field whitelist, category mapping, default/category shard routing and ordered source enablement/priority metadata. CLI flags for whitelist, category map and default shard override profile values. The publisher validates source priorities but does not merge sources; that remains the grabber's responsibility. Example: `tools/publisher-profile.example.json`. Qt belongs
 only in the wrapper, never in the shared Qt-free core.
 
 The grabber must merge source layers before calling this CLI. The CLI skips
@@ -70,8 +70,8 @@ infohashes. Identical duplicate records are skipped.
 
 ## Workflow
 
-Create/select normal/meta lists; configure whitelist, priorities, tag mapping,
-shards and budgets. Import batches, report accepted/duplicate/rejected/filtered,
+Create/select normal/meta lists; load a versioned profile with whitelist, source priorities/enabled flags, tag mapping,
+category/default shard routing and budgets. Import batches, report accepted/duplicate/rejected/filtered,
 upload permitted media, release and show sequence/segment/pending/network status.
 DOCX starting compaction heuristics: >64 segments or >20% deletions; configurable,
 not protocol hard limits. Also support scheduled/threshold release.
