@@ -54,7 +54,7 @@ SILO_TORRS = ("torrs://5V3A1LVmilvK3xy16gIRAZHoBqmfO4ZJRkLu0FqKxbaOTByQQ75puVqjM
 
 
 def idx_of(ti, path):
-    fs = ti.files()
+    fs = ct.torrent_layout(ti)
     return [fs.file_path(i).replace("\\", "/") for i in range(fs.num_files())].index(path)
 
 

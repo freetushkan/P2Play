@@ -15,11 +15,13 @@ library ("in db"), streamed again from its kept metadata; /settings; /playlist; 
 while the torrent is closed and opened again; rem.
 """
 
+import gc
 import hashlib
 import json
 import os
 import random
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -75,10 +77,16 @@ def ts_less(a, b):
     return ra < rb
 
 
+def torrent_layout(ti):
+    """Use the current torrent_info layout API, retaining compatibility with older wheels."""
+    layout = getattr(ti, "layout", None)
+    return layout() if callable(layout) else ti.files()
+
+
 def ts_ids(ti):
     """The ids TorrServer MatriX gives the files: every file, pad files too, sorted by path."""
     import functools
-    fs = ti.files()
+    fs = torrent_layout(ti)
     paths = [fs.file_path(i).replace("\\", "/") for i in range(fs.num_files())]
     order = sorted(range(len(paths)), key=functools.cmp_to_key(
         lambda x, y: -1 if ts_less(paths[x], paths[y]) else (1 if ts_less(paths[y], paths[x]) else 0)))
@@ -87,9 +95,15 @@ def ts_ids(ti):
 
 
 def make_torrent(folder):
-    fs = lt.file_storage()
-    lt.add_files(fs, folder)
-    ct = lt.create_torrent(fs, 256 * 1024)
+    # libtorrent 2.1 replaces add_files(file_storage) and the file_storage
+    # create_torrent constructor with list_files(create_file_entry[]).
+    list_files = getattr(lt, "list_files", None)
+    if callable(list_files):
+        ct = lt.create_torrent(list_files(os.path.dirname(folder)), 256 * 1024)
+    else:
+        fs = lt.file_storage()
+        lt.add_files(fs, folder)
+        ct = lt.create_torrent(fs, 256 * 1024)
     lt.set_piece_hashes(ct, os.path.dirname(folder))
     return lt.torrent_info(ct.generate())
 
@@ -100,12 +114,32 @@ def start_seeder(ti, save_path):
         "enable_dht": False, "enable_lsd": False, "enable_upnp": False, "enable_natpmp": False,
         "allow_multiple_connections_per_ip": True,
     })
-    h = ses.add_torrent({"ti": ti, "save_path": save_path})
+    params = lt.add_torrent_params()
+    params.ti = ti
+    params.save_path = save_path
+    h = ses.add_torrent(params)
     for _ in range(100):
-        if h.status().state == lt.torrent_status.seeding:
+        # A seeding torrent is not sufficient: if the requested listen port was
+        # occupied, libtorrent can fall back to another port while x.pe still
+        # points at SEED_PORT. Fail here instead of waiting 60 seconds for a peer.
+        if h.status().state == lt.torrent_status.seeding and ses.is_listening():
+            actual_port = ses.listen_port()
+            if actual_port != SEED_PORT:
+                raise RuntimeError(f"seeder requested port {SEED_PORT}, but libtorrent listened on {actual_port}")
             return ses, h
         time.sleep(0.1)
-    raise RuntimeError("seeder did not finish checking")
+    raise RuntimeError(f"seeder did not finish checking/listening (port={ses.listen_port()})")
+
+
+def wait_seeder_port_closed(timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", SEED_PORT)) != 0:
+                return
+        time.sleep(0.05)
+    raise RuntimeError(f"previous test seeder still listens on 127.0.0.1:{SEED_PORT}")
 
 
 BASE = f"http://127.0.0.1:{HTTP_PORT}"
@@ -172,9 +206,15 @@ def main():
     root = tempfile.mkdtemp(prefix="p2playd-")
     data = os.path.join(root, "data")
     os.makedirs(data)
-    if disk or small:
-        with open(os.path.join(data, "settings.json"), "w") as f:
-            json.dump({"UseDisk": True} if disk else {"CacheSize": 16 * 1024 * 1024}, f)
+    # This test has exactly one intended peer, supplied by the magnet's x.pe.
+    # Do not let public DHT/MediaMesh add unrelated peers to resume data across restarts.
+    settings = {"DisableDHT": True, "DisableMeshDirectory": True}
+    if disk:
+        settings["UseDisk"] = True
+    elif small:
+        settings["CacheSize"] = 16 * 1024 * 1024
+    with open(os.path.join(data, "settings.json"), "w") as f:
+        json.dump(settings, f)
     proc = None
     try:
         folder, files = make_payload(root)
@@ -252,7 +292,8 @@ def main():
         http(f"/stream?link={ih}&index=1&stat&poster=http%3A%2F%2Fp%2F2.jpg")
         check(api("/torrents", {"action": "get", "hash": ih})["poster"] == "http://p/2.jpg", "stream: the poster filled")
         s = api("/settings", {"action": "get"})
-        check(s["CacheSize"] > 0 and "ReaderReadAHead" in s and s["UseDisk"] == disk, "settings get")
+        check(s["CacheSize"] > 0 and "ReaderReadAHead" in s and s["UseDisk"] == disk
+              and s["DisableDHT"] and s["DisableMeshDirectory"], "settings get: isolated single-peer test")
         api("/settings", {"action": "set", "sets": {"TorrentDisconnectTimeout": 10, "FriendlyName": "test"}})
         s = api("/settings", {"action": "get"})
         check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test", "settings set")
@@ -265,7 +306,12 @@ def main():
         stop_daemon(proc)
         check(os.path.getsize(os.path.join(data, "torrents", ih + ".resume")) > 0,
               "resume data kept (metadata with the v2 piece layers, peers)")
-        del ses  # no seeder: the kept metadata is needed for the file list
+        # Destroy both the session and its torrent handle, then confirm the fixed
+        # x.pe port is actually free before starting the replacement seeder.
+        del seed
+        del ses
+        gc.collect()
+        wait_seeder_port_closed()
         proc = start_daemon(daemon, data)
         lst = api("/torrents", {"action": "list"})
         check(len(lst) == 1 and lst[0]["stat"] == 5 and lst[0]["title"] == "Show (renamed)"
