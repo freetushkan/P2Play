@@ -106,11 +106,11 @@ without the standalone application target.
 
 ### LAN access and authentication
 
-The embedded HTTP server is a LAN service, not a loopback-only service. It MUST
-listen on an address reachable by other devices on the same local network; binding
-only to `127.0.0.1` is not acceptable. pPlay should display or expose the LAN
-address and port. It must not silently configure router port forwarding or claim
-that LAN visibility implies safe Internet exposure.
+The embedded HTTP server keeps its existing wildcard listener
+(`INADDR_ANY` for IPv4). Do not add loopback-only, interface, subnet, allowlist or
+other LAN filtering. Reachability is determined by ordinary routing, NAT and the
+device's firewall configuration; P2Play/pPlay must not introduce an extra LAN
+network policy or attempt to configure NAT/port forwarding.
 
 The embedded server keeps the existing fixed owner identity: username `owner` and
 internal ID `owner`. pPlay passes the password from the `P2Play_embedded` network
@@ -119,6 +119,20 @@ embedded start, that password is applied to the owner's password hash, replacing
 the previous password when it changes. The owner ID, username, API token and all
 other user records MUST remain unchanged. A NULL `owner_password` preserves the
 standalone server's existing first-login password flow.
+
+### Embedded logging
+
+The embedded core must write to the host application's existing log, not to a
+separate P2Play log file. pPlay supplies `p2play_config.log` and
+`p2play_config.log_user` when starting the core. The callback forwards each core
+message to pPlay's normal logger at `Utility::LogLevel::Info`, prefixed with
+`P2Play:` (for example, `Utility::log(Utility::LogLevel::Info, "P2Play: " + line)`).
+
+pPlay's configured log threshold controls visibility: core messages appear in
+`pplay.log` when the selected level is Info, Debug or Trace, and are filtered
+when the selected level is Off or Error. Do not bypass the pPlay log filter or
+write directly to another file. The core's existing credential redaction in its
+C API log path must remain in effect.
 
 ### Additional users and roles
 
@@ -156,14 +170,18 @@ The implementation is complete only when tests prove all of the following:
 8. Selecting `P2Play_embedded` starts the service lazily; leaving it drains active
    streams, stops the service and releases its listening port. Selecting any other
    network does not start the embedded service.
-9. A second device on the same LAN can reach the embedded HTTP service. The service
-   is not restricted to loopback and does not set up public WAN port forwarding.
-10. The configured embedded password is applied to the fixed `owner` account on
+9. The embedded HTTP listener retains wildcard bind (`INADDR_ANY` for IPv4).
+   No loopback-only, interface, subnet or other LAN filtering is added; reachability
+   remains a function of ordinary network routing, NAT and firewall.
+10. Core log callback messages appear in the existing `pplay.log` via pPlay's
+    `Utility::log(LogLevel::Info, ...)`. They are visible at Info/Debug/Trace and
+    filtered at Off/Error; no separate P2Play log file is created.
+11. The configured embedded password is applied to the fixed `owner` account on
     every server start. Changing it changes password authentication but preserves the
     owner's stable ID, username, API token and all additional user records.
-11. The owner can create additional server users through the pPlay management UI;
+12. The owner can create additional server users through the pPlay management UI;
     their accounts persist across restarts and the owner cannot be deleted.
-12. The current numeric `rank` hierarchy is documented as such. A separate
+13. The current numeric `rank` hierarchy is documented as such. A separate
     follow-up defines named roles and an explicit capability/permission matrix.
 
 The native P2Play version endpoint is implemented in the P2Play server. The external
