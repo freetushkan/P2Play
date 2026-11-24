@@ -325,6 +325,11 @@ def main():
             status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
         except Exception as e:
             print("stream failed:", e, "- torrent:", api("/torrents", {"action": "get", "hash": ih}))
+            seed_status = seed.status()
+            print("seed after failed stream: state={}, peers={}, upload={} B/s".format(
+                seed_status.state, seed_status.num_peers, seed_status.upload_payload_rate))
+            for peer in seed.get_peer_info():
+                print("seed peer: {} client={} flags={}".format(peer.ip, peer.client, peer.flags))
             raise
         check(status == 206 and body == e01[5000000:5100000], "restart: stream from the library")
 

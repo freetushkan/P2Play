@@ -390,7 +390,9 @@ namespace p2p {
         sp.set_str(lt::settings_pack::listen_interfaces,
                    m_config.console ? "0.0.0.0:" + port : "0.0.0.0:" + port + ",[::]:" + port);
         sp.set_int(lt::settings_pack::alert_mask, lt::alert_category::status | lt::alert_category::error |
-                                                  lt::alert_category::storage | lt::alert_category::dht);
+                                                  lt::alert_category::storage | lt::alert_category::dht |
+                                                   lt::alert_category::connect | lt::alert_category::ip_block |
+                                                   lt::alert_category::peer);
         sp.set_bool(lt::settings_pack::enable_lsd, !m_config.console);
         sp.set_bool(lt::settings_pack::enable_upnp, !m_config.console && !m_settings.disableUpnp);
         sp.set_bool(lt::settings_pack::enable_natpmp, !m_config.console && !m_settings.disableUpnp);
@@ -1293,7 +1295,10 @@ namespace p2p {
                     }
                 } else if (lt::alert_cast<lt::torrent_error_alert>(a) || lt::alert_cast<lt::file_error_alert>(a) ||
                            lt::alert_cast<lt::listen_failed_alert>(a) || lt::alert_cast<lt::listen_succeeded_alert>(a) ||
-                           lt::alert_cast<lt::metadata_failed_alert>(a)) {
+                           lt::alert_cast<lt::metadata_failed_alert>(a) ||
+                            lt::alert_cast<lt::peer_error_alert>(a) ||
+                            lt::alert_cast<lt::peer_disconnected_alert>(a) ||
+                            lt::alert_cast<lt::peer_blocked_alert>(a)) {
                     log("[Torrent] %s", a->message().c_str());
                 }
             }
