@@ -126,6 +126,9 @@ class Peer:
                 return value
         raise AssertionError("expected BEP10 message not received")
 
+    def known(self, key, seq=0):
+        self.send(self.their, {b"known": [[key, seq]]})
+
     def get(self, key, seq=-1):
         self.send(self.their, {b"get": key, b"seq": seq})
         return self.wait(lambda v: b"item" in v and v[b"item"].get(b"k") == key)[b"item"]
@@ -232,8 +235,7 @@ def main():
         a.stop()  # prevent automatic LSD discovery during forged-pointer probes
         b = Node(daemon, root, "b")
         nodes.append(b)
-        assert b.call(f"/api/lists/{pk}", {})[0] == 202
-
+        # Learn the public key without subscribing to it.
         invalid = []
         for field, value in ((b"salt", b"wrong"), (b"seq", -1), (b"seq", "overflow"), (b"seq", 1 << 63),
                              (b"sig", b"x" * 64), (b"sig", b"x" * 63)):
@@ -257,6 +259,7 @@ def main():
         invalid.append(item)
         for item in invalid:
             probe = Peer(b.bt, a.bt)
+            probe.known(key, 1)
             probe.inject(item)
             time.sleep(2.3)  # idle worker has drained verification queue
             assert not b.lists(), "malformed/forged pointer was accepted"
@@ -264,17 +267,28 @@ def main():
             probe.close()
         print("PASS invalid signatures, salt, seq and pointer bounds rejected")
 
+        probe = Peer(b.bt, a.bt)
+        peers.append(probe)
+        probe.known(key, 1)
+        probe.inject(first)
+        discovered = wait(lambda: next((l for l in b.call("/api/lists/discover")[1]["lists"]
+                                        if l["pubkey"] == pk and l["name"] == "Peer pointer"), None), 20)
+        assert discovered["subscribed"] is False, "discovery-only pointer lookup subscribed to the list"
+        assert discovered["holders"] == 0, "KNOWN gossip incorrectly inflated holder popularity"
+        assert discovered["known_by"] >= 1, "known peer was not counted separately"
+        assert not b.lists(), "discovery-only pointer lookup downloaded/imported the version"
+        assert ben(probe.get(key)) == ben(first), "verified discovery pointer was not cached for relay"
+        propagated = probe.wait(lambda v: any(k == key for k, seq in v.get(b"known", [])), 20)
+        assert any(k == key for k, seq in propagated[b"known"]), "learned key was not gossiped back"
+        print("PASS discovery-only signed name lookup and KNOWN gossip without subscribing")
+
         a.start()
         source = Peer(a.bt)
         peers.append(source)
-        probe = Peer(b.bt, a.bt)
-        peers.append(probe)
-        probe.push(first)
+        assert b.call(f"/api/lists/{pk}", {})[0] == 202
         wait(lambda: any(l["pubkey"] == pk and l["seq"] == 1 and l["net"].get("records_ready") for l in b.lists()), 60)
         assert b.call("/api/catalog/search?q=peer")[1]["results"]
-        relay = probe.get(key)
-        assert ben(relay) == ben(first)
-        print("PASS peer item downloads v2 list and relays original signed envelope")
+        print("PASS later subscription reuses the cached pointer and downloads the v2 version")
         # A's version 2 is delivered over BEP10; the old pointer must not replace it.
         a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "e" * 40, "title": "New Peer Film"}).encode())
         assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 2

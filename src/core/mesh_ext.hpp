@@ -37,6 +37,10 @@ namespace p2p {
             // All hooks run on libtorrent's thread: snapshots/queues only, never session
             // calls, disk I/O or downloading. Requests are (key bytes, minimum known seq).
             virtual std::vector<std::pair<std::string, int64_t>> requests() = 0;
+            // Knowledge gossip is distinct from HAVE and never authorizes a push.
+            virtual std::vector<std::pair<std::string, int64_t>> known() = 0;
+            virtual void knownReceived(const std::string &peer,
+                                       const std::vector<std::pair<std::string, int64_t>> &lists) = 0;
             virtual bool item(const std::string &key, std::string &raw) = 0;
             virtual void itemReceived(const std::string &raw, const std::string &peer, const std::string &source) = 0;
         };

@@ -114,6 +114,7 @@ namespace p2p {
             lt::sha256_hash versionIh;
             bool pendingGet = false;         // deferred DHT lookup from discovery callback
             bool requested = false;          // ask directory peers as well as the DHT
+            bool discoveryOnly = false;      // lookup a signed name without fetching a version torrent
             int64_t pointerSeq = -1;          // signed high-water mark, including in-flight versions
             std::string pointer;             // verified BEP 44 envelope, ready to relay
             bool wanted = false;             // subscribed directly or through a meta-list
@@ -157,14 +158,19 @@ namespace p2p {
         // mesh_ext.cpp's hooks
         lt::info_hash_t meshDirectoryHash();
         std::vector<std::pair<std::string, int64_t>> meshHeld();
+        std::vector<std::pair<std::string, int64_t>> meshKnown();
         void meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists);
+        void meshKnownDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists);
         std::vector<std::pair<std::string, int64_t>> meshRequests();
         bool meshPeerItem(const std::string &key, std::string &raw);
         void meshPeerReceived(const std::string &raw, const std::string &peer = "", const std::string &source = "");
     private:
         struct Discovered {
-            int64_t seq = 0;
-            std::set<std::string> holders;
+            int64_t seq = 0;                    // maximum untrusted advertised sequence
+            std::set<std::string> holders;       // peers advertising an actual local copy in HAVE
+            std::set<std::string> knowers;       // peers advertising knowledge in KNOWN
+            std::string name;                    // cached only from a verified BEP 44 pointer
+            int64_t nameSeq = -1;
         };
 
         // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)

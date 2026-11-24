@@ -56,6 +56,33 @@ namespace p2p {
             return true;
         }
 
+        bool validDiscoveryName(const std::string &name) {
+            if (name.empty() || name.size() > 64) return false;
+            for (size_t i = 0; i < name.size();) {
+                const unsigned char c = static_cast<unsigned char>(name[i]);
+                if (c < 0x20 || c == 0x7f) return false;
+                if (c < 0x80) {
+                    ++i;
+                    continue;
+                }
+                size_t tail = 0;
+                if (c >= 0xc2 && c <= 0xdf) tail = 1;
+                else if (c >= 0xe0 && c <= 0xef) tail = 2;
+                else if (c >= 0xf0 && c <= 0xf4) tail = 3;
+                else return false;
+                if (i + tail >= name.size()) return false;
+                const unsigned char second = static_cast<unsigned char>(name[i + 1]);
+                if ((c == 0xe0 && second < 0xa0) || (c == 0xed && second >= 0xa0) ||
+                    (c == 0xf0 && second < 0x90) || (c == 0xf4 && second > 0x8f)) return false;
+                for (size_t j = 1; j <= tail; ++j) {
+                    const unsigned char next = static_cast<unsigned char>(name[i + j]);
+                    if (next < 0x80 || next > 0xbf) return false;
+                }
+                i += tail + 1;
+            }
+            return true;
+        }
+
         std::string readAll(const std::string &path, size_t limit = 2 * 1024 * 1024) {
             std::ifstream in(path, std::ios::binary);
             std::string out(limit + 1, '\0');
@@ -436,7 +463,7 @@ namespace p2p {
         std::vector<std::pair<std::string, int64_t>> out;
         std::lock_guard<std::mutex> lock(m_meshMutex);
         for (const auto &e : m_meshNet) {
-            if (!e.second.requested && !e.second.wanted) {
+            if (!e.second.requested && !e.second.wanted && !e.second.discoveryOnly) {
                 continue;
             }
             std::string key(32, '\0');
@@ -473,10 +500,11 @@ namespace p2p {
         const std::string pk = hexOf(item.key.data(), item.key.size());
         MeshList held;
         const bool have = m_mesh.list(pk, held);
+        bool fetchVersion = false;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             auto it = m_meshNet.find(pk);
-            if (it == m_meshNet.end() || (!have && !it->second.wanted) ||
+            if (it == m_meshNet.end() || (!have && !it->second.wanted && !it->second.discoveryOnly) ||
                 (have && held.seq >= item.seq)) {
                 return;
             }
@@ -486,11 +514,27 @@ namespace p2p {
             }
             n.pointerSeq = item.seq;
             n.pointer = raw;
+            n.requested = false;
+            n.pendingGet = false;
             if (!peer.empty() && n.peers.size() < 128 && std::find(n.peers.begin(), n.peers.end(), peer) == n.peers.end()) {
                 n.peers.push_back(peer);
             }
+            if (m_discovered.size() < 4096 || m_discovered.count(pk) != 0) {
+                Discovered &d = m_discovered[pk];
+                d.seq = std::max(d.seq, item.seq);
+                const std::string name = item.value["n"].string();
+                if (validDiscoveryName(name) && item.seq >= d.nameSeq) {
+                    d.name = name;
+                    d.nameSeq = item.seq;
+                }
+            }
+            fetchVersion = n.wanted || have;
         }
-        meshFetch(pk, lt::sha256_hash(item.value["ih"].string().data()), item.seq, raw);
+        // A verified pointer is enough for a discovery card. Fetch content only after
+        // an explicit subscription or when this node already holds an older list version.
+        if (fetchVersion) {
+            meshFetch(pk, lt::sha256_hash(item.value["ih"].string().data()), item.seq, raw);
+        }
     }
 
     void Core::meshWork() {
@@ -663,12 +707,14 @@ namespace p2p {
             MeshList child;
             if (m_mesh.list(pk, child) && child.meta) return "nested meta-lists are not allowed";
         }
+        std::string cachedPointer;
         {
             std::lock_guard<std::mutex> lock(m_meshMutex);
             MeshNet &n = m_meshNet[pk];
             if (metaParent.empty()) n.directWanted = true;
             else n.metaParents.insert(metaParent);
             n.wanted = n.directWanted || !n.metaParents.empty();
+            cachedPointer = n.pointer;
             if (!peers.empty()) n.peers.assign(peers.begin(), peers.begin() + std::min<size_t>(peers.size(), 128));
         }
         // Hints also bootstrap the directory connection when DHT/LSD are unavailable.
@@ -680,6 +726,9 @@ namespace p2p {
         }
         log("[Mesh] list %s: asking peers and the DHT for its version", pk.substr(0, 16).c_str());
         meshGet(pk);
+        if (!cachedPointer.empty()) {
+            meshReceivePointer(cachedPointer, "");
+        }
         return "";
     }
 
@@ -866,6 +915,10 @@ namespace p2p {
                         if (n.wanted && !have) {
                             wanted.push_back(e.first);
                         }
+                        if ((n.discoveryOnly || n.requested) && n.pointerSeq < 0 &&
+                            std::find(wanted.begin(), wanted.end(), e.first) == wanted.end()) {
+                            wanted.push_back(e.first);
+                        }
                         if ((n.wanted || n.requested) && !n.pointer.empty() && (!have || l.seq < n.pointerSeq)) {
                             retry.push_back(n.pointer);
                         }
@@ -943,6 +996,11 @@ namespace p2p {
             std::vector<std::pair<std::string, int64_t>> held() override { return m_core->meshHeld(); }
 
             std::vector<std::pair<std::string, int64_t>> requests() override { return m_core->meshRequests(); }
+            std::vector<std::pair<std::string, int64_t>> known() override { return m_core->meshKnown(); }
+            void knownReceived(const std::string &peer,
+                               const std::vector<std::pair<std::string, int64_t>> &lists) override {
+                m_core->meshKnownDiscovered(peer, lists);
+            }
             bool item(const std::string &key, std::string &raw) override { return m_core->meshPeerItem(key, raw); }
             void itemReceived(const std::string &raw, const std::string &peer, const std::string &source) override {
                 m_core->meshPeerReceived(raw, peer, source);
@@ -1015,42 +1073,100 @@ namespace p2p {
         return out;
     }
 
-    // a peer's lists: the directory and its holders; a newer version of a list held, asked for
+    // HAVE lists are actual copies held by a peer. These alone contribute to holders.
     void Core::meshDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) {
-        {
+        for (const auto &l : lists) {
+            if (l.first.size() != 32 || l.second < 0) continue;
+            const std::string pk = hexOf(l.first.data(), l.first.size());
+            MeshList held;
+            const bool have = m_mesh.list(pk, held);
             std::lock_guard<std::mutex> lock(m_meshMutex);
-            for (const auto &l : lists) {
-                const std::string pk = hexOf(l.first.data(), l.first.size());
-                if (l.first.size() != 32 || l.second < 0 ||
-                    (m_discovered.size() >= 4096 && m_discovered.count(pk) == 0)) {
-                    continue;
-                }
-                Discovered &d = m_discovered[pk];
-                d.seq = std::max(d.seq, l.second);
-                if (d.holders.size() < 256) {
-                    d.holders.insert(peer);
-                }
-                MeshList held;
-                if (m_mesh.list(pk, held) && held.seq < l.second && !m_meshNet[pk].fetching.is_valid()) {
-                    m_meshNet[pk].requested = true;
-                    m_meshNet[pk].pendingGet = true;
-                }
+            if (m_discovered.size() >= 4096 && m_discovered.count(pk) == 0) continue;
+            Discovered &d = m_discovered[pk];
+            d.seq = std::max(d.seq, l.second);
+            if (!peer.empty() && d.holders.size() < 256) d.holders.insert(peer);
+            if (!peer.empty() && d.knowers.size() < 256) d.knowers.insert(peer);
+            MeshNet &n = m_meshNet[pk];
+            if (!have) n.discoveryOnly = true;
+            if ((!have || held.seq < l.second) && n.pointerSeq < 0 && !n.requested && !n.fetching.is_valid()) {
+                n.requested = true;
+                n.pendingGet = true;
             }
         }
     }
 
+    // KNOWN carries transitive knowledge, not a claim that the sender holds content.
+    void Core::meshKnownDiscovered(const std::string &peer, const std::vector<std::pair<std::string, int64_t>> &lists) {
+        for (const auto &l : lists) {
+            if (l.first.size() != 32 || l.second < 0) continue;
+            const std::string pk = hexOf(l.first.data(), l.first.size());
+            MeshList held;
+            const bool have = m_mesh.list(pk, held);
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            if (m_discovered.size() >= 4096 && m_discovered.count(pk) == 0) continue;
+            Discovered &d = m_discovered[pk];
+            d.seq = std::max(d.seq, l.second);
+            if (!peer.empty() && d.knowers.size() < 256) d.knowers.insert(peer);
+            MeshNet &n = m_meshNet[pk];
+            if (!have) n.discoveryOnly = true;
+            // The sequence in KNOWN is a hint. Do a DHT lookup only until the first
+            // signed pointer is cached; future updates are requested from connected peers.
+            if ((!have || held.seq < l.second) && n.pointerSeq < 0 && !n.requested && !n.fetching.is_valid()) {
+                n.requested = true;
+                n.pendingGet = true;
+            }
+        }
+    }
+
+    std::vector<std::pair<std::string, int64_t>> Core::meshKnown() {
+        std::map<std::string, int64_t> snapshot;
+        for (const MeshList &list : m_mesh.lists()) {
+            std::string key(32, '\0');
+            if (unhexTo(list.pubkey, &key[0], 32)) snapshot[key] = list.seq;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_meshMutex);
+            for (const auto &entry : m_discovered) {
+                std::string key(32, '\0');
+                if (!unhexTo(entry.first, &key[0], 32)) continue;
+                auto it = snapshot.find(key);
+                if (it == snapshot.end()) snapshot.emplace(std::move(key), entry.second.seq);
+                else it->second = std::max(it->second, entry.second.seq);
+            }
+        }
+        std::vector<std::pair<std::string, int64_t>> out;
+        out.reserve(std::min<size_t>(snapshot.size(), 4096));
+        for (const auto &entry : snapshot) {
+            if (out.size() >= 4096) break;
+            out.push_back(entry);
+        }
+        return out;
+    }
+
     json Core::meshDirectoryJson() {
         json out = json::array();
+        const auto localLists = m_mesh.lists();
         std::lock_guard<std::mutex> lock(m_meshMutex);
+        for (const MeshList &list : localLists) {
+            if (m_discovered.size() >= 4096 && m_discovered.count(list.pubkey) == 0) continue;
+            Discovered &d = m_discovered[list.pubkey];
+            d.seq = std::max(d.seq, list.seq);
+            if (list.seq >= d.nameSeq) {
+                d.name = list.name;
+                d.nameSeq = list.seq;
+            }
+        }
         for (const auto &d : m_discovered) {
             MeshList held;
             const bool have = m_mesh.list(d.first, held);
             out.push_back({{"pubkey", d.first},
                            {"seq", d.second.seq},
                            {"holders", d.second.holders.size()},
+                           {"known_by", d.second.knowers.size()},
                            {"subscribed", have},
-                           {"name", have ? held.name : ""}});
+                           {"name", have ? held.name : d.second.name}});
         }
+        // Popularity remains based on HAVE (actual held copies), never KNOWN.
         std::sort(out.begin(), out.end(), [](const json &a, const json &b) { return a["holders"] > b["holders"]; });
         return out;
     }

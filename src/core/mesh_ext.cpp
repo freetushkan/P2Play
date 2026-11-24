@@ -94,6 +94,7 @@ namespace p2p {
                         m_endpoint = (remote.address().is_v6() ? "[" + address + "]" : address) + ":" + std::to_string(port);
                     }
                     sendHave(true);
+                    sendKnown();
                     requestItems();
                 }
                 return true;
@@ -140,6 +141,29 @@ namespace p2p {
                     requestItems();
                     return true;
                 }
+                auto known = d.dict_find_list("known");
+                if (known && d.dict_size() == 1 && known.list_size() <= kMaxHave && m_knownBudget > 0) {
+                    --m_knownBudget;
+                    std::vector<std::pair<std::string, int64_t>> lists;
+                    std::set<std::string> unique;
+                    for (int i = 0; i < known.list_size(); ++i) {
+                        auto e = known.list_at(i);
+                        if (e.type() != lt::bdecode_node::list_t || e.list_size() != 2 ||
+                            e.list_at(0).type() != lt::bdecode_node::string_t || e.list_at(0).string_length() != 32 ||
+                            e.list_at(1).type() != lt::bdecode_node::int_t || e.list_at(1).int_value() < 0) {
+                            return true;
+                        }
+                        std::string key(e.list_at(0).string_value());
+                        const int64_t seq = e.list_at(1).int_value();
+                        if (!unique.insert(key).second) {
+                            return true;
+                        }
+                        lists.emplace_back(std::move(key), seq);
+                    }
+                    const auto &id = m_pc.pid();
+                    m_hooks->knownReceived(std::string(id.data(), id.size()), lists);
+                    return true;
+                }
                 auto get = d.dict_find_string("get");
                 auto seq = d.dict_find_int("seq");
                 if (get && get.string_length() == 32 && seq && seq.int_value() >= -1 &&
@@ -181,10 +205,11 @@ namespace p2p {
                 ++m_ticks;
                 m_getBudget = m_itemBudget = kMaxRequests;
                 m_sendItemBudget = kMaxRequests;
-                m_haveBudget = 2;
+                m_haveBudget = m_knownBudget = 2;
                 if (m_their) {
                     if (m_ticks % 10 == 0) {
                         sendHave();
+                        sendKnown();
                     }
                     sendQueuedItems();
                     if (m_ticks % 2 == 0) {
@@ -232,6 +257,30 @@ namespace p2p {
                 m_pc.send_buffer(head, sizeof(head));
                 m_pc.send_buffer(body.data(), static_cast<int>(body.size()));
                 return true;
+            }
+
+            // The transitive inventory is not evidence that this peer stores the data.
+            // Keep it separate from HAVE, which remains the sole holder/popularity signal.
+            void sendKnown() {
+                lt::entry msg(lt::entry::dictionary_t);
+                auto &known = msg["known"].list();
+                std::set<std::string> announced;
+                for (const auto &entry : m_hooks->known()) {
+                    if (entry.first.size() != 32 || entry.second < 0 || known.size() >= kMaxHave ||
+                        !announced.insert(entry.first).second) {
+                        continue;
+                    }
+                    lt::entry::list_type item;
+                    item.emplace_back(entry.first);
+                    item.emplace_back(entry.second);
+                    known.emplace_back(std::move(item));
+                }
+                std::vector<char> body;
+                lt::bencode(std::back_inserter(body), msg);
+                if (body != m_sentKnown) {
+                    m_sentKnown = std::move(body);
+                    send(msg);
+                }
             }
 
             void sendQueuedItems() {
@@ -306,10 +355,10 @@ namespace p2p {
             int m_their = 0;
             int64_t m_ticks = 0;
             int m_getBudget = kMaxRequests, m_itemBudget = kMaxRequests, m_haveBudget = 2;
-            int m_sendItemBudget = kMaxRequests;
+            int m_knownBudget = 2, m_sendItemBudget = kMaxRequests;
             std::map<std::string, int64_t> m_pending;
             std::map<std::string, int64_t> m_remoteHave, m_pushed, m_pushPending;
-            std::vector<char> m_sent;
+            std::vector<char> m_sent, m_sentKnown;
             std::string m_source; // actual TCP source address, not the BEP 10 advertised port
             std::string m_endpoint;
             size_t m_requestCursor = 0;

@@ -87,6 +87,28 @@ The current node sends an initial snapshot after negotiation and refreshes it pe
 A sender SHOULD send an updated snapshot before pushing an item for a newly published
 sequence.
 
+### 3.1.1 `known` inventory gossip
+
+```text
+{"known": [[bytes32 list_key, integer seq], ...]}
+```
+
+`known` is a complete snapshot of keys the sender knows about: its locally held lists
+plus keys learned from `have` or other `known` snapshots. It is bounded to 4,096 unique
+entries. A node sends the snapshot after extension negotiation and refreshes it when the
+inventory changes; newly learned entries are therefore relayed to other connected directory
+peers, allowing multi-hop gossip through the connected peer graph.
+
+The sequence is an untrusted hint, just like the sequence in `have`. `known` MUST NOT be
+used as evidence of a local copy, a subscription, or popularity; it MUST NOT increment
+`holders`, affect list ranking, authorize an `item` push, or advance the signed sequence
+floor. Receivers may use it to request a signed pointer through the normal bounded `get`
+path. Older peers ignore this unknown message form.
+
+A verified pointer may be cached for the Discover card without subscribing. This discovery-
+only state MUST NOT start a version torrent. Version transfer still requires an explicit
+subscription or an already-held list that needs a newer signed version.
+
 ### 3.2 `get`
 
 ```text
@@ -353,26 +375,27 @@ A consumer MUST:
 6. preserve a per-list high-water sequence and reject rollback/equivocation;
 7. avoid downloading record/media payload before manifest verification.
 
-`have`, peer IDs, peer addresses, peer hints and DHT discovery results are untrusted input.
-They can guide discovery but MUST NOT bypass cryptographic checks or subscription policy.
+`have`, `known`, peer IDs, peer addresses, peer hints and DHT discovery results are
+untrusted input. They can guide discovery but MUST NOT bypass cryptographic checks or
+subscription policy. Only `have` contributes to the holder count; `known` is knowledge
+gossip, not a popularity signal.
 
 ## 9. Current implementation boundaries
 
 This document describes the existing P2Play profile, including its current limitations:
 
 - Media lazy-fetch currently downloads a whole pack, not an exact object byte range.
-- Directory `have` advertises list key/sequence only; it does not advertise shard or media
-  availability.
-- Until the discovery-only pointer lookup is implemented, an undiscovered list has no
-  authenticated display name in `GET /api/lists/discover`; the name is shown only after the
-  list is subscribed and its signed manifest is accepted. The next implementation step is
-  to request the existing signed BEP 44 pointer for newly discovered keys without starting
-  a version-torrent fetch. After verifying its signature, key and sequence, the node can
-  cache the bounded `v.n` name (at most 64 bytes) and expose it as discovery metadata.
-  This operation MUST NOT subscribe to the list or download its version torrent, manifest,
-  records or media. `have` and peer hints remain untrusted; only the verified pointer may
-  supply the display name. The initial discovery card requires no wire-format extension;
-  a short description is outside this first step.
+- Directory `have` advertises locally held lists; it does not advertise shard or media
+  availability. The separate `known` snapshot carries transitive knowledge and must never
+  be counted as a holder or subscriber.
+- Discovery-only lookup is implemented: a newly known key can request its signed BEP 44
+  pointer, verify the key/sequence/Ed25519 signature and cache the bounded UTF-8 `v.n`
+  display name (at most 64 bytes). `GET /api/lists/discover` exposes that name even before
+  subscription. This path never subscribes and never downloads the version torrent,
+  manifest, records or media. A later explicit subscription reuses the cached pointer.
+- `holders` remains the count of peers advertising a local copy through `have`; `known_by`
+  separately reports peers advertising knowledge through `known`. List ordering/ranking
+  uses only `holders`, never `known_by`.
 - The record index is local state; this document does not define a remote search RPC.
 - DHT is optional; peer hints can bootstrap a DHT-disabled deployment when a directory peer
   is reachable.
