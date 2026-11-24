@@ -918,7 +918,7 @@ namespace p2p {
                         }
                         const auto known = m_discovered.find(e.first);
                         const int64_t advertisedSeq = known == m_discovered.end() ? -1 : known->second.seq;
-                        if (n.discoveryOnly && advertisedSeq > n.pointerSeq && !n.requested &&
+                        if (n.discoveryOnly && advertisedSeq > n.pointerSeq &&
                             std::find(wanted.begin(), wanted.end(), e.first) == wanted.end()) {
                             wanted.push_back(e.first);
                         }

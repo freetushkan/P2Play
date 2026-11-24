@@ -129,9 +129,6 @@ class Peer:
     def known(self, key, seq=0):
         self.send(self.their, {b"known": [[key, seq]]})
 
-    def known(self, key, seq=0):
-        self.send(self.their, {b"known": [[key, seq]]})
-
     def get(self, key, seq=-1):
         self.send(self.their, {b"get": key, b"seq": seq})
         return self.wait(lambda v: b"item" in v and v[b"item"].get(b"k") == key)[b"item"]
@@ -290,8 +287,6 @@ def main():
         print("PASS discovery-only signed name lookup and two-neighbor KNOWN gossip without subscribing")
         observer.close()
         peers.remove(observer)
-        probe.close()
-        peers.remove(probe)
 
         a.start()
         source = Peer(a.bt)
