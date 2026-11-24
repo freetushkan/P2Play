@@ -118,7 +118,7 @@ restarts and a local SOCKS5 fixture; platform SDK/runtime validation remains out
 
 | Route | |
 | --- | --- |
-| `GET /api/catalog/search?q=&tag=&limit=` | every word in the title or tags (any case, Latin and Cyrillic, ё = е); each result with its `torrs://` link and lists |
+| `GET /api/catalog/search?q=&tag=&limit=&lists=` | every word in the title or tags (any case, Latin and Cyrillic, ё = е); optional comma-separated list public keys restrict the results to those catalogs; each result includes its `torrs://` link and source lists |
 | `GET /api/catalog/:infohash` | a record and its lists |
 | `GET /api/lists`, `DELETE /api/lists/:pubkey` | the lists of this node (`net`: seeded, being fetched); a received one dropped |
 | `GET /api/lists/discover` | the lists the directory swarm told of: `holders`, `seq`, `subscribed` |

@@ -18,6 +18,10 @@
 //   GET/POST /api/lists/:pubkey/policy          persisted shard selection / budgets
 //   GET/POST /api/lists/:pubkey/files           signed fetch plan / verified local install
 
+#include <cctype>
+#include <set>
+#include <sstream>
+
 #include "core_torrent.hpp"
 
 namespace p2p {
@@ -86,8 +90,35 @@ namespace p2p {
             if (get && n == 3 && at(2) == "search") {
                 int limit = std::atoi(req.param("limit").c_str());
                 limit = limit <= 0 ? 50 : std::min(limit, 500);
+
+                // Optional catalog scope. "lists" is a comma-separated set of list public keys;
+                // keep "list" as a convenient single-key alias.
+                const std::string requestedLists = req.param("lists").empty()
+                                                       ? req.param("list") : req.param("lists");
+                std::set<std::string> listFilter;
+                std::stringstream listStream(requestedLists);
+                std::string listKey;
+                while (std::getline(listStream, listKey, ',')) {
+                    if (listKey.size() != 64 ||
+                        !std::all_of(listKey.begin(), listKey.end(), [](unsigned char c) {
+                            return std::isxdigit(c) != 0;
+                        })) {
+                        continue;
+                    }
+                    std::transform(listKey.begin(), listKey.end(), listKey.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    listFilter.insert(std::move(listKey));
+                }
+
                 json results = json::array();
                 for (const MeshRecord &r : m_mesh.search(req.param("q"), req.param("tag"), static_cast<size_t>(limit))) {
+                    if (!requestedLists.empty() &&
+                        (listFilter.empty() ||
+                         std::none_of(listFilter.begin(), listFilter.end(), [&](const std::string &key) {
+                             return r.lists.count(key) != 0;
+                         }))) {
+                        continue;
+                    }
                     results.push_back(r.json());
                 }
                 res.json(200, json{{"results", results}}.dump());

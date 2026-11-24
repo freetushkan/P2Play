@@ -52,6 +52,8 @@ def main():
     proc = None
     try:
         proc = ct.start_daemon(daemon, a)
+        check(call("/api/lists")[1]["lists"] == [], "fresh server has no catalog lists")
+        check(call("/api/catalog/search?q=anything")[1]["results"] == [], "search is empty before a list is added")
         status, out = call("/api/publish", {"name": "Test list", "description": "for the test"})
         pk = out.get("pubkey", "")
         check(status == 201 and len(pk) == 64 and os.path.exists(os.path.join(a, "keys", pk + ".seed")), "a list made, its key kept")
@@ -66,6 +68,12 @@ def main():
         res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 1080P"))[1]["results"]
         check([r["hash"] for r in res] == [IH1] and res[0]["torrs"].startswith("torrs://") and res[0]["lists"] == [pk],
               "search: Cyrillic in another case, a torrs:// link")
+        scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk)[1]["results"]
+        check([r["hash"] for r in scoped] == [IH1], "search scoped to a selected catalog list")
+        scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk + "," + "f" * 64)[1]["results"]
+        check([r["hash"] for r in scoped] == [IH1], "search scoped to any of several selected lists")
+        check(call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + "f" * 64)[1]["results"] == [],
+              "an unknown selected list does not broaden the search");
         res = call("/api/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"]
         check([r["hash"] for r in res] == [IH3] and "torrs" not in res[0], "search: ё as е; no torrs:// for a v2-only hash")
         res = call("/api/catalog/search?q=&tag=MOVIE")[1]["results"]
