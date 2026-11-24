@@ -68,8 +68,10 @@ def free_port():
 
 class Peer:
     """A raw BEP10 test peer. Its extension id differs from the daemon's id."""
-    def __init__(self, port, advertised_port=None):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    def __init__(self, port, advertised_port=None, source_ip=None):
+        source_address = (source_ip, 0) if source_ip else None
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5,
+                                             source_address=source_address)
         self.sock.settimeout(5)
         self.sock.sendall(b"\x13BitTorrent protocol" + b"\0\0\0\0\0\x10\0\0" + DIRECTORY + b"-PI0001-" + os.urandom(12))
         assert self.exact(68)[28:48] == DIRECTORY
@@ -269,9 +271,11 @@ def main():
 
         # Two independent directory neighbors: one introduces the key; B must
         # relay it to the second neighbor without subscribing or downloading data.
-        observer = Peer(b.bt, a.bt)
+        # Libtorrent may reject simultaneous inbound peers sharing one source IP.
+        # Use distinct loopback addresses to model two independent directory neighbors.
+        observer = Peer(b.bt, a.bt, source_ip="127.0.0.2")
         peers.append(observer)
-        probe = Peer(b.bt, a.bt)
+        probe = Peer(b.bt, a.bt, source_ip="127.0.0.3")
         peers.append(probe)
         probe.known(key, 1)
         probe.inject(first)
