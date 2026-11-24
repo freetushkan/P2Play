@@ -113,6 +113,9 @@ def start_seeder(ti, save_path):
         "listen_interfaces": f"127.0.0.1:{SEED_PORT}",
         "enable_dht": False, "enable_lsd": False, "enable_upnp": False, "enable_natpmp": False,
         "allow_multiple_connections_per_ip": True,
+        # error | peer | connect | status: observe accepted sockets, incoming
+        # BitTorrent handshakes, and the exact reason the seed disconnects a peer.
+        "alert_mask": (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6),
     })
     params = lt.add_torrent_params()
     params.ti = ti
@@ -332,10 +335,19 @@ def main():
         except Exception as e:
             print("stream failed:", e, "- torrent:", api("/torrents", {"action": "get", "hash": ih}))
             seed_status = seed.status()
-            print("seed after failed stream: state={}, peers={}, upload={} B/s".format(
-                seed_status.state, seed_status.num_peers, seed_status.upload_payload_rate))
+            seed_settings = ses.get_settings()
+            print("seed after failed stream: state={}, peers={}, upload={} B/s, listening={}, port={}".format(
+                seed_status.state, seed_status.num_peers, seed_status.upload_payload_rate,
+                ses.is_listening(), ses.listen_port()))
+            print("seed transport: incoming_tcp={}, incoming_utp={}".format(
+                seed_settings.get("enable_incoming_tcp"), seed_settings.get("enable_incoming_utp")))
             for peer in seed.get_peer_info():
                 print("seed peer: {} client={} flags={}".format(peer.ip, peer.client, peer.flags))
+            for alert in ses.pop_alerts():
+                kind = alert.what()
+                if any(word in kind for word in ("incoming_connection", "peer_connect", "peer_disconnected",
+                                                  "peer_error", "peer_blocked")):
+                    print("seed alert: {}: {}".format(kind, alert.message()))
             raise
         check(status == 206 and body == e01[5000000:5100000], "restart: stream from the library")
 
