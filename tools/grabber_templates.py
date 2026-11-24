@@ -197,13 +197,14 @@ def _parse_selector(selector: str) -> List[str]:
 
 
 class _Node:
-    __slots__ = ("tag", "attrs", "children", "text", "parent")
+    __slots__ = ("tag", "attrs", "children", "text", "content", "parent")
 
     def __init__(self, tag: str, attrs: Dict[str, str], parent: Optional["_Node"] = None):
         self.tag = tag
         self.attrs = attrs
         self.children: List["_Node"] = []
         self.text: List[str] = []
+        self.content: List[Any] = []
         self.parent = parent
 
 
@@ -223,6 +224,7 @@ class _TreeParser(HTMLParser):
             raise TemplateError("HTML source contains too many nodes")
         node = _Node(tag.lower(), {key.lower(): value or "" for key, value in attrs}, self.stack[-1])
         self.stack[-1].children.append(node)
+        self.stack[-1].content.append(node)
         if tag.lower() not in self.VOID:
             self.stack.append(node)
 
@@ -241,6 +243,7 @@ class _TreeParser(HTMLParser):
     def handle_data(self, data: str):
         if data:
             self.stack[-1].text.append(data)
+            self.stack[-1].content.append(data)
 
 
 def _selector_matches(node: _Node, parts: Sequence[str]) -> bool:
@@ -271,9 +274,14 @@ def _select(root: _Node, selector: str) -> List[_Node]:
 
 
 def _node_text(node: _Node) -> str:
-    parts = list(node.text)
-    for child in node.children:
-        parts.append(_node_text(child))
+    parts: List[str] = []
+    stack: List[Any] = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            parts.append(current)
+        else:
+            stack.extend(reversed(current.content))
     return " ".join(" ".join(parts).split())
 
 
@@ -319,7 +327,13 @@ def parse_template(data: bytes, template: Any, source_ref: str = "template") -> 
             row = {}
             for field, field_spec in fields.items():
                 values = _json_path_values(item, field_spec["path"])
-                row[field] = values if field_spec.get("multiple") else (values[0] if values else field_spec.get("default"))
+                if field_spec.get("multiple"):
+                    flattened = []
+                    for value in values:
+                        flattened.extend(value if isinstance(value, list) else [value])
+                    row[field] = flattened
+                else:
+                    row[field] = values[0] if values else field_spec.get("default")
             row["_source_ref"] = f"{source_ref}#{index + 1}"
             records.append(row)
             if len(records) > MAX_TEMPLATE_ITEMS:

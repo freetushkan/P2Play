@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import lzma
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.parse
 import unittest
 import zlib
 
@@ -347,9 +351,20 @@ class GrabberTests(unittest.TestCase):
             self.assertEqual(provenance["content_text"], "Sanitized description")
         finally:
             state.close()
+        # A newer full XML snapshot still carries the acknowledged historical <del/>.
+        # It must not be treated as an unknown deletion or emitted twice.
+        updated_xml = self.rutracker_xml.replace(b"RuTracker new release", b"Updated RuTracker release")
+        self.rutracker_path.write_bytes(lzma.compress(updated_xml))
         third = self.run_once()
-        self.assertEqual(third["counts"]["delta"], 0)
-        g.ack_run(self.state, third["run_id"], self.full, 0, "auto")
+        self.assertEqual(third["sources"]["rutracker"]["status"], "success")
+        self.assertEqual(third["sources"]["rutracker"]["rejected"], 0)
+        self.assertEqual(third["counts"]["delta"], 1)
+        self.assertFalse(any("del" in row for row in self.read_rows(self.delta)))
+        self.assertEqual(self.read_rows(self.full)[0]["title"], "Updated RuTracker release")
+        g.ack_run(self.state, third["run_id"], self.full, 1, "auto")
+        fourth = self.run_once()
+        self.assertEqual(fourth["counts"]["delta"], 0)
+        g.ack_run(self.state, fourth["run_id"], self.full, 0, "auto")
 
     def test_rutracker_delete_without_published_shard_is_quarantined(self):
         config = {"version": 1, "publisher": {}, "sources": [
@@ -467,6 +482,7 @@ class GrabberTests(unittest.TestCase):
             b'{"results":[{"hash":"' + b"f" * 40 + b'","name":"JSON release","created":1700000000,"bytes":123,"categories":["Movies"]}]}',
             json_template)
         self.assertEqual(parsed[0]["ih"], "f" * 40)
+        self.assertEqual(parsed[0]["categories"], ["Movies"])
         html_template = {"format": "html", "item_selector": "div.result",
             "fields": {"magnet": {"selector": "a.magnet", "attr": "href"},
                        "title": {"selector": "h2"}, "size": {"selector": "span.size", "attr": "data-bytes"}}}
@@ -474,12 +490,82 @@ class GrabberTests(unittest.TestCase):
             (f'<div class="result"><h2>HTML release</h2><a class="magnet" href="magnet:?xt=urn:btih:{"1"*40}">get</a><span class="size" data-bytes="456"></span></div>').encode(),
             html_template)
         self.assertEqual(html_rows[0]["title"], "HTML release")
+        ordered_html = gt.parse_template(
+            b'<div class="result"><h2>Before <b>middle</b> after</h2></div>',
+            {"format": "html", "item_selector": "div.result",
+             "fields": {"title": {"selector": "h2"}}})
+        self.assertEqual(ordered_html[0]["title"], "Before middle after")
         text_template = {"format": "text",
             "pattern": r"^(?P<ih>[0-9a-f]{40})\|(?P<title>[^|]+)\|(?P<date>[0-9]+)$",
             "fields": {"ih": {"group": "ih"}, "title": {"group": "title"}, "date": {"group": "date"}}}
         rows = gt.parse_template((("2" * 40) + "|Text release|1700000100\n").encode(), text_template)
         self.assertEqual(rows[0]["title"], "Text release")
         self.assertEqual(rows[0]["date"], "1700000100")
+
+    def test_priority_aware_tombstones_and_restoration(self):
+        ih = "a" * 40
+        def row(priority, record):
+            return {"priority": priority, "record_json": json.dumps(record),
+                    "categories_json": "[]"}
+        deleted, conflict = g._merge_observations([
+            row(10, {"ih": ih, "title": "Old title"}),
+            row(20, {"del": ih, "shard": "films"}),
+        ], {})
+        self.assertIsNone(conflict)
+        self.assertEqual(deleted, {"del": ih, "shard": "films"})
+        restored, conflict = g._merge_observations([
+            row(10, {"ih": ih, "title": "Old title"}),
+            row(20, {"del": ih, "shard": "films"}),
+            row(30, {"ih": ih, "title": "Restored title", "shard": "films"}),
+        ], {})
+        self.assertIsNone(conflict)
+        self.assertEqual(restored["title"], "Restored title")
+        self.assertEqual(restored["ih"], ih)
+        _, conflict = g._merge_observations([
+            row(20, {"del": ih, "shard": "films"}),
+            row(20, {"ih": ih, "title": "Conflicting live row"}),
+        ], {})
+        self.assertIn("same-priority live/tombstone conflict", conflict)
+
+    def test_checked_in_example_profile_validates(self):
+        profile_path = Path(__file__).resolve().parent / "grabber-profile.example.json"
+        config = g._load_config(profile_path)
+        self.assertIn("generic-json", config["templates"])
+        self.assertEqual(config["templates"]["generic-text"]["format"], "text")
+        self.assertTrue(all(source.get("enabled") is False for source in config["sources"]))
+
+    def test_direct_rss_uses_feed_parser_without_caps(self):
+        feed = self.torznab_feed
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                requests.append(handler.path)
+                handler.send_response(200)
+                handler.send_header("Content-Length", str(len(feed)))
+                handler.end_headers()
+                handler.wfile.write(feed)
+            def log_message(self, fmt, *args): return
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(worker.join, timeout=5)
+        self.addCleanup(server.server_close)
+        config = {"version": 1, "publisher": {}, "sources": [
+            {"id": "direct-rss-a", "type": "rss", "enabled": True, "priority": 50,
+             "url": f"http://127.0.0.1:{server.server_port}/releases.rss",
+             "fetch_caps": False, "timeout": 5, "max_items": 50,
+             "overlap_seconds": 86400}
+        ]}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        first = self.run_once()
+        self.assertEqual(first["sources"]["direct-rss-a"]["accepted"], 1)
+        self.assertEqual(first["sources"]["direct-rss-a"]["rejected"], 1)
+        self.assertEqual(requests, ["/releases.rss"])
+        g.ack_run(self.state, first["run_id"], self.full, 1, "auto")
+        second = self.run_once()
+        self.assertEqual(second["counts"]["delta"], 0)
+        g.ack_run(self.state, second["run_id"], self.full, 0, "auto")
 
     def test_template_source_reads_profile_templates_and_acknowledges_checkpoint(self):
         payload = {"entries": [{"hash": "3" * 40, "name": "Configured template release",

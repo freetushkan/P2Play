@@ -29,7 +29,7 @@ the publisher API or CLI and never publishes automatically.
   enabled (a reported no-op with no checkpoint advancement).
 - Keep credentials, API keys, cookies and personal data out of Git.
 
-## Implemented first slice
+## Current implementation
 
 The current implementation is `tools/grabber.py` plus the standard-library module
 `tools/grabber_lib.py`. It uses JSON profile version 1 and local SQLite state.
@@ -109,8 +109,8 @@ The local state DB, work outputs, quarantine and credentials belong outside Git.
 
 ## Configurable parser templates
 
-The parser must not be limited to hard-coded site adapters. Provide a user-editable
-template system for JSON, pseudo-HTML and plain text sources. A template maps
+The parser is not limited to hard-coded site adapters. The built-in user-editable
+template system supports JSON, pseudo-HTML and plain text sources. A template maps
 source selectors/expressions to canonical fields (infohash/magnet, title, date,
 size, file count, category, tracker/site, description, poster and source ID).
 Templates should support JSON paths, CSS-like selectors for pseudo-HTML, and
@@ -122,8 +122,8 @@ against fixture files. Include preview/dry-run output showing extracted fields,
 normalization errors and deduplication decisions before importing. Avoid arbitrary
 code execution in templates; bound regex complexity, input size, nesting and
 per-item processing time. Built-in adapters for known formats remain available
-and may be overridden by local templates. The user will supply representative
-JSON, pseudo-HTML and plain-text fixtures before adapter implementation.
+and may be overridden by local templates. Sanitized JSON, pseudo-HTML and plain-text
+fixtures are included in the automated template tests.
 
 ## Supplied source formats
 
@@ -283,9 +283,9 @@ Mapping and behavior:
   only as an untrusted suspicion signal, never proof that two torrents are
   interchangeable. Do not merge records based only on `dup@p`.
 
-Add small sanitized fixtures for the real tag nesting, encoding and date
-semantics before implementing the adapter. Use a bounded XML parser, disable
-external entity/network resolution and reject malformed/oversized input.
+Small sanitized XML/XZ fixtures now cover the observed tag nesting and date
+semantics. The adapter uses a streaming bounded parser, rejects DTD/entities and
+limits both compressed input and expanded XML size.
 
 **Deletion/shard invariant:** a tombstone must identify the shard where the
 previous live record was published. Persist the last published `ih → shard`

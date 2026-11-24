@@ -96,7 +96,7 @@
         "size": "$.size",
         "files": "$.files",
         "categories": {
-          "path": "$.categories",
+          "path": "$.categories[*]",
           "multiple": true
         }
       }
@@ -124,7 +124,7 @@
     },
     "generic-text": {
       "format": "text",
-      "pattern": "^(?P<ih>[0-9a-f]{40,64})\\\\|(?P<title>[^|]{1,256})\\\\|(?P<date>[0-9]{1,12})$",
+      "pattern": "^(?P<ih>[0-9a-f]{40,64})\\|(?P<title>[^|]{1,256})\\|(?P<date>[0-9]{1,12})$",
       "fields": {
         "ih": {
           "group": "ih"

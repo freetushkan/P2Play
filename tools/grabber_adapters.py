@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 from email.utils import parsedate_to_datetime
 import html
+import json
 import lzma
 from pathlib import Path
 import re
@@ -164,7 +165,7 @@ def _plain_text(markup: str, limit: int = 2048) -> str:
         return html.unescape(re.sub(r"<[^>]{0,1024}>", " ", markup))[:limit]
 
 
-def _rutracker_topic(element: ET.Element, state) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
+def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
     topic_id = str(element.get("id", ""))
     nested = next((node for node in element.iter()
                    if node is not element and _xml_name(node.tag) == "torrent" and node.get("hash")), None)
@@ -178,6 +179,17 @@ def _rutracker_topic(element: ET.Element, state) -> Tuple[str, Dict[str, Any], L
 
     if _direct_child(element, "del") is not None:
         previous = state.staged_record(ih)
+        if not previous:
+            # After an acknowledged deletion staged_records no longer contains
+            # this hash. Reuse the persisted source tombstone when a newer full
+            # XML snapshot still carries the historical <del/> topic.
+            for observation in state.observations_for(run_id, ih):
+                if observation["source_id"] != source_id:
+                    continue
+                candidate = json.loads(observation["record_json"])
+                if "del" in candidate:
+                    previous = candidate
+                    break
         if not previous or not previous.get("shard"):
             raise ValueError("deleted topic has no last-published shard; manual review required")
         record = {"del": ih, "shard": g._valid_shard(previous["shard"])}
@@ -296,13 +308,13 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
                     raise g.SourceError("RuTracker XML exceeds the publisher record limit")
                 source_ref = f"{path}#topic={element.get('id')}"
                 try:
-                    ih, record, categories, provenance = _rutracker_topic(element, state)
+                    ih, record, categories, provenance = _rutracker_topic(element, state, run_id, source_id)
                     forum_id = str(provenance.get("forum_id", ""))
+                    for category in categories:
+                        state.add_category(run_id, source_id, category, forum_id or None)
                     if include_ids and forum_id not in include_ids:
                         counters["filtered"] += 1
                     else:
-                        for category in categories:
-                            state.add_category(run_id, source_id, category, forum_id or None)
                         outcome = state.add_observation(
                             run_id, source_id, ih, int(source.get("priority", 30)),
                             record, categories, source_ref, digest, provenance)
@@ -650,6 +662,8 @@ def template_source(source: Dict[str, Any], templates, state, run_id: str,
                 tags = categories
             else:
                 tags = g._tags_for(categories, publisher)
+            for category in categories:
+                state.add_category(run_id, source_id, category)
             size = item.get("size")
             if size not in (None, ""):
                 size = g._parse_size(size, str(source.get("size_unit", "binary")))
