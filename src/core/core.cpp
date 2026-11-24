@@ -969,6 +969,10 @@ namespace p2p {
             ec.clear();
         }
         if (atp.ti) {
+            // Metadata is already available, but no reader has selected pieces yet.
+            // Keep the torrent paused until setWindow() assigns the reader's priorities;
+            // otherwise an empty wanted set makes libtorrent advertise upload_only.
+            atp.flags |= lt::torrent_flags::paused;
             // the trackers and peers of the link it was added with
             lt::error_code mec;
             lt::add_torrent_params m = lt::parse_magnet_uri(t->rec.link, mec);
@@ -993,8 +997,12 @@ namespace p2p {
             return false;
         }
         atp.save_path = m_settings.savePath.empty() ? m_store.dir() + "/downloads" : m_settings.savePath;
-        // opened at once, never queued or paused by the session
-        atp.flags &= ~(lt::torrent_flags::auto_managed | lt::torrent_flags::paused);
+        // Never queue automatically. A torrent with metadata starts paused until a reader
+        // establishes its piece priorities; a magnet without metadata must connect to fetch it.
+        atp.flags &= ~lt::torrent_flags::auto_managed;
+        if (!atp.ti) {
+            atp.flags &= ~lt::torrent_flags::paused;
+        }
         lt::torrent_handle h = m_session->add_torrent(std::move(atp), ec);
         if (ec) {
             error = "cannot add the torrent: " + ec.message();
@@ -1027,6 +1035,9 @@ namespace p2p {
             return;
         }
         const lt::file_storage &fs = ti->files();
+        // A magnet may have connected to obtain metadata. Stop peer traffic while the
+        // torrent has no selected files; the first reader resumes it after setting priorities.
+        h.pause();
         int64_t size = 0;
         std::map<int, lt::file_index_t> index;
         std::vector<FileInfo> files = torrServerFiles(*ti, size, index);

@@ -305,7 +305,11 @@ def main():
             "TorrentDisconnectTimeout": 10, "FriendlyName": "test", "DisableUTP": True}})
         s = api("/settings", {"action": "get"})
         check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test"
-              and s["DisableUTP"] and not s["DisableTCP"], "settings set: disable uTP for restart")
+              and s["DisableUTP"] and not s["DisableTCP"], "settings set: disable uTP")
+        # Restore the normal transport before restart: this test must cover the original
+        # TCP/uTP reconnect path, not just the diagnostic TCP-only variant.
+        api("/settings", {"action": "set", "sets": {"DisableUTP": False}})
+        check(not api("/settings", {"action": "get"})["DisableUTP"], "settings set: restore uTP")
 
         status, _, m3u = http(f"/playlist?hash={ih}")
         lines = [l for l in m3u.decode().splitlines() if l.startswith("http")]

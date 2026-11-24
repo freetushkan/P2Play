@@ -100,6 +100,12 @@ namespace p2p {
             }
         }
         t->wanted = std::move(now);
+        // Do not let a newly activated (or resumed) torrent announce upload_only with
+        // an empty wanted set. Start peer traffic only after this reader's priorities
+        // and deadlines are in place.
+        if (first >= 0) {
+            h.resume();
+        }
     }
 
     // a piece late for 5 s: its priority and deadline asked again, the peers of the link
