@@ -118,7 +118,9 @@ pPlay has two distinct network entries:
 The embedded entry MUST use the static `p2play_core` library, not launch or bundle
 the standalone `p2playd` application. pPlay's build workflow clones the P2Play
 repository into its build workspace and checks out a pinned commit; source files
-are not manually copied from one repository into the other. A dedicated
+are not manually copied from one repository into the other. The pin is maintained
+in `ci/prepare-p2play-embedded.sh` and must be deliberately advanced when embedded
+mode needs newer P2Play core changes. A dedicated
 `P2P_EMBEDDED_ONLY` CMake configuration should build the embeddable core/API
 without the standalone application target.
 

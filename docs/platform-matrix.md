@@ -1,6 +1,6 @@
 # Platform and runtime matrix
 
-Updated: 2026-11-24. This matrix distinguishes code/build evidence from device-level
+Updated: 2026-11-25. This matrix distinguishes code/build evidence from device-level
 acceptance. "Built" does not imply that the integrated lifecycle has been tested.
 
 ## Intended product layout
@@ -38,7 +38,10 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
   uses a dedicated data directory. The C API log callback is routed into `pplay.log`
   with the `P2Play:` prefix; owner password is applied through
   `p2play_config.owner_password`. The full five-platform pPlay workflow and PS5 package
-  job passed in run #1475 on this exact `dev` SHA.
+  job passed in run #1475 on the then-current embedded-core pin. After P2Play PR #35
+  merged as `e33886c383cd0e9d9645777ec1ac73a18711a88f`, pPlay PR #15 proposes
+  updating the embedded pin to that core revision; its full workflow run #1486
+  is pending and must pass before treating the new pin as verified.
 - The Silo MediaMesh plugin is an HTTP client for an external P2Play daemon. The
   current Goja plugin API exposes no process launcher or `p2play_core` C API.
   To let the plugin manage its own local core, add a host-level native lifecycle
@@ -71,3 +74,15 @@ background operation, stop/restart and persistent data.
 - Switch, PS4 and PS5 target the embedded pPlay core, not a separately deployed
   Silo/plugin stack. Embedded code/build integration is complete; physical-device
   LAN and lifecycle acceptance remains separate from CI build evidence.
+
+## CI dependency reliability
+
+P2Play PR #35 merged Android Gradle dependency-cache setup and repository ordering.
+The subsequent HTTP 429 from Maven Central exposed that trusted same-repository PR
+builds also need to seed the Gradle cache. The follow-up adds Google's Maven Central
+mirror (`maven-central.storage-download.googleapis.com/maven2/`) before Maven Central,
+keeps Central as fallback, permits cache writes for trusted same-repository PRs/pushes,
+keeps fork PR caches read-only, and preserves partial cache state after failed builds.
+P2Play run #339 passed all five platform jobs and the PS5 package job; pPlay PR #14
+merged corresponding changes and run #1485 passed. This addresses dependency-resolution
+reliability, not every possible Android build failure.

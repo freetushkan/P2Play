@@ -1,6 +1,6 @@
 # P2Play / MediaMesh — рабочий план
 
-Обновлено: 2026-11-24. Это компактный сопровождаемый план для ветки разработки.
+Обновлено: 2026-11-25. Это компактный сопровождаемый план для ветки разработки.
 Платформенная матрица и границы Android/Silo описаны отдельно в
 `docs/platform-matrix.md`; исходный DOCX в ветке `docs` остаётся справочным.
 Исходный большой документ `P2Play_MediaMesh.docx` и его текстовая версия `P2Play_MediaMesh.md`
@@ -163,7 +163,10 @@
 - [x] Встроенный режим pPlay реализован в `freetushkan/pPlay/dev`: отдельная сеть
       `P2Play_embedded` рядом с внешним `P2Play`; в приложение линкуется только static
       `p2play_core`, standalone daemon не включается. Workflow pPlay клонирует P2Play
-      и checkout-ит закреплённый commit `b6c7b74916e36a873663fa55d27a9aaa209e7cfe`.
+      и checkout-ит закреплённый commit из `ci/prepare-p2play-embedded.sh`.
+      После P2Play PR #35 создан pPlay PR #15 для обновления embedded core до
+      `e33886c383cd0e9d9645777ec1ac73a18711a88f`; до зелёного CI и merge PR #15
+      встроенная сборка ещё использует предыдущую ревизию.
       Core запускается лениво при выборе embedded-сети и останавливается после drain
       активных HTTP/stream операций при переключении модуля. Используется отдельный
       каталог данных pPlay. HTTP API сохраняет wildcard bind (`INADDR_ANY` для IPv4),
@@ -215,33 +218,37 @@
 
 ### Этап 5: наполнение каталога
 
-- [ ] Граббер как отдельный инструмент на Python (не часть C++ daemon):
-      все источники независимо опциональны; CSV title regex-фильтры, Rutor,
-      опциональный RuTracker и Jackett/Torznab; нормализация и merge по приоритету.
-      Grabber экспортирует полный `catalog-full.ndjson` и производный
-      `catalog-delta.ndjson`. Нетронутый full-файл публикуется дельтой;
-      отредактированный — только через атомарный publisher `--replace` как
-      полный snapshot с удалением отсутствующих записей. Полная замена доступна
-      и для принудительной чистки. Локальное состояние, checkpoints, pending run,
-      ручные suppressions/overrides хранятся транзакционно в SQLite. Ack связывает
-      итоговый файл, режим публикации, результат publisher и checkpoints.
-      Детали: `docs/grabber.md` и `docs/publisher.md`.
-- [ ] Инкрементально актуализировать недавние раздачи на трекерах через RSS/
-      Torznab polling: хранить per-indexer checkpoint и dedup state, учитывать
-      повторы, переупорядоченные/запаздывающие записи и обновление метаданных уже
-      известных infohash. RSS — периодический источник, не push-механизм.
-      Обновления должны попадать в delta NDJSON и быть идемпотентными.
+- [x] Отдельный Python Grabber реализован в `tools/grabber.py`, `grabber_lib.py`,
+      `grabber_adapters.py` и `grabber_templates.py`. Источники независимо включаются
+      через JSON profile: torrents-csv-data, Rutor, RuTracker XML/XZ, Jackett/Torznab,
+      прямой RSS и безопасные JSON/HTML/text templates. Нормализация, приоритетный
+      merge, quarantine, ручные overrides/suppressions и SQLite state разделены
+      с publisher. Экспортирует полный `catalog-full.ndjson` и производный
+      `catalog-delta.ndjson`; неизменённый full экспортируется дельтой, изменённый
+      требует полного `--replace`. Pending run и явный ACK связывают хэши файлов,
+      режим публикации, accepted count и checkpoints; сам Grabber никогда не
+      запускает publisher. Fixtures и `tools/grabber-test.py` проходят Linux CI.
+      Контракт и операторский workflow: `docs/grabber.md` и `docs/publisher.md`.
+- [x] Инкрементальный RSS/Torznab polling реализован: отдельные checkpoint и
+      overlap/dedup state на каждый feed/indexer, pagination, повторная обработка
+      запоздавших элементов, per-source priority и изоляция отказов. Изменения
+      известных infohash проходят через merge в полные delta-записи; повторы
+      идемпотентны, отсутствие старой записи в окне RSS не считается tombstone.
+      Direct RSS не требует Torznab caps. Локальные mock-тесты проверяют здоровый
+      feed рядом с упавшим, capabilities, redirects и replay; `grabber-test.py`
+      включён в Linux CI. См. `docs/grabber.md`.
 - [x] Инкрементальный transfer path MediaMesh и полная замена записи по тому же
       infohash реализованы в PR #29: выбранные immutable record segments повторно
       используются только после проверки размера и SHA-256; libtorrent затем
       проверяет байты по v2 torrent. Полная замена публикует атомарный новый snapshot
       под тем же публичным ключом. Сценарии reuse/replacement входят в Linux CI.
-- [ ] Не писать собственные парсеры сайтов трекеров без необходимости. Оценить
-      внешний Jackett как агрегатор индексеров и Torznab как стандартный интерфейс:
-      capabilities/categories, поиск, выдача недавних публикаций, пагинация,
-      ограничения и различия реализаций. Прямые RSS 2.0 источники могут стать
-      отдельным простым адаптером. Секреты/API keys хранятся только в локальной
-      конфигурации и не попадают в репозиторий или опубликованные каталоги.
+- [x] Оценён и использован внешний Jackett через Torznab вместо tracker-specific
+      HTML scrapers. Adapter получает capabilities/categories, опрашивает каждый
+      indexer независимо, поддерживает pagination, overlap, limits и отдельные
+      API keys в локальном профиле; redirects запрещены, ключи не попадают в логи.
+      Direct RSS реализован отдельным режимом того же bounded XML/RSS parser.
+      Jackett остаётся внешней необязательной службой, не vendored dependency.
+      Детали: `docs/grabber.md`.
 - [ ] Репрезентативный большой набор данных и измерения размера сегментов, индекса,
       паков и времени поиска; на их основе уточнить лимиты клиентов.
 
