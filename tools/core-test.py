@@ -99,7 +99,7 @@ def make_torrent(folder):
     # create_torrent constructor with list_files(create_file_entry[]).
     list_files = getattr(lt, "list_files", None)
     if callable(list_files):
-        ct = lt.create_torrent(list_files(os.path.dirname(folder)), 256 * 1024)
+        ct = lt.create_torrent(list_files(folder), 256 * 1024)
     else:
         fs = lt.file_storage()
         lt.add_files(fs, folder)
