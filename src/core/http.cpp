@@ -208,20 +208,30 @@ namespace p2p {
         return true;
     }
 
-    void HttpServer::stop() {
-        if (!m_running.exchange(false)) {
-            return;
+    void HttpServer::stopAccepting() {
+        if (m_running.exchange(false)) {
+            if (m_fd >= 0) {
+                shutdown(m_fd, SHUT_RDWR);
+                close(m_fd);
+                m_fd = -1;
+            }
         }
-        shutdown(m_fd, SHUT_RDWR);
-        close(m_fd);
-        m_fd = -1;
+        // Join the accept loop before reporting the connection count: a successful accept
+        // is counted and its worker is started before this join can complete.
         if (m_thread.joinable()) {
             m_thread.join();
         }
-        // the connections end on their own (a stream stops on the core's stop flag)
-        for (int i = 0; i < 100 && m_connections > 0; i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    void HttpServer::stop() {
+        stopAccepting();
+        // Connection workers are detached, but each decrements this counter as its last
+        // access to HttpServer. Never destroy the handler/core while one is still running.
+        while (m_connections.load() > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        m_handler = {};
+        m_port = 0;
     }
 
     void HttpServer::acceptLoop() {

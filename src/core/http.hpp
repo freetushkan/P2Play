@@ -73,9 +73,15 @@ namespace p2p {
         // port 0: any free one (port() tells which)
         bool start(uint16_t port, Handler handler);
 
+        // Stop the listener without terminating already accepted connections.
+        void stopAccepting();
+
+        // Stop the listener and wait until all accepted connections have returned.
         void stop();
 
         uint16_t port() const { return m_port; }
+
+        int activeConnections() const { return m_connections.load(); }
 
         static std::string urlDecode(const std::string &s, bool plusIsSpace);
 

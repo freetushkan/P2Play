@@ -29,8 +29,14 @@ int p2play_start(const p2play_config *config);
 /* the HTTP port, 0 if not running */
 int p2play_http_port(void);
 
-/* streams (and preloads) being served: the host keeps the device awake while nonzero */
+/* streams (and preloads) being served; nonzero while media operations are active */
 int p2play_active_streams(void);
+
+/* accepted HTTP requests, including stream responses, which have not finished yet */
+int p2play_active_requests(void);
+
+/* stop accepting new HTTP connections but let already accepted requests finish */
+void p2play_stop_accepting(void);
 
 /* nonzero once a client asked the server to stop (TorrServer's /shutdown); the host decides */
 int p2play_shutdown_requested(void);

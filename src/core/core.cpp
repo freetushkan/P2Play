@@ -313,6 +313,14 @@ namespace p2p {
         return n;
     }
 
+    int Core::activeRequests() const {
+        return m_http.activeConnections();
+    }
+
+    void Core::stopAccepting() {
+        m_http.stopAccepting();
+    }
+
     std::string Core::echo() const {
         return m_config.platform.empty() ? std::string(version()) : std::string(version()) + " " + m_config.platform;
     }

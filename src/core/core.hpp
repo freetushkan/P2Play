@@ -73,10 +73,16 @@ namespace p2p {
 
         void stop();
 
+        // Begin a graceful drain: close the listener, keep existing requests alive.
+        void stopAccepting();
+
         uint16_t httpPort() const { return m_http.port(); }
 
         // streams being served (the host keeps the device awake meanwhile)
         int activeStreams();
+
+        // accepted HTTP requests which are still using this core
+        int activeRequests() const;
 
         // a client asked the server to stop (MatriX /shutdown); the host decides
         bool shutdownRequested() const { return m_shutdownRequested; }

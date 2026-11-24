@@ -51,6 +51,18 @@ extern "C" int p2play_active_streams(void) {
     return g_core ? g_core->activeStreams() : 0;
 }
 
+extern "C" int p2play_active_requests(void) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_core ? g_core->activeRequests() : 0;
+}
+
+extern "C" void p2play_stop_accepting(void) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_core) {
+        g_core->stopAccepting();
+    }
+}
+
 extern "C" int p2play_shutdown_requested(void) {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_core && g_core->shutdownRequested() ? 1 : 0;
