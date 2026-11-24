@@ -38,6 +38,11 @@ by default and must be explicitly enabled/configured by the operator.
 
 Implemented adapters in this first slice:
 
+All built-in source types are selected through `SOURCE_ADAPTERS` in
+`tools/grabber_adapters.py`; CSV and Rutor are registered through compatibility
+wrappers around the first working handlers, and new/custom parser types are added
+there without changing the SQLite/export pipeline.
+
 - **torrents-csv-data:** reads an existing local Git checkout or a configured local
   CSV file; it never clones/fetches the large dataset. For a Git checkout it records
   HEAD, the HEAD blob OID and the worktree hash. A changed worktree is streamed and

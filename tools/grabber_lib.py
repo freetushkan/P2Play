@@ -1052,18 +1052,13 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                 savepoint = "source_" + str(len(report["sources"]))
                 state.db.execute(f"SAVEPOINT {savepoint}")
                 try:
-                    if source_type in {"csv", "torrents-csv-data"}:
-                        result = _csv_source(source, state, run_id, publisher, quarantine_dir)
-                    elif source_type == "rutor":
-                        result = _rutor_source(source, state, run_id, publisher, quarantine_dir)
+                    from grabber_adapters import SOURCE_ADAPTERS
+                    adapter = SOURCE_ADAPTERS.get(source_type)
+                    if adapter is None:
+                        result = {"status": "unsupported", "reason": f"adapter {source_type!r} is not registered"}
                     else:
-                        from grabber_adapters import SOURCE_ADAPTERS
-                        adapter = SOURCE_ADAPTERS.get(source_type)
-                        if adapter is None:
-                            result = {"status": "unsupported", "reason": f"adapter {source_type!r} is not registered"}
-                        else:
-                            result = adapter(source, config.get("templates", {}), state,
-                                             run_id, publisher, quarantine_dir)
+                        result = adapter(source, config.get("templates", {}), state,
+                                         run_id, publisher, quarantine_dir)
                     state.db.execute(f"RELEASE SAVEPOINT {savepoint}")
                     result["checkpoint_before"] = before
                     result["priority"] = int(source.get("priority", 0))

@@ -562,6 +562,9 @@ class GrabberTests(unittest.TestCase):
         config = g._load_config(profile_path)
         self.assertIn("generic-json", config["templates"])
         self.assertEqual(config["templates"]["generic-text"]["format"], "text")
+        self.assertTrue({"csv", "torrents-csv-data", "rutor", "rutracker",
+                         "torznab", "jackett-torznab", "rss", "template"}.issubset(
+                             ga.SOURCE_ADAPTERS))
         self.assertTrue(all(source.get("enabled") is False for source in config["sources"]))
 
     def test_direct_rss_uses_feed_parser_without_caps(self):

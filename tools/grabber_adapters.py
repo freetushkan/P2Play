@@ -701,7 +701,22 @@ def template_source(source: Dict[str, Any], templates, state, run_id: str,
     return counters
 
 
+def csv_source(source: Dict[str, Any], templates, state, run_id: str,
+               publisher: Dict[str, Any], quarantine_dir: Path) -> Dict[str, Any]:
+    """Register the existing CSV implementation behind the replaceable adapter API."""
+    return g._csv_source(source, state, run_id, publisher, quarantine_dir)
+
+
+def rutor_source(source: Dict[str, Any], templates, state, run_id: str,
+                 publisher: Dict[str, Any], quarantine_dir: Path) -> Dict[str, Any]:
+    """Register the existing Rutor implementation behind the replaceable adapter API."""
+    return g._rutor_source(source, state, run_id, publisher, quarantine_dir)
+
+
 SOURCE_ADAPTERS = {
+    "csv": csv_source,
+    "torrents-csv-data": csv_source,
+    "rutor": rutor_source,
     "rutracker": rutracker_source,
     "torznab": torznab_source,
     "jackett-torznab": torznab_source,
