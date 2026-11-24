@@ -360,10 +360,10 @@ namespace p2p {
         }
         m_mesh.load(m_store.dir(), [this](const std::string &line) { log("%s", line.c_str()); });
         m_auth.load(m_store.dir());
-        if (!m_config.ownerUsername.empty() || !m_config.ownerPassword.empty()) {
-            const std::string authError = m_auth.configureOwner(m_config.ownerUsername, m_config.ownerPassword);
+        if (!m_config.ownerPassword.empty()) {
+            const std::string authError = m_auth.setOwnerPassword(m_config.ownerPassword);
             if (!authError.empty()) {
-                log("[Auth] embedded owner credentials rejected: %s", authError.c_str());
+                log("[Auth] cannot apply embedded owner password: %s", authError.c_str());
                 return false;
             }
         }

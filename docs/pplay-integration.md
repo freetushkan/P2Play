@@ -112,18 +112,13 @@ only to `127.0.0.1` is not acceptable. pPlay should display or expose the LAN
 address and port. It must not silently configure router port forwarding or claim
 that LAN visibility implies safe Internet exposure.
 
-The username and password entered in the `P2Play_embedded` network settings are
-the actual credentials of the embedded server's owner account. The username is
-user-defined and MUST NOT be hard-coded to `owner`. The backend may retain a
-stable internal owner ID (for example, `id=owner`), but Basic login, native API
-login, tokens and account display must use the configured username.
-
-On first initialization, the configured username/password provision the persistent
-owner account and the password is stored only as a password hash. On subsequent
-starts, the stored account is authoritative: the embedded core must verify that
-the configured credentials still identify that owner and MUST NOT silently reset
-or overwrite an existing account database. A credential mismatch must be surfaced
-as a startup/configuration error, not bypassed by creating a new owner.
+The embedded server keeps the existing fixed owner identity: username `owner` and
+internal ID `owner`. pPlay passes the password from the `P2Play_embedded` network
+settings through `p2play_config.owner_password` to `p2play_start()`. On every
+embedded start, that password is applied to the owner's password hash, replacing
+the previous password when it changes. The owner ID, username, API token and all
+other user records MUST remain unchanged. A NULL `owner_password` preserves the
+standalone server's existing first-login password flow.
 
 ### Additional users and roles
 
@@ -163,10 +158,9 @@ The implementation is complete only when tests prove all of the following:
    network does not start the embedded service.
 9. A second device on the same LAN can reach the embedded HTTP service. The service
    is not restricted to loopback and does not set up public WAN port forwarding.
-10. The username/password from pPlay's embedded-network settings authenticate the
-    actual owner account, including when its username is not `owner`. The first
-    initialization persists the owner; later starts do not silently overwrite
-    existing credentials or user data.
+10. The configured embedded password is applied to the fixed `owner` account on
+    every server start. Changing it changes password authentication but preserves the
+    owner's stable ID, username, API token and all additional user records.
 11. The owner can create additional server users through the pPlay management UI;
     their accounts persist across restarts and the owner cannot be deleted.
 12. The current numeric `rank` hierarchy is documented as such. A separate

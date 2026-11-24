@@ -209,23 +209,21 @@ namespace p2p {
         }
     }
 
-    std::string Auth::configureOwner(const std::string &name, const std::string &password) {
-        if (name.empty() || password.empty()) return "both owner username and password are required";
-        if (name.find(':') != std::string::npos) return "owner username cannot contain ':'";
+    std::string Auth::setOwnerPassword(const std::string &password) {
+        if (password.empty()) {
+            return "owner password is empty";
+        }
         std::lock_guard<std::mutex> lock(m_mutex);
         User *o = findLocked(kOwner);
-        if (!o) return "owner account is missing";
-        for (const User &u : m_users) {
-            if (u.id != kOwner && u.name == name) return "owner username is already used by another account";
+        if (!o) {
+            return "owner account is missing";
         }
-        if (o->passwordHash.empty()) {
-            o->name = name;
+        // The password is host-configured. Preserve the stable owner ID, username,
+        // API token, rank and all other user records.
+        if (!checkPassword(o->passwordHash, password)) {
             o->passwordHash = hashPassword(password);
             save();
-            return "";
         }
-        if (o->name != name || !checkPassword(o->passwordHash, password))
-            return "configured credentials do not match the stored owner account";
         return "";
     }
 

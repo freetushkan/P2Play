@@ -45,7 +45,8 @@ namespace p2p {
         static constexpr const char *kOwner = "owner";
 
         void load(const std::string &dir);
-        std::string configureOwner(const std::string &name, const std::string &password);
+        // Embedded host: update only the fixed owner's password, preserving ID and token.
+        std::string setOwnerPassword(const std::string &password);
 
         // the owner has a password (else the first login sets it)
         bool passwordSet() const;

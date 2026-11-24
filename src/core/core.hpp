@@ -38,7 +38,6 @@ namespace p2p {
         uint16_t httpPort = 8090;   // TorrServer's
         bool console = false;       // fewer connections, no LSD/UPnP/NAT-PMP, IPv4 only
         std::string platform;       // shown by /echo
-        std::string ownerUsername;
         std::string ownerPassword;
         std::function<void(const std::string &)> log;
     };

@@ -19,8 +19,7 @@ typedef struct p2play_config {
     const char *platform;   /* shown by /echo next to the version; may be NULL */
     p2play_log_fn log;      /* may be NULL */
     void *log_user;
-    /* Optional pair: provision/verify the persistent owner. Both or neither are required. */
-    const char *owner_username;
+    /* Optional: override the fixed owner's password on each embedded start. */
     const char *owner_password;
 } p2play_config;
 
