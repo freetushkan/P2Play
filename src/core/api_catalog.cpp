@@ -111,15 +111,11 @@ namespace p2p {
                 }
 
                 json results = json::array();
-                for (const MeshRecord &r : m_mesh.search(req.param("q"), req.param("tag"), static_cast<size_t>(limit))) {
-                    if (!requestedLists.empty() &&
-                        (listFilter.empty() ||
-                         std::none_of(listFilter.begin(), listFilter.end(), [&](const std::string &key) {
-                             return r.lists.count(key) != 0;
-                         }))) {
-                        continue;
+                if (requestedLists.empty() || !listFilter.empty()) {
+                    for (const MeshRecord &r : m_mesh.search(req.param("q"), req.param("tag"),
+                                                              static_cast<size_t>(limit), listFilter)) {
+                        results.push_back(r.json());
                     }
-                    results.push_back(r.json());
                 }
                 res.json(200, json{{"results", results}}.dump());
             } else if (get && n == 3) {

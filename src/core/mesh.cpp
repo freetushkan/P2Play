@@ -513,13 +513,19 @@ namespace p2p {
         return true;
     }
 
-    std::vector<MeshRecord> Mesh::search(const std::string &query, const std::string &tag, size_t limit) const {
+    std::vector<MeshRecord> Mesh::search(const std::string &query, const std::string &tag, size_t limit,
+                                         const std::set<std::string> &lists) const {
         const std::vector<std::string> want = words(meshFold(query));
         const std::string tagFolded = meshFold(tag);
         std::vector<std::pair<int, const MeshRecord *>> hits;
         std::lock_guard<std::mutex> lock(m_mutex);
         for (const auto &item : m_index) {
             const MeshRecord &r = item.second;
+            if (!lists.empty() && std::none_of(lists.begin(), lists.end(), [&](const std::string &pk) {
+                    return r.lists.count(pk) != 0;
+                })) {
+                continue;
+            }
             if (!tagFolded.empty() && std::none_of(r.tags.begin(), r.tags.end(),
                                                    [&](const std::string &t) { return meshFold(t) == tagFolded; })) {
                 continue;

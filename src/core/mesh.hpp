@@ -86,7 +86,8 @@ namespace p2p {
         void load(const std::string &dataDir, std::function<void(const std::string &)> log);
         std::vector<MeshList> lists() const;
         bool list(const std::string &pubkey, MeshList &out) const;
-        std::vector<MeshRecord> search(const std::string &query, const std::string &tag, size_t limit) const;
+        std::vector<MeshRecord> search(const std::string &query, const std::string &tag, size_t limit,
+                                        const std::set<std::string> &lists = {}) const;
         bool record(const std::string &ih, MeshRecord &out) const;
         std::string create(const std::string &name, const std::string &desc, std::string &pubkey, bool meta = false);
         int addPending(const std::string &pubkey, const std::string &ndjson, std::string &error);
