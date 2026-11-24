@@ -380,6 +380,26 @@ untrusted input. They can guide discovery but MUST NOT bypass cryptographic chec
 subscription policy. Only `have` contributes to the holder count; `known` is knowledge
 gossip, not a popularity signal.
 
+## Isolated local testing
+
+A normal node joins the public MediaMesh directory rendezvous even when it is behind
+NAT. NAT is not a privacy boundary. For tests that must not advertise catalog keys
+or publish pointers to the public network, stop the daemon and set both startup
+settings in its `settings.json`:
+
+```json
+{
+  "DisableDHT": true,
+  "DisableMeshDirectory": true
+}
+```
+
+`DisableDHT` disables BEP 44 DHT get/put and DHT peer discovery;
+`DisableMeshDirectory` prevents the fixed public directory torrent and its BEP 10
+`have`/`known` exchange from starting. The local catalog API and local publishing
+remain available. Restart the daemon after changing either setting. For normal
+Internet-connected nodes, leave both settings false.
+
 ## 9. Current implementation boundaries
 
 This document describes the existing P2Play profile, including its current limitations:

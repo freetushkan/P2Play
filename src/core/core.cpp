@@ -444,7 +444,11 @@ namespace p2p {
         }
 
         m_alertThread = std::thread(&Core::alertLoop, this);
-        meshDirectory();
+        if (!m_settings.disableMeshDirectory) {
+            meshDirectory();
+        } else {
+            log("[Mesh] directory swarm disabled by settings");
+        }
         meshTick(true);
         m_idleThread = std::thread(&Core::idleLoop, this);
 
@@ -497,6 +501,7 @@ namespace p2p {
         i("UploadRateLimit", m_settings.uploadRateLimit);
         b("DisableUpload", m_settings.disableUpload);
         b("DisableDHT", m_settings.disableDht);
+        b("DisableMeshDirectory", m_settings.disableMeshDirectory);
         b("DisableUPNP", m_settings.disableUpnp);
         i("PeersListenPort", m_settings.listenPort);
         b("P2PCatalogOnly", m_settings.catalogOnly);
@@ -578,6 +583,7 @@ namespace p2p {
                 {"DisableUTP", false},
                 {"DisableUPNP", m_settings.disableUpnp},
                 {"DisableDHT", m_settings.disableDht},
+                {"DisableMeshDirectory", m_settings.disableMeshDirectory},
                 {"DisablePEX", false},
                 {"DisableUpload", m_settings.disableUpload},
                 {"DownloadRateLimit", m_settings.downloadRateLimit},
@@ -592,7 +598,7 @@ namespace p2p {
         static const std::set<std::string> used = {
                 "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
                 "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
-                "DisableUpload", "DisableDHT", "DisableUPNP", "PeersListenPort"};
+                "DisableUpload", "DisableDHT", "DisableMeshDirectory", "DisableUPNP", "PeersListenPort"};
         json stored = m_store.publicSettings();
         for (auto it = stored.begin(); it != stored.end(); ++it) {
             if (!used.count(it.key())) {

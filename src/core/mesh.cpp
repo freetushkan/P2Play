@@ -140,7 +140,7 @@ namespace p2p {
             auto it = j.find(key); return it != j.end() && it->is_string() ? it->get<std::string>() : fallback;
         }
         bool validUtf8Text(const std::string &s, size_t limit) {
-            if (s.size() > limit || s.find('\\0') != std::string::npos) return false;
+            if (s.size() > limit || s.find('\0') != std::string::npos) return false;
             for (size_t i = 0; i < s.size();) {
                 unsigned char c = static_cast<unsigned char>(s[i++]);
                 if (c < 0x80) continue;

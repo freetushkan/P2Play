@@ -53,10 +53,17 @@ def main():
     os.makedirs(b)
     proc = None
     try:
+        # This test covers local catalog APIs and manual import only. Keep its
+        # nodes outside public DHT and the directory rendezvous.
+        for data in (a, b):
+            with open(os.path.join(data, "settings.json"), "w") as f:
+                json.dump({"DisableDHT": True, "DisableMeshDirectory": True}, f)
         proc = ct.start_daemon(daemon, a)
         check(call("/api/lists")[1]["lists"] == [], "fresh server has no catalog lists")
         check(call("/api/catalog/search?q=anything")[1]["results"] == [], "search is empty before a list is added")
-        status, out = call("/api/publish", {"name": "Test list", "description": "for the test"})
+        bad_name = call("/api/publish", {"name": "Bad" + chr(0) + "Name"})
+        check(bad_name[0] == 400, "a catalog name containing NUL is rejected")
+        status, out = call("/api/publish", {"name": "Test 0 list", "description": "for the test"})
         pk = out.get("pubkey", "")
         check(status == 201 and len(pk) == 64 and os.path.exists(os.path.join(a, "keys", pk + ".seed")), "a list made, its key kept")
         status, out = call(f"/api/publish/{pk}/records", raw=b'{"ih": "xyz", "title": "bad"}\n')
@@ -134,7 +141,7 @@ def main():
         shutil.rmtree(bad)
         shutil.copytree(src, bad)
         manifest = open(os.path.join(bad, "manifest.ben"), "rb").read()
-        open(os.path.join(bad, "manifest.ben"), "wb").write(manifest.replace(b"4:name9:Test list", b"4:name9:Evil list"))
+        open(os.path.join(bad, "manifest.ben"), "wb").write(manifest.replace(b"4:name11:Test 0 list", b"4:name11:Evil list 0"))
         status, out = call("/api/lists/import", {"dir": bad})
         check(status == 400 and "signature" in out["error"], "a tampered manifest refused")
         status, _ = call("/api/lists/import", {"dir": src})

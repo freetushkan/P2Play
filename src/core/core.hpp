@@ -55,6 +55,7 @@ namespace p2p {
         int uploadRateLimit = 0;
         bool disableUpload = false;
         bool disableDht = false;
+        bool disableMeshDirectory = false; // startup-only: do not join the public MediaMesh rendezvous swarm
         bool disableUpnp = false;
         int listenPort = 0;          // BitTorrent, 0: any (restart)
         std::string dhtBootstrap;    // P2PDhtBootstrap: "host:port,...", a DHT of our own
