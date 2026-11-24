@@ -1,4 +1,4 @@
-// MediaMesh BEP 10 directory protocol: have, get and signed BEP 44 item.
+// MediaMesh BEP 10 directory protocol: have, known, get and signed BEP 44 item.
 #include "mesh_ext.hpp"
 
 #include <algorithm>
