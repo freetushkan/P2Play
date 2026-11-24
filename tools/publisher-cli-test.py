@@ -155,6 +155,21 @@ def main():
             rejected = run_cli(["publish", "--import", str(bad), "--dry-run"])
             check(rejected.returncode == 2 and "unknown fields" in rejected.stderr,
                   "unknown fields are rejected before network mutation")
+
+            for field, value in (("files", 1 << 31), ("size", 1 << 63), ("date", 1 << 63)):
+                invalid = root / (field + "-overflow.ndjson")
+                invalid.write_text(json.dumps({"ih": "c" * 40, "title": "range check",
+                                               field: value}) + "\n", encoding="utf-8")
+                failed = run_cli(["publish", "--import", str(invalid), "--dry-run"])
+                check(failed.returncode == 2 and field in failed.stderr,
+                      field + " overflow is rejected against MediaMesh API integer limits")
+
+            remote_http = run_cli(["publish", "--import", str(ndjson), "--server",
+                                   "http://publisher.example.invalid", "--list", PUBKEY])
+            check(remote_http.returncode == 2 and "plain HTTP" in remote_http.stderr,
+                  "remote plain HTTP is refused before credentials are sent")
+            check(not any(path == "/api/auth/login" for method, path, auth in server.seen),
+                  "refused transport does not attempt authentication")
         print("PASS")
     finally:
         server.shutdown()

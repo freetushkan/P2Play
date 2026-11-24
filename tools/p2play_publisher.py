@@ -222,8 +222,8 @@ def _timestamp(value: Any, line: int) -> int:
     if isinstance(value, bool):
         raise PublisherError(f"line {line}: date must be a Unix timestamp or ISO-8601 string")
     if isinstance(value, int):
-        if value < 0:
-            raise PublisherError(f"line {line}: date must be non-negative")
+        if value < 0 or value > (1 << 63) - 1:
+            raise PublisherError(f"line {line}: date must be in the signed 64-bit Unix timestamp range")
         return value
     if isinstance(value, str):
         try:
@@ -232,17 +232,17 @@ def _timestamp(value: Any, line: int) -> int:
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=dt.timezone.utc)
             result = int(parsed.timestamp())
-            if result < 0:
-                raise ValueError("date before Unix epoch")
+            if result < 0 or result > (1 << 63) - 1:
+                raise ValueError("date outside signed 64-bit Unix timestamp range")
             return result
         except ValueError as exc:
             raise PublisherError(f"line {line}: invalid ISO-8601 date {value!r}") from exc
     raise PublisherError(f"line {line}: date must be a Unix timestamp or ISO-8601 string")
 
 
-def _uint(value: Any, field: str, line: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise PublisherError(f"line {line}: {field} must be a non-negative integer")
+def _uint(value: Any, field: str, line: int, maximum: int = (1 << 63) - 1) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+        raise PublisherError(f"line {line}: {field} must be an integer from 0 to {maximum}")
     return value
 
 
@@ -353,14 +353,21 @@ def normalize_row(raw: Any, line: int, base_dir: Path, whitelist: set,
             raise PublisherError(f"line {line}: title and name disagree")
         if not isinstance(ih, str) or not HASH_RE.fullmatch(ih):
             raise PublisherError(f"line {line}: ih must be a 40- or 64-character hexadecimal hash")
-        if not isinstance(title, str) or not title.strip() or len(title.encode("utf-8")) > 512:
-            raise PublisherError(f"line {line}: title/name must be 1..512 UTF-8 bytes")
+        if not isinstance(title, str) or not title.strip() or "\x00" in title:
+            raise PublisherError(f"line {line}: title/name must be non-empty UTF-8 text without NUL")
+        try:
+            title_bytes = title.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise PublisherError(f"line {line}: title/name is not valid UTF-8 text") from exc
+        if len(title_bytes) > 512:
+            raise PublisherError(f"line {line}: title/name must be at most 512 UTF-8 bytes")
         row.update({"ih": ih.lower(), "title": title.strip(), "shard": shard})
         if "date" in raw:
             row["date"] = _timestamp(raw["date"], line)
-        for field in ("size", "files"):
-            if field in raw:
-                row[field] = _uint(raw[field], field, line)
+        if "size" in raw:
+            row["size"] = _uint(raw["size"], "size", line)
+        if "files" in raw:
+            row["files"] = _uint(raw["files"], "files", line, (1 << 31) - 1)
         tags = _strings(raw.get("tags", []), "tags", line)
         tags.extend(_categories(raw.get("category"), category_map, line))
         row["tags"] = _strings(tags, "tags", line) if tags else []

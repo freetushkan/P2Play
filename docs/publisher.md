@@ -22,6 +22,10 @@ category mapping, output whitelist, description/poster upload and an explicit
 The GUI wrapper, scheduler and policy editor remain future work. Qt belongs
 only in the wrapper, never in the shared Qt-free core.
 
+The grabber must merge source layers before calling this CLI. The CLI skips
+identical duplicate rows and rejects conflicting records for the same infohash;
+it deliberately does not apply source priorities or perform metadata upserts.
+
 Run it from a checkout:
 
 ```sh

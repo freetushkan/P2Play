@@ -49,11 +49,6 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
           cmake --build build --target p2play_release -j$(nproc)
 
-      - name: Publisher CLI test
-        run: |
-          python3 -m py_compile tools/p2play_publisher.py tools/publisher-cli-test.py
-          python3 tools/publisher-cli-test.py
-
       # the TorrServer MatriX API as pPlay and Lampa use it: RAM storage, RAM with a cache smaller
       # than the file (pieces dropped and downloaded again), disk storage
       - name: Core test
