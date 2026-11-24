@@ -14,6 +14,24 @@ formats and sample files will be supplied later; do not invent them now.
 - Support one-shot imports and scheduled incremental refresh of recent releases.
 - Keep credentials, API keys, cookies and personal data out of Git.
 
+## Configurable parser templates
+
+The parser must not be limited to hard-coded site adapters. Provide a user-editable
+template system for JSON, pseudo-HTML and plain text sources. A template maps
+source selectors/expressions to canonical fields (infohash/magnet, title, date,
+size, file count, category, tracker/site, description, poster and source ID).
+Templates should support JSON paths, CSS-like selectors for pseudo-HTML, and
+regular expressions / named capture groups for line-oriented text, with explicit
+fallbacks and validation.
+
+Keep templates data-driven (YAML or JSON configuration), versioned and testable
+against fixture files. Include preview/dry-run output showing extracted fields,
+normalization errors and deduplication decisions before importing. Avoid arbitrary
+code execution in templates; bound regex complexity, input size, nesting and
+per-item processing time. Built-in adapters for known formats remain available
+and may be overridden by local templates. The user will supply representative
+JSON, pseudo-HTML and plain-text fixtures before adapter implementation.
+
 ## Input formats
 
 The DOCX names these adapter families; sample fixtures are pending:
