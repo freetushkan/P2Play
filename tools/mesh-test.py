@@ -104,7 +104,7 @@ def main():
         res = call("/api/catalog/search?q=&tag=MOVIE")[1]["results"]
         check([r["hash"] for r in res] == [IH2], "search: a tag, hashes in lower case")
         status, rec = call(f"/api/catalog/{IH1}")
-        check(status == 200 and rec["size"] == 1234567 and rec["sources"][0]["name"] == "Test list", "a record and its list")
+        check(status == 200 and rec["size"] == 1234567 and rec["sources"][0]["name"] == "Test 0 list", "a record and its list")
 
         call(f"/api/publish/{pk}/records", raw=json.dumps({"del": IH2}).encode())
         status, out = call(f"/api/publish/{pk}/release", {})
