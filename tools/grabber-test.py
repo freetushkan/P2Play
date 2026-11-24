@@ -113,6 +113,17 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual((self.dump / "rutor.txt").read_text(encoding="utf-8"), "Movies\n")
         self.assertTrue((self.root / "work" / "pending-run.json").is_file())
 
+    def test_example_csv_title_filter_includes_audio_and_excludes_iso(self):
+        profile_path = Path(__file__).resolve().parent / "grabber-profile.example.json"
+        config = json.loads(profile_path.read_text(encoding="utf-8"))
+        source = next(item for item in config["sources"] if item["id"] == "torrents-csv-data")
+        compiled = g._compile_title_filter(source)
+        self.assertTrue(g._title_allowed("Artist - Album FLAC", compiled))
+        self.assertTrue(g._title_allowed("Artist - Album DSD256", compiled))
+        self.assertTrue(g._title_allowed("Artist - Album SACD-R", compiled))
+        self.assertTrue(g._title_allowed("Movie.release.mkv", compiled))
+        self.assertFalse(g._title_allowed("Disc image.iso", compiled))
+
     def test_ack_delta_then_unchanged_run_is_idempotent(self):
         first = self.run_once()
         ack = g.ack_run(self.state, first["run_id"], self.full, 2, "auto")
@@ -469,6 +480,7 @@ class GrabberTests(unittest.TestCase):
         feed_state["payload"] = feed.replace(b"</channel>", (late_item + stale_item).encode() + b"</channel>")
         second = self.run_once()
         self.assertEqual(second["sources"]["jackett-indexer-a"]["accepted"], 1)
+        self.assertGreaterEqual(second["sources"]["jackett-indexer-a"]["duplicates"], 1)
         self.assertGreaterEqual(second["sources"]["jackett-indexer-a"]["filtered"], 1)
         self.assertEqual(second["counts"]["delta"], 1)
         full_hashes = {row["ih"] for row in self.read_rows(self.full)}
@@ -477,6 +489,8 @@ class GrabberTests(unittest.TestCase):
         g.ack_run(self.state, second["run_id"], self.full, 1, "auto")
 
         third = self.run_once()
+        self.assertEqual(third["sources"]["jackett-indexer-a"]["accepted"], 0)
+        self.assertGreaterEqual(third["sources"]["jackett-indexer-a"]["duplicates"], 2)
         self.assertEqual(third["counts"]["delta"], 0)
         g.ack_run(self.state, third["run_id"], self.full, 0, "auto")
 

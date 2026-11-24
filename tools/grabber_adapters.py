@@ -567,7 +567,8 @@ def torznab_source(source: Dict[str, Any], templates, state, run_id: str,
                 }, publisher)
                 outcome = state.add_observation(
                     run_id, source_id, record["ih"], int(source.get("priority", 40)),
-                    record, categories, source_ref, str(timestamp or ""), item["provenance"])
+                    record, categories, source_ref, str(timestamp or ""), item["provenance"],
+                    deduplicate_persisted=True)
                 counters["parsed"] += 1
                 if outcome == "accepted":
                     counters["accepted"] += 1

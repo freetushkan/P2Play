@@ -20,8 +20,9 @@
         "title_regex": {
           "mode": "any",
           "include": [
-            "(?i)\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob|iso)(?:$|[\\s)\\]])",
-            "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b"
+            "(?i)\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob)(?:$|[\\s)\\]])",
+            "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b",
+            "(?i)\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD(?:-R)?|MP3|AAC|M4A|OPUS|OGG|Vorbis|WMA|AC3|DTS|MQA)\\b"
           ],
           "exclude": []
         }

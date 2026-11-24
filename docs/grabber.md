@@ -171,10 +171,13 @@ fetching the large CSV blob merely to inspect commit metadata.
 The first source supports configurable regular-expression filters applied to
 its `name` / normalized title. The filter profile has:
 
-- `include`: regex patterns for media filename extensions and release/codec
+- `include`: regex patterns for video filename extensions and release/codec
   markers (for example `.mkv`, `.mp4`, `DVDRip`, `BDRip`, `WEBRip`,
   `WEB-DL`, `HDTV`, `AVC`, `HEVC`, `H.264`, `H.265`, `x264`,
-  `x265`, `XviD`);
+  `x265`, `XviD`), plus audio formats and codecs (`FLAC`, `ALAC`, `APE`,
+  `WavPack`, `WAV`, `AIFF`, `DSD`, `DSF`, `DFF`, `SACD`, `MP3`, `AAC`,
+  `M4A`, `OPUS`, `OGG`, `Vorbis`, `WMA`, `AC3`, `DTS`, `MQA`). ISO
+  disc images are intentionally not part of the example whitelist;
 - `mode: "any"` (default) accepts a title when at least one include pattern
   matches; `mode: "all"` requires every include pattern to match;
 - `exclude` drops a title when any exclude pattern matches;

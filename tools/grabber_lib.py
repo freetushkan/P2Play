@@ -467,7 +467,8 @@ class State:
 
     def add_observation(self, run_id: str, source_id: str, ih: str, priority: int,
                         record: Dict[str, Any], categories: Sequence[str],
-                        source_ref: str, revision: str, provenance: Optional[Dict[str, Any]] = None) -> str:
+                        source_ref: str, revision: str, provenance: Optional[Dict[str, Any]] = None,
+                        deduplicate_persisted: bool = False) -> str:
         conflict = self.db.execute("SELECT 1 FROM run_conflicts WHERE run_id=? AND source_id=? AND ih=?",
                                    (run_id, source_id, ih)).fetchone()
         if conflict:
@@ -489,6 +490,19 @@ class State:
             self.db.execute("INSERT INTO run_conflicts VALUES(?,?,?,?)",
                             (run_id, source_id, ih, detail))
             return "conflict"
+        if deduplicate_persisted:
+            cached = self.db.execute(
+                "SELECT priority,record_json,categories_json,provenance_json FROM observations WHERE source_id=? AND ih=?",
+                (source_id, ih)).fetchone()
+            if cached and cached["record_json"] == packed and cached["categories_json"] == packed_categories:
+                if cached["priority"] == priority and cached["provenance_json"] == packed_provenance:
+                    return "duplicate"
+                # Preserve changing local metrics/provenance and priority updates,
+                # but do not count an unchanged overlap replay as a new observation.
+                outcome = "provenance" if cached["priority"] == priority else "accepted"
+                self.db.execute("INSERT INTO run_observations VALUES(?,?,?,?,?,?,?,?,?)",
+                                (run_id, source_id, ih, priority, packed, packed_categories, source_ref, revision, packed_provenance))
+                return outcome
         self.db.execute("INSERT INTO run_observations VALUES(?,?,?,?,?,?,?,?,?)",
                         (run_id, source_id, ih, priority, packed, packed_categories, source_ref, revision, packed_provenance))
         return "accepted"
