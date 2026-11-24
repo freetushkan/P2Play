@@ -186,13 +186,18 @@ def _parse_selector(selector: str) -> List[str]:
     parts = selector.split()
     if len(parts) > 4:
         raise TemplateError("HTML selectors may contain at most four descendant steps")
+    attribute_re = re.compile(
+        r"^([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*['\"]?([^'\"]+)['\"]?)?$"
+    )
     for part in parts:
-        if not re.match(r"^(?:[A-Za-z][A-Za-z0-9_-]*)?(?:[.#][A-Za-z0-9_-]+|\[[^\]]+\])*$", part):
+        if not re.fullmatch(r"(?:[A-Za-z][A-Za-z0-9_-]*)?(?:[.#][A-Za-z0-9_-]+|\[[^\]]+\])*", part):
             raise TemplateError(f"unsupported CSS-like selector {selector!r}")
-        # Validate attribute selector syntax without needing an HTML input.
-        probe = _Node("div", {})
-        if not _compound_selector_matches(probe, part) and not any(c in part for c in ".#["):
-            raise TemplateError(f"invalid CSS-like selector {selector!r}")
+        # Validate attribute selector syntax independently from any document
+        # node. A valid simple tag (e.g. h2/span) must not be tested against a
+        # synthetic div element because that is a runtime match, not grammar.
+        for expression in re.findall(r"\[([^\]]+)\]", part):
+            if not attribute_re.fullmatch(expression.strip()):
+                raise TemplateError(f"invalid attribute selector in {selector!r}")
     return parts
 
 

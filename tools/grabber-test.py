@@ -505,6 +505,20 @@ class GrabberTests(unittest.TestCase):
         self.assertIn("e" * 40, {row["ih"] for row in self.read_rows(self.full)})
         g.discard_run(self.state, report["run_id"])
 
+    def test_html_selector_validation_accepts_tags_and_rejects_invalid_attributes(self):
+        for selector in ("h2", "span", "a.magnet", "article.release", "time[datetime]",
+                         "span[data-bytes]", "div.result h2", "div.result > h2"):
+            # Child combinators are intentionally not supported by this small selector grammar.
+            if ">" in selector:
+                with self.assertRaises(gt.TemplateError):
+                    gt._parse_selector(selector)
+            else:
+                self.assertTrue(gt._parse_selector(selector))
+        with self.assertRaises(gt.TemplateError):
+            gt._parse_selector("span[=broken]")
+        with self.assertRaises(gt.TemplateError):
+            gt._parse_selector("span[data-bytes=]")
+
     def test_json_html_and_text_template_formats(self):
         json_template = {"format": "json", "record_path": "$.results[*]",
             "fields": {"ih": "$.hash", "title": "$.name", "date": "$.created",
