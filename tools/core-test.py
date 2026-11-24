@@ -113,9 +113,6 @@ def start_seeder(ti, save_path):
         "listen_interfaces": f"127.0.0.1:{SEED_PORT}",
         "enable_dht": False, "enable_lsd": False, "enable_upnp": False, "enable_natpmp": False,
         "allow_multiple_connections_per_ip": True,
-        # error | peer | connect | status: observe accepted sockets, incoming
-        # BitTorrent handshakes, and the exact reason the seed disconnects a peer.
-        "alert_mask": (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6),
     })
     params = lt.add_torrent_params()
     params.ti = ti
@@ -129,7 +126,7 @@ def start_seeder(ti, save_path):
             actual_port = ses.listen_port()
             if actual_port != SEED_PORT:
                 raise RuntimeError(f"seeder requested port {SEED_PORT}, but libtorrent listened on {actual_port}")
-            return ses, h
+            return ses
         time.sleep(0.1)
     raise RuntimeError(f"seeder did not finish checking/listening (port={ses.listen_port()})")
 
@@ -222,7 +219,7 @@ def main():
     try:
         folder, files = make_payload(root)
         ti = make_torrent(folder)
-        ses, seed = start_seeder(ti, os.path.join(root, "seed"))
+        ses = start_seeder(ti, os.path.join(root, "seed"))
         ih = str(ti.info_hashes().v1)  # v1, as TorrServer (a hybrid torrent: info_hash() is v2)
         # the seeder as the only source: p2playd finds it through the magnet's x.pe
         magnet = lt.make_magnet_uri(ti) + f"&x.pe=127.0.0.1:{SEED_PORT}"
@@ -296,20 +293,10 @@ def main():
         check(api("/torrents", {"action": "get", "hash": ih})["poster"] == "http://p/2.jpg", "stream: the poster filled")
         s = api("/settings", {"action": "get"})
         check(s["CacheSize"] > 0 and "ReaderReadAHead" in s and s["UseDisk"] == disk
-              and s["DisableDHT"] and s["DisableMeshDirectory"] and not s["DisableUTP"],
-              "settings get: isolated single-peer test")
-        # The initial stream exercises the default TCP/uTP configuration. For the
-        # restart assertion, use TCP only so resume/reopen is tested independently
-        # from the uTP reconnect failure seen in CI.
-        api("/settings", {"action": "set", "sets": {
-            "TorrentDisconnectTimeout": 10, "FriendlyName": "test", "DisableUTP": True}})
+              and s["DisableDHT"] and s["DisableMeshDirectory"], "settings get: isolated single-peer test")
+        api("/settings", {"action": "set", "sets": {"TorrentDisconnectTimeout": 10, "FriendlyName": "test"}})
         s = api("/settings", {"action": "get"})
-        check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test"
-              and s["DisableUTP"] and not s["DisableTCP"], "settings set: disable uTP")
-        # Restore the normal transport before restart: this test must cover the original
-        # TCP/uTP reconnect path, not just the diagnostic TCP-only variant.
-        api("/settings", {"action": "set", "sets": {"DisableUTP": False}})
-        check(not api("/settings", {"action": "get"})["DisableUTP"], "settings set: restore uTP")
+        check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test", "settings set")
 
         status, _, m3u = http(f"/playlist?hash={ih}")
         lines = [l for l in m3u.decode().splitlines() if l.startswith("http")]
@@ -323,36 +310,17 @@ def main():
         # x.pe port is free. Recreate the seeder before reopening P2Play: libtorrent
         # attempts the saved peer as soon as the resumed torrent is activated. If the
         # daemon starts while x.pe is down, the failed connection can stall this test.
-        del seed
         del ses
         gc.collect()
         wait_seeder_port_closed()
-        ses, seed = start_seeder(ti, os.path.join(root, "seed"))
+        ses = start_seeder(ti, os.path.join(root, "seed"))
         proc = start_daemon(daemon, data)
         lst = api("/torrents", {"action": "list"})
         check(len(lst) == 1 and lst[0]["stat"] == 5 and lst[0]["title"] == "Show (renamed)"
               and lst[0]["poster"] == "http://p/2.jpg" and len(lst[0]["file_stats"]) == 5,
               f"restart: in db, \"{lst[0]['title']}\", poster and files kept")
         check(api("/viewed", {"action": "list", "hash": ih})[0]["timecode"] == 123.5, "restart: viewed kept")
-        try:
-            status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
-        except Exception as e:
-            print("stream failed:", e, "- torrent:", api("/torrents", {"action": "get", "hash": ih}))
-            seed_status = seed.status()
-            seed_settings = ses.get_settings()
-            print("seed after failed stream: state={}, peers={}, upload={} B/s, listening={}, port={}".format(
-                seed_status.state, seed_status.num_peers, seed_status.upload_payload_rate,
-                ses.is_listening(), ses.listen_port()))
-            print("seed transport: incoming_tcp={}, incoming_utp={}".format(
-                seed_settings.get("enable_incoming_tcp"), seed_settings.get("enable_incoming_utp")))
-            for peer in seed.get_peer_info():
-                print("seed peer: {} client={} flags={}".format(peer.ip, peer.client, peer.flags))
-            for alert in ses.pop_alerts():
-                kind = alert.what()
-                if any(word in kind for word in ("incoming_connection", "peer_connect", "peer_disconnected",
-                                                  "peer_error", "peer_blocked")):
-                    print("seed alert: {}: {}".format(kind, alert.message()))
-            raise
+        status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
         check(status == 206 and body == e01[5000000:5100000], "restart: stream from the library")
 
         # lists while the torrent is closed and opened again (a closed handle throws): the

@@ -390,9 +390,7 @@ namespace p2p {
         sp.set_str(lt::settings_pack::listen_interfaces,
                    m_config.console ? "0.0.0.0:" + port : "0.0.0.0:" + port + ",[::]:" + port);
         sp.set_int(lt::settings_pack::alert_mask, lt::alert_category::status | lt::alert_category::error |
-                                                  lt::alert_category::storage | lt::alert_category::dht |
-                                                   lt::alert_category::connect | lt::alert_category::ip_block |
-                                                   lt::alert_category::peer);
+                                                  lt::alert_category::storage | lt::alert_category::dht);
         sp.set_bool(lt::settings_pack::enable_outgoing_tcp, !m_settings.disableTcp);
         sp.set_bool(lt::settings_pack::enable_incoming_tcp, !m_settings.disableTcp);
         sp.set_bool(lt::settings_pack::enable_outgoing_utp, !m_settings.disableUtp);
@@ -1035,8 +1033,6 @@ namespace p2p {
             return;
         }
         const lt::file_storage &fs = ti->files();
-        // A torrent restored from resume data is added paused in activate(). A fresh
-        // magnet must stay active after metadata arrives so its first reader can select pieces.
         int64_t size = 0;
         std::map<int, lt::file_index_t> index;
         std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
@@ -1316,11 +1312,7 @@ namespace p2p {
                     }
                 } else if (lt::alert_cast<lt::torrent_error_alert>(a) || lt::alert_cast<lt::file_error_alert>(a) ||
                            lt::alert_cast<lt::listen_failed_alert>(a) || lt::alert_cast<lt::listen_succeeded_alert>(a) ||
-                           lt::alert_cast<lt::metadata_failed_alert>(a) ||
-                            lt::alert_cast<lt::peer_connect_alert>(a) ||
-                            lt::alert_cast<lt::peer_error_alert>(a) ||
-                            lt::alert_cast<lt::peer_disconnected_alert>(a) ||
-                            lt::alert_cast<lt::peer_blocked_alert>(a)) {
+                           lt::alert_cast<lt::metadata_failed_alert>(a)) {
                     log("[Torrent] %s", a->message().c_str());
                 }
             }
