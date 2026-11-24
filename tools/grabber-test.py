@@ -81,6 +81,17 @@ class GrabberTests(unittest.TestCase):
     def run_once(self):
         return g.run_grabber(self.profile, self.full, self.delta, self.report, self.state, self.dump)
 
+    def start_http_server(self, handler_class):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        def stop_server():
+            server.shutdown()
+            worker.join(timeout=5)
+            server.server_close()
+        self.addCleanup(stop_server)
+        return server
+
     def read_rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -399,6 +410,7 @@ class GrabberTests(unittest.TestCase):
 
     def test_torznab_caps_recent_items_and_overlap_replay(self):
         caps, feed = self.torznab_caps, self.torznab_feed
+        feed_state = {"payload": feed}
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(handler):
@@ -406,7 +418,7 @@ class GrabberTests(unittest.TestCase):
                 requests.append(query)
                 if query.get("apikey") != ["unit-test-key"]:
                     handler.send_response(403); handler.end_headers(); return
-                payload = caps if query.get("t") == ["caps"] else feed
+                payload = caps if query.get("t") == ["caps"] else feed_state["payload"]
                 handler.send_response(200)
                 handler.send_header("Content-Type", "application/xml")
                 handler.send_header("Content-Length", str(len(payload)))
@@ -414,12 +426,7 @@ class GrabberTests(unittest.TestCase):
                 handler.wfile.write(payload)
             def log_message(self, fmt, *args):
                 return
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(worker.join, timeout=5)
-        self.addCleanup(server.server_close)
+        server = self.start_http_server(Handler)
         config = {
             "version": 1,
             "publisher": {"category_map": {"Movies HD": "film"},
@@ -443,9 +450,34 @@ class GrabberTests(unittest.TestCase):
         self.assertTrue(any(q.get("t") == ["caps"] for q in requests))
         self.assertTrue(any(q.get("t") == ["search"] for q in requests))
         g.ack_run(self.state, first["run_id"], self.full, 1, "auto")
+
+        # Delayed item within the overlap must be ingested; stale item outside it
+        # must be filtered. Both arrive after the original poll checkpoint.
+        late_item = (
+            f"<item><title>Delayed release</title><guid>delayed-guid</guid>"
+            f"<pubDate>Wed, 03 Jan 2024 09:30:00 +0000</pubDate>"
+            f"<enclosure url='magnet:?xt=urn:btih:{'f'*40}' length='222' type='application/x-bittorrent'/>"
+            f"</item>"
+        )
+        stale_item = (
+            f"<item><title>Too old release</title><guid>stale-guid</guid>"
+            f"<pubDate>Fri, 01 Dec 2023 09:30:00 +0000</pubDate>"
+            f"<enclosure url='magnet:?xt=urn:btih:{'1'*40}' length='333' type='application/x-bittorrent'/>"
+            f"</item>"
+        )
+        feed_state["payload"] = feed.replace(b"</channel>", (late_item + stale_item).encode() + b"</channel>")
         second = self.run_once()
-        self.assertEqual(second["counts"]["delta"], 0)
-        g.ack_run(self.state, second["run_id"], self.full, 0, "auto")
+        self.assertEqual(second["sources"]["jackett-indexer-a"]["accepted"], 1)
+        self.assertGreaterEqual(second["sources"]["jackett-indexer-a"]["filtered"], 1)
+        self.assertEqual(second["counts"]["delta"], 1)
+        full_hashes = {row["ih"] for row in self.read_rows(self.full)}
+        self.assertEqual(full_hashes, {"e" * 40, "f" * 40})
+        self.assertNotIn("1" * 40, full_hashes)
+        g.ack_run(self.state, second["run_id"], self.full, 1, "auto")
+
+        third = self.run_once()
+        self.assertEqual(third["counts"]["delta"], 0)
+        g.ack_run(self.state, third["run_id"], self.full, 0, "auto")
 
     def test_bad_indexer_does_not_block_next_indexer(self):
         caps, feed = self.torznab_caps, self.torznab_feed
@@ -458,9 +490,7 @@ class GrabberTests(unittest.TestCase):
                 handler.end_headers()
                 handler.wfile.write(payload)
             def log_message(self, fmt, *args): return
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
-        self.addCleanup(server.shutdown); self.addCleanup(worker.join, timeout=5); self.addCleanup(server.server_close)
+        server = self.start_http_server(Handler)
         config = {"version": 1, "publisher": {}, "sources": [
             {"id": "broken-indexer", "type": "torznab", "enabled": True,
              "priority": 40, "url": "http://127.0.0.1:1/api", "timeout": 1},
@@ -545,12 +575,7 @@ class GrabberTests(unittest.TestCase):
                 handler.end_headers()
                 handler.wfile.write(feed)
             def log_message(self, fmt, *args): return
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(worker.join, timeout=5)
-        self.addCleanup(server.server_close)
+        server = self.start_http_server(Handler)
         config = {"version": 1, "publisher": {}, "sources": [
             {"id": "direct-rss-a", "type": "rss", "enabled": True, "priority": 50,
              "url": f"http://127.0.0.1:{server.server_port}/releases.rss",
