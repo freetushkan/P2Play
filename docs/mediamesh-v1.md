@@ -87,7 +87,7 @@ The current node sends an initial snapshot after negotiation and refreshes it pe
 A sender SHOULD send an updated snapshot before pushing an item for a newly published
 sequence.
 
-### 3.1.1 `known` inventory gossip
+### 3.2 `known` inventory gossip
 
 ```text
 {"known": [[bytes32 list_key, integer seq], ...]}
@@ -109,7 +109,7 @@ A verified pointer may be cached for the Discover card without subscribing. This
 only state MUST NOT start a version torrent. Version transfer still requires an explicit
 subscription or an already-held list that needs a newer signed version.
 
-### 3.2 `get`
+### 3.3 `get`
 
 ```text
 {"get": bytes32 list_key, "seq": integer known_seq}
@@ -125,7 +125,7 @@ sequence, it sends no reply. Otherwise it replies with an `item` message. Reques
 bounded per connection; the current implementation allows 32 outstanding keys, retries
 after 15 plugin ticks and rotates through the request snapshot.
 
-### 3.3 `item`
+### 3.4 `item`
 
 ```text
 {"item": {
@@ -394,7 +394,8 @@ This document describes the existing P2Play profile, including its current limit
   subscription. This path never subscribes and never downloads the version torrent,
   manifest, records or media. A later explicit subscription reuses the cached pointer.
 - `holders` remains the count of peers advertising a local copy through `have`; `known_by`
-  separately reports peers advertising knowledge through `known`. List ordering/ranking
+  reports directly connected peers advertising knowledge through `known`, not a network-wide
+  census. The `known` inventory itself is propagated transitively. List ordering/ranking
   uses only `holders`, never `known_by`.
 - The record index is local state; this document does not define a remote search RPC.
 - DHT is optional; peer hints can bootstrap a DHT-disabled deployment when a directory peer

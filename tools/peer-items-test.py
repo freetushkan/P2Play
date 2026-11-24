@@ -129,6 +129,9 @@ class Peer:
     def known(self, key, seq=0):
         self.send(self.their, {b"known": [[key, seq]]})
 
+    def known(self, key, seq=0):
+        self.send(self.their, {b"known": [[key, seq]]})
+
     def get(self, key, seq=-1):
         self.send(self.their, {b"get": key, b"seq": seq})
         return self.wait(lambda v: b"item" in v and v[b"item"].get(b"k") == key)[b"item"]
@@ -267,6 +270,10 @@ def main():
             probe.close()
         print("PASS invalid signatures, salt, seq and pointer bounds rejected")
 
+        # Two independent directory neighbors: one introduces the key; B must
+        # relay it to the second neighbor without subscribing or downloading data.
+        observer = Peer(b.bt, a.bt)
+        peers.append(observer)
         probe = Peer(b.bt, a.bt)
         peers.append(probe)
         probe.known(key, 1)
@@ -278,9 +285,13 @@ def main():
         assert discovered["known_by"] >= 1, "known peer was not counted separately"
         assert not b.lists(), "discovery-only pointer lookup downloaded/imported the version"
         assert ben(probe.get(key)) == ben(first), "verified discovery pointer was not cached for relay"
-        propagated = probe.wait(lambda v: any(k == key for k, seq in v.get(b"known", [])), 20)
-        assert any(k == key for k, seq in propagated[b"known"]), "learned key was not gossiped back"
-        print("PASS discovery-only signed name lookup and KNOWN gossip without subscribing")
+        propagated = observer.wait(lambda v: any(k == key for k, seq in v.get(b"known", [])), 25)
+        assert any(k == key for k, seq in propagated[b"known"]), "learned key was not gossiped to a second peer"
+        print("PASS discovery-only signed name lookup and two-neighbor KNOWN gossip without subscribing")
+        observer.close()
+        peers.remove(observer)
+        probe.close()
+        peers.remove(probe)
 
         a.start()
         source = Peer(a.bt)

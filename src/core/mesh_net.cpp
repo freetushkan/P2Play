@@ -463,7 +463,8 @@ namespace p2p {
         std::vector<std::pair<std::string, int64_t>> out;
         std::lock_guard<std::mutex> lock(m_meshMutex);
         for (const auto &e : m_meshNet) {
-            if (!e.second.requested && !e.second.wanted && !e.second.discoveryOnly) {
+            if (!e.second.requested && !e.second.wanted &&
+                !(e.second.discoveryOnly && e.second.pointerSeq < 0)) {
                 continue;
             }
             std::string key(32, '\0');
@@ -915,7 +916,9 @@ namespace p2p {
                         if (n.wanted && !have) {
                             wanted.push_back(e.first);
                         }
-                        if ((n.discoveryOnly || n.requested) && n.pointerSeq < 0 &&
+                        const auto known = m_discovered.find(e.first);
+                        const int64_t advertisedSeq = known == m_discovered.end() ? -1 : known->second.seq;
+                        if (n.discoveryOnly && advertisedSeq > n.pointerSeq && !n.requested &&
                             std::find(wanted.begin(), wanted.end(), e.first) == wanted.end()) {
                             wanted.push_back(e.first);
                         }
@@ -1088,7 +1091,8 @@ namespace p2p {
             if (!peer.empty() && d.knowers.size() < 256) d.knowers.insert(peer);
             MeshNet &n = m_meshNet[pk];
             if (!have) n.discoveryOnly = true;
-            if ((!have || held.seq < l.second) && n.pointerSeq < 0 && !n.requested && !n.fetching.is_valid()) {
+            if ((!have || held.seq < l.second) && n.pointerSeq < l.second &&
+                !n.requested && !n.fetching.is_valid()) {
                 n.requested = true;
                 n.pendingGet = true;
             }
@@ -1109,9 +1113,9 @@ namespace p2p {
             if (!peer.empty() && d.knowers.size() < 256) d.knowers.insert(peer);
             MeshNet &n = m_meshNet[pk];
             if (!have) n.discoveryOnly = true;
-            // The sequence in KNOWN is a hint. Do a DHT lookup only until the first
-            // signed pointer is cached; future updates are requested from connected peers.
-            if ((!have || held.seq < l.second) && n.pointerSeq < 0 && !n.requested && !n.fetching.is_valid()) {
+            // Compare the untrusted hint with the signed sequence, but never adopt it as a floor.
+            if ((!have || held.seq < l.second) && n.pointerSeq < l.second &&
+                !n.requested && !n.fetching.is_valid()) {
                 n.requested = true;
                 n.pendingGet = true;
             }
