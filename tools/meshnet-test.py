@@ -132,9 +132,24 @@ def main():
         check("preloaded_cached_record_segments=1" in b_log,
               "B: reuses the previously held immutable segment for the newer version")
         # the directory swarm: C holds no list, learns of this one and of its holders
+        # Directory peers form a graph, not a guaranteed full mesh. C can learn via
+        # one neighbor's transitive KNOWN snapshot; only HAVE contributes to holders.
         found = wait("C learns of the list", lambda: [l for l in call("c", "/api/lists/discover")[1]["lists"]
-                                                       if l["pubkey"] == pk and l["holders"] >= 2 and l["seq"] == 2], 90)
-        check(bool(found) and not found[0]["subscribed"], "C: the list and its two holders from the directory swarm")
+                                                       if l["pubkey"] == pk and l["seq"] == 2
+                                                       and l.get("name") == "Net list" and l.get("known_by", 0) >= 1], 90)
+        if not found:
+            snapshot = call("c", "/api/lists/discover")[1]
+            print("C discovery snapshot:", json.dumps(snapshot, ensure_ascii=False))
+            log_path = os.path.join(root, "c", "p2play.log")
+            if os.path.exists(log_path):
+                with open(log_path, encoding="utf-8") as f:
+                    print("C p2play.log:", f.read()[-3000:])
+        check(bool(found) and not found[0]["subscribed"],
+              "C: signed list discovery without subscribing")
+        check(found[0]["holders"] <= found[0]["known_by"],
+              "C: HAVE holders are included in knowledge, KNOWN does not inflate popularity")
+        check(not call("c", "/api/lists")[1]["lists"],
+              "C: discovery-only lookup does not import the version torrent")
         check(call("c", "/api/torrents")[0] == 404 and call("c", "/torrents", {"action": "list"})[0] == 404
               and call("c", "/api/catalog/search?q=x")[0] == 200, "C, a catalog node: no streamer, the catalog")
         print("PASS")

@@ -393,10 +393,11 @@ This document describes the existing P2Play profile, including its current limit
   display name (at most 64 bytes). `GET /api/lists/discover` exposes that name even before
   subscription. This path never subscribes and never downloads the version torrent,
   manifest, records or media. A later explicit subscription reuses the cached pointer.
-- `holders` remains the count of peers advertising a local copy through `have`; `known_by`
-  reports directly connected peers advertising knowledge through `known`, not a network-wide
-  census. The `known` inventory itself is propagated transitively. List ordering/ranking
-  uses only `holders`, never `known_by`.
+- `holders` counts distinct peers advertising a local copy through `have`; `known_by`
+  counts distinct direct peer IDs from which this node learned the key through either
+  `have` or `known` (not a network-wide census). A `have` peer is also a knower, but
+  a `known`-only peer never increments `holders`. The `known` inventory is propagated
+  transitively. List ordering/ranking uses only `holders`, never `known_by`.
 - The record index is local state; this document does not define a remote search RPC.
 - DHT is optional; peer hints can bootstrap a DHT-disabled deployment when a directory peer
   is reachable.
