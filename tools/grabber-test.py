@@ -437,6 +437,7 @@ class GrabberTests(unittest.TestCase):
                          "max_pages": 2, "max_items": 100, "overlap_seconds": 86400}]
         }
         self.profile.write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(ga._torznab_caps(caps)["2010"], "Movies HD")
         first = self.run_once()
         source = first["sources"]["jackett-indexer-a"]
         self.assertEqual(source["accepted"], 1)

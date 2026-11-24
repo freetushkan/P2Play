@@ -388,7 +388,9 @@ def _torznab_caps(data: bytes) -> Dict[str, str]:
     root = _xml_parse(data, "Torznab capabilities")
     result = {}
     for node in root.iter():
-        if _xml_name(node.tag) == "category" and node.get("id"):
+        # Torznab caps uses nested <category>/<subcat> nodes; both IDs are
+        # valid category values returned on RSS items.
+        if _xml_name(node.tag) in {"category", "subcat"} and node.get("id"):
             result[str(node.get("id"))] = g._clean_text(node.get("name", ""), "category", 256)
     return result
 
