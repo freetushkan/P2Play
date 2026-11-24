@@ -36,6 +36,13 @@ pPlay host expects TorrServer-compatible behavior. That compatibility MUST be
 implemented by the independent P2Play module files; it is not a reason to share
 TorrServer files.
 
+The neutral pPlay host dispatcher (`Io`) may select a backend and call its adapter.
+It is the integration boundary, not part of the P2Play adapter. Shared playback and
+media-probing code must use neutral `Io` operations; it must not include or invoke
+`TorrServe` or `P2Play` APIs directly. The P2Play-owned adapter files (`p2play.h/.cpp`)
+may use common HTTP/configuration primitives, but MUST NOT include, call or depend on
+TorrServer adapter files, paths, saved-copy storage or TorrServer-specific helpers.
+
 ## 2. Separate P2Play product identity and version endpoint
 
 TorrServer compatibility probes and P2Play product identity are different
@@ -77,7 +84,31 @@ Do not change legacy ping responses to make them look like the native P2Play
 version endpoint. Do not make pPlay infer the native P2Play version by parsing a
 TorrServer compatibility string.
 
-## 3. Embedded pPlay mode
+## 3. External pPlay client baseline
+
+The external `P2Play` network integration is implemented in `freetushkan/pPlay/dev`.
+Its adapter is isolated in `src/net/p2play.h/.cpp`; `Io` is the only backend dispatcher.
+The shared player and FFmpeg `MediaProbe` use neutral operations and do not call
+TorrServer or P2Play-specific APIs themselves.
+
+Completed external-client features:
+- native `GET /api/p2play/version` identity check, Bearer login and account-scoped API calls;
+- MediaMesh discovery/subscriptions, search, selected-list filtering, record details,
+  lazy poster/description loading, add-to-library and authenticated playback;
+- per-network user management (PR #8): list/create/change password/change rank/delete,
+  with owner protection and rank-filtered role choices;
+- per-user playback progress read/write and position restore (PR #9), preserving the
+  existing TorrServer path behind the neutral dispatcher;
+- duration retention and FFmpeg `MediaProbe` fallback when mpv has no duration (PR #9).
+
+PR #8 and PR #9 were merged into `dev`; their CI workflows passed for Linux, Android,
+Switch, PS4 and PS5. This is cross-platform build evidence, not a claim of manual
+acceptance on every physical device. Continue Watching UI remains open and is tracked
+in `docs/roadmap.md`.
+
+This external client baseline does not implement the in-process embedded lifecycle.
+
+## 4. Embedded pPlay mode
 
 pPlay has two distinct network entries:
 
@@ -148,7 +179,7 @@ roles and permissions (including which actions each role may perform) before pPl
 presents role assignment as a user-friendly feature. Do not describe the current
 numeric rank as if named roles were already implemented.
 
-## 4. Acceptance checks
+## 5. Acceptance checks
 
 The implementation is complete only when tests prove all of the following:
 
@@ -184,6 +215,9 @@ The implementation is complete only when tests prove all of the following:
 13. The current numeric `rank` hierarchy is documented as such. A separate
     follow-up defines named roles and an explicit capability/permission matrix.
 
-The native P2Play version endpoint is implemented in the P2Play server. The external
-pPlay client baseline exists; the embedded lifecycle, LAN deployment, owner
-provisioning and pPlay-facing user-management UI remain implementation work.
+The native P2Play version endpoint and external pPlay client baseline are implemented.
+The external client includes its own per-network user-management UI, per-user progress
+sync and duration fallback. Continue Watching UI and the embedded lifecycle, LAN
+deployment, embedded owner provisioning and embedded-specific acceptance remain open.
+The external user-management screen and adapter methods are intended to be reused by
+the future `P2Play_embedded` entry.

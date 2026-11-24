@@ -29,9 +29,11 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
   However, no Android device/emulator acceptance test currently proves plugin
   installation, route mounting or the local P2Play HTTP call. Treat this as a
   feasible candidate, not a completed deployment.
-- pPlay PR #6 merged the required PR workflow for Linux, Android, Switch, PS4 and
-  PS5. The workflow successfully builds those pPlay targets. It does not yet link
-  `p2play_core`: there is no `P2Play_embedded` module in pPlay today.
+- pPlay PR #6 established the PR workflow for Linux, Android, Switch, PS4 and PS5.
+  Subsequent PR #8 (per-network user management) and PR #9 (per-user progress sync,
+  duration fallback and backend isolation) also passed that five-platform workflow.
+  External `P2Play` is implemented; the targets do not yet link `p2play_core` and there is
+  no `P2Play_embedded` module in pPlay today.
 - The Silo MediaMesh plugin is an HTTP client for an external P2Play daemon. The
   current Goja plugin API exposes no process launcher or `p2play_core` C API.
   To let the plugin manage its own local core, add a host-level native lifecycle

@@ -2,10 +2,11 @@
 
 All-in-one torrent streamer with a decentralized catalog (MediaMesh), for Linux, Android, Switch, PS4, PS5 and later pPlay.
 
-Stage 3 development: signed MediaMesh peer pointers, selective catalog replication, media packs,
-shards and publisher transport. A server compatible with TorrServer (MatriX and Silo's API): pPlay
-and Lampa use it instead of TorrServer, on the same device or over the network. This does not claim
-completion of every roadmap condition; see the implementation boundaries below.
+Stage 4 development: the external pPlay client, account management and per-user playback progress
+are integrated with the signed MediaMesh catalog, selective replication, media packs, shards and
+publisher transport. The server remains compatible with TorrServer's MatriX and Silo APIs, while
+exposing a separate native P2Play identity endpoint. This does not claim completion of every
+roadmap condition; see the implementation boundaries below.
 
 ## Running
 
@@ -169,7 +170,8 @@ A client works with a server through one of the two APIs: their file numbers dif
 Discovery: pPlay and TorrServe find a TorrServer on port 8090 by `/echo` (public, `MatriX.141 P2Play/...`:
 MatriX's version prefix); Silo's clients by the public `/api/system/ping`.
 
-Not yet: `https://` .torrent links, DLNA, the catalog and search (stage 3), `/ffp`.
+Not yet: `https://` .torrent links, DLNA, `/ffp` and the remaining roadmap features
+(including Continue Watching UI and the future embedded pPlay mode).
 
 The library (`torrents.json`, with whose libraries hold each torrent; the users in `auth.json`; in `torrents/` libtorrent resume data with the metadata, v2 piece layers and peers, and uploaded .torrent files), the progress (`viewed.json`) and the settings
 (`settings.json`) are JSON files in the data directory. Torrents are opened when used and closed after
