@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 
 spec = importlib.util.spec_from_file_location("core_test", os.path.join(os.path.dirname(__file__), "core-test.py"))
@@ -99,7 +100,7 @@ def main():
         check(status == 200 and out["seq"] == 3 and out["records"] == 1
               and out["input_records"] == 1, "version 3: full replacement")
         check([r["hash"] for r in call("/api/catalog/search?q=curated")[1]["results"]] == [IH1]
-              and call("/api/catalog/search?q=елки")[1]["results"] == []
+              and call("/api/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"] == []
               and call("/api/catalog/search?q=сериал")[1]["results"] == [],
               "replacement keeps included row and removes omitted rows")
         check(call(f"/api/publish/{pk}/status")[1]["pubkey"] == pk,
@@ -155,5 +156,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import urllib.parse
     main()

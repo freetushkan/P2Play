@@ -363,6 +363,16 @@ This document describes the existing P2Play profile, including its current limit
 - Media lazy-fetch currently downloads a whole pack, not an exact object byte range.
 - Directory `have` advertises list key/sequence only; it does not advertise shard or media
   availability.
+- Until the discovery-only pointer lookup is implemented, an undiscovered list has no
+  authenticated display name in `GET /api/lists/discover`; the name is shown only after the
+  list is subscribed and its signed manifest is accepted. The next implementation step is
+  to request the existing signed BEP 44 pointer for newly discovered keys without starting
+  a version-torrent fetch. After verifying its signature, key and sequence, the node can
+  cache the bounded `v.n` name (at most 64 bytes) and expose it as discovery metadata.
+  This operation MUST NOT subscribe to the list or download its version torrent, manifest,
+  records or media. `have` and peer hints remain untrusted; only the verified pointer may
+  supply the display name. The initial discovery card requires no wire-format extension;
+  a short description is outside this first step.
 - The record index is local state; this document does not define a remote search RPC.
 - DHT is optional; peer hints can bootstrap a DHT-disabled deployment when a directory peer
   is reachable.
