@@ -94,7 +94,7 @@ def main():
         replacement = json.dumps({
             "ih": IH1, "title": "Curated Catalog Entry", "date": 1700000100,
             "tags": ["clean"],
-        }, ensure_ascii=False) + "\\n"
+        }, ensure_ascii=False) + "\n"
         status, out = call(f"/api/publish/{pk}/replace", raw=replacement.encode())
         check(status == 200 and out["seq"] == 3 and out["records"] == 1
               and out["input_records"] == 1, "version 3: full replacement")
@@ -120,7 +120,9 @@ def main():
         proc = ct.start_daemon(daemon, b)
         bad = os.path.join(root, "bad")
         shutil.copytree(src, bad)
-        with open(os.path.join(bad, "records", "seg-000001.z"), "r+b") as f:
+        record_segments = [x for x in os.listdir(os.path.join(bad, "records")) if x.endswith(".z")]
+        check(len(record_segments) == 1, "replacement produced one fresh immutable record segment")
+        with open(os.path.join(bad, "records", record_segments[0]), "r+b") as f:
             f.seek(10)
             byte = f.read(1)
             f.seek(10)
@@ -135,9 +137,9 @@ def main():
         check(status == 400 and "signature" in out["error"], "a tampered manifest refused")
         status, _ = call("/api/lists/import", {"dir": src})
         lists = call("/api/lists")[1]["lists"]
-        check(status == 200 and len(lists) == 1 and lists[0]["seq"] == 2 and not lists[0]["own"], "the version taken")
+        check(status == 200 and len(lists) == 1 and lists[0]["seq"] == 3 and not lists[0]["own"], "the version taken")
         check(call("/api/lists/import", {"dir": src})[0] == 400, "the same version again refused")
-        check([r["hash"] for r in call("/api/catalog/search?q=" + urllib.parse.quote("тест"))[1]["results"]] == [IH1], "searched on the other node")
+        check([r["hash"] for r in call("/api/catalog/search?q=curated")[1]["results"]] == [IH1], "searched on the other node")
         ct.stop_daemon(proc)
         proc = ct.start_daemon(daemon, b)
         check(len(call("/api/lists")[1]["lists"]) == 1, "kept after a restart")
