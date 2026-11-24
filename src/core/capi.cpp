@@ -19,6 +19,16 @@ extern "C" int p2play_start(const p2play_config *config) {
     c.dataDir = config->data_dir;
     c.httpPort = config->http_port == 0 ? 8090 : config->http_port < 0 ? 0 : static_cast<uint16_t>(config->http_port);
     c.console = config->console != 0;
+    const bool hasOwnerUsername = config->owner_username != nullptr;
+    const bool hasOwnerPassword = config->owner_password != nullptr;
+    if (hasOwnerUsername != hasOwnerPassword ||
+        (hasOwnerUsername && (!*config->owner_username || !*config->owner_password))) {
+        return -1;
+    }
+    if (hasOwnerUsername) {
+        c.ownerUsername = config->owner_username;
+        c.ownerPassword = config->owner_password;
+    }
     if (config->platform) {
         c.platform = config->platform;
     }

@@ -45,6 +45,7 @@ namespace p2p {
         static constexpr const char *kOwner = "owner";
 
         void load(const std::string &dir);
+        std::string configureOwner(const std::string &name, const std::string &password);
 
         // the owner has a password (else the first login sets it)
         bool passwordSet() const;

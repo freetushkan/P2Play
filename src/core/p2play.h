@@ -19,6 +19,9 @@ typedef struct p2play_config {
     const char *platform;   /* shown by /echo next to the version; may be NULL */
     p2play_log_fn log;      /* may be NULL */
     void *log_user;
+    /* Optional pair: provision/verify the persistent owner. Both or neither are required. */
+    const char *owner_username;
+    const char *owner_password;
 } p2play_config;
 
 /* 0 on success; one core per process */

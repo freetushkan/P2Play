@@ -209,6 +209,26 @@ namespace p2p {
         }
     }
 
+    std::string Auth::configureOwner(const std::string &name, const std::string &password) {
+        if (name.empty() || password.empty()) return "both owner username and password are required";
+        if (name.find(':') != std::string::npos) return "owner username cannot contain ':'";
+        std::lock_guard<std::mutex> lock(m_mutex);
+        User *o = findLocked(kOwner);
+        if (!o) return "owner account is missing";
+        for (const User &u : m_users) {
+            if (u.id != kOwner && u.name == name) return "owner username is already used by another account";
+        }
+        if (o->passwordHash.empty()) {
+            o->name = name;
+            o->passwordHash = hashPassword(password);
+            save();
+            return "";
+        }
+        if (o->name != name || !checkPassword(o->passwordHash, password))
+            return "configured credentials do not match the stored owner account";
+        return "";
+    }
+
     void Auth::save() const {
         json users = json::array();
         for (const User &u : m_users) {
