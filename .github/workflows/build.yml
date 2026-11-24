@@ -371,8 +371,12 @@ jobs:
           java-version: '17'
           distribution: temurin
 
-      # Cache the Gradle wrapper and resolved Android Gradle Plugin/dependencies.
+      # Cache the Gradle wrapper and resolved dependencies. Allow trusted branch
+      # builds to seed their own cache; keep fork PR caches read-only.
       - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+          cache-cleanup: always
 
       - name: Create build environment
         run: |
