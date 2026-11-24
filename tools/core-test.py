@@ -307,18 +307,20 @@ def main():
         check(os.path.getsize(os.path.join(data, "torrents", ih + ".resume")) > 0,
               "resume data kept (metadata with the v2 piece layers, peers)")
         # Destroy both the session and its torrent handle, then confirm the fixed
-        # x.pe port is actually free before starting the replacement seeder.
+        # x.pe port is free. Recreate the seeder before reopening P2Play: libtorrent
+        # attempts the saved peer as soon as the resumed torrent is activated. If the
+        # daemon starts while x.pe is down, the failed connection can stall this test.
         del seed
         del ses
         gc.collect()
         wait_seeder_port_closed()
+        ses, seed = start_seeder(ti, os.path.join(root, "seed"))
         proc = start_daemon(daemon, data)
         lst = api("/torrents", {"action": "list"})
         check(len(lst) == 1 and lst[0]["stat"] == 5 and lst[0]["title"] == "Show (renamed)"
               and lst[0]["poster"] == "http://p/2.jpg" and len(lst[0]["file_stats"]) == 5,
               f"restart: in db, \"{lst[0]['title']}\", poster and files kept")
         check(api("/viewed", {"action": "list", "hash": ih})[0]["timecode"] == 123.5, "restart: viewed kept")
-        ses, seed = start_seeder(ti, os.path.join(root, "seed"))
         try:
             status, _, body = http(f"/stream?link={ih}&index={index['e01.mkv']}&play", rng="5000000-5099999")
         except Exception as e:

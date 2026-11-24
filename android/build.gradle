@@ -3,8 +3,8 @@
 // app/src/main/jniLibs): the system extracts it to nativeLibraryDir, the service runs it.
 buildscript {
     repositories {
-        mavenCentral()
         google()
+        mavenCentral()
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:9.2.1'
@@ -13,7 +13,7 @@ buildscript {
 
 allprojects {
     repositories {
-        mavenCentral()
         google()
+        mavenCentral()
     }
 }
