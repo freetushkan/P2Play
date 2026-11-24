@@ -208,24 +208,41 @@ unknown, report the deletion for review instead of blindly tombstoning
 
 ## Category inventory and manual editing
 
-The grabber always writes an intermediate UTF-8 NDJSON file (one normalized
-record per line) and a run report. It never publishes this file automatically.
-The operator opens the NDJSON, edits/removes/corrects records as needed, runs
-publisher `--dry-run`, and only then invokes the separate publisher command.
+The grabber always writes a complete authoritative `catalog-full.ndjson`,
+a derived `catalog-delta.ndjson`, a report and a pending-run manifest. It never
+publishes automatically. The full file is the human review surface; the delta
+is derived from the unedited full file and last acknowledged publisher state.
+
+- If the full file SHA-256 is unchanged, publish only the delta through the
+  normal append/release path. Omission from a delta means "unchanged", not delete.
+- If the full file SHA-256 changed after export, do not publish the delta.
+  Treat the edited file as the complete desired catalog and use publisher
+  `--replace`; every omitted infohash is deleted.
+- `--replace` is also available deliberately for cleanup, repair or rebuilding.
+  An empty file is a valid request to clear the catalog.
+- Replacement preserves the list public key and commits one fresh signed
+  snapshot atomically. It is not ordinary compaction.
+
 No network request to the publishing API is made by the grabber.
 
 Suggested operator flow:
 
 ```sh
 python3 tools/grabber.py run --profile publisher-profile.json \
-  --output work/catalog.ndjson --report work/grabber-report.json \
-  --dump-categories work/categories
+  --output work/catalog-full.ndjson --delta work/catalog-delta.ndjson \
+  --report work/grabber-report.json --dump-categories work/categories
 
-# Inspect and manually edit work/catalog.ndjson before publishing.
+# Unedited full file: publish the derived delta.
 tools/p2play publish --profile publisher-profile.json \
-  --import work/catalog.ndjson --list <64-hex-public-key> --dry-run
+  --import work/catalog-delta.ndjson --list <64-hex-public-key> --dry-run
 tools/p2play publish --profile publisher-profile.json \
-  --import work/catalog.ndjson --list <64-hex-public-key>
+  --import work/catalog-delta.ndjson --list <64-hex-public-key> --release
+
+# Edited full file: replace from the complete edited catalog.
+tools/p2play publish --profile publisher-profile.json \
+  --import work/catalog-full.ndjson --list <64-hex-public-key> --dry-run
+tools/p2play publish --profile publisher-profile.json \
+  --import work/catalog-full.ndjson --list <64-hex-public-key> --replace
 ```
 
 The exact grabber command remains a planned interface until its CLI is
@@ -319,13 +336,14 @@ the resulting outgoing NDJSON should normally be a small delta.
 
 ### Bootstrap and subsequent refreshes
 
-- **Bootstrap:** when there is no acknowledged local state for the target list,
-  parse the available enabled sources, merge the full known catalog and export a
-  complete baseline NDJSON. This is the only normal full-catalog import.
-- **Refresh:** after the baseline is successfully staged and acknowledged,
-  compare the merged canonical state with the last acknowledged staged state.
-  Export only new or changed rows and explicit tombstones. Unchanged records
-  must not be repeated in every release.
+- **Bootstrap:** export the complete `catalog-full.ndjson` baseline.
+- **Every refresh:** write the complete canonical `catalog-full.ndjson` and
+  derive `catalog-delta.ndjson` against the last acknowledged publisher state.
+- **Untouched full file:** publish only the delta. Changed rows are complete
+  record replacements; trusted source deletions become tombstones.
+- **Edited full file:** any hash change makes the file authoritative. Publish
+  the whole file with `--replace`; omitted rows are deleted.
+- **Forced rebuild:** use `--replace` even without editing for cleanup/repair.
 - Compare a stable canonical fingerprint per infohash. Exclude poll time,
   scrape time, seed/leech/completed counters, local paths, source debug data and
   other volatile/provenance-only values from the signed-record fingerprint.
@@ -374,32 +392,29 @@ SQLite is preferable to loading a multi-million-row catalog into Python objects
 or maintaining several loosely coupled JSON state files. Keep raw inputs and
 quarantine data as bounded files outside the database.
 
-A run builds candidate source changes in a transaction without advancing the
-committed source checkpoints. It writes a pending-run manifest containing the
-run ID, candidate source revisions/cursors, output path and baseline/target
-list identity. Refuse to start another run while an unresolved run exists; the
-operator must acknowledge or explicitly discard it first.
+A run builds candidate source changes without advancing committed checkpoints.
+Its pending-run manifest records candidate revisions/cursors, original full-file
+SHA-256, delta SHA-256, output paths and target list. Refuse another run while
+an unresolved run exists.
 
-After inspecting/editing the NDJSON, the operator runs publisher dry-run and
-then the normal explicit publisher import. Once the publisher reports that the
-same number of records was successfully staged as there are nonblank rows in
-the edited file, the operator explicitly acknowledges the run. A provisional
-interface is:
+After review, compare the full-file hash with the pending-run manifest. If
+unchanged, dry-run and explicitly publish the delta. If changed, dry-run and
+publish the full file with `--replace`. Acknowledge only after the matching
+publisher operation succeeds; failed publication must never advance source
+checkpoints. A provisional interface is:
 
 ```sh
 python3 tools/grabber.py ack --run-id <id> --file work/catalog-delta.ndjson \\
   --accepted-count <publisher-staged-count>
 ```
 
-Acknowledgement hashes the final edited file, validates its rows/count, applies
-those exact rows to local last-staged state and commits only the successful
-sources' candidate checkpoints in one SQLite transaction. It does not contact
-the publisher. If the file, count or run ID does not match, nothing is committed.
-A run with zero delta rows can be acknowledged as an explicit no-op after review;
-no publisher request is needed. Category-inventory-only runs never advance
-checkpoints. If an operator removes a row from the delta, it remains different
-from last-staged state and will be offered again until an explicit ignore rule
-is added; do not silently mark an unpublished row as staged.
+Acknowledgement verifies run ID, final full-file hash, publication mode and
+publisher result, then updates last-published rows and successful source
+checkpoints in one SQLite transaction. It does not contact the publisher.
+Manual omissions must persist as local suppressions and manual edits/additions
+as local overrides after source merging; otherwise the next source scan could
+reintroduce intentionally removed entries. Provide explicit list/clear controls
+for these decisions. A zero-row delta may be acknowledged as a reviewed no-op.
 
 ### Why this fits MediaMesh
 
@@ -418,12 +433,11 @@ Files that are new, absent, unselected, or fail verification are downloaded
 (or remain unavailable) through the normal selective path. This does not change
 the MediaMesh v1 wire format.
 
-A `snapshot`/compaction is deliberately different: it replays current live
-records into fresh segment files and drops historical segments/tombstones.
-Because the compacted files have new immutable names, subscribers may need to
-download the compacted selected shards again. Do not compact on every RSS poll.
-Choose a configurable threshold based on segment count/bytes, redundant history
-and tombstone ratio, then measure it with a large catalog before fixing defaults.
+A normal `snapshot`/compaction replays the currently published live records;
+it does not accept a replacement file. Publisher `--replace` instead builds a
+fresh snapshot from the authoritative full NDJSON, deleting absent records.
+Both create new immutable segment names and may require subscribers to fetch
+selected shards again. Routine RSS updates remain append-only delta releases.
 
 ## Failure isolation and partial-source operation
 

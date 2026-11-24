@@ -339,8 +339,13 @@ preloads the previously held immutable segment and observes the replacement
 row. This is a correctness check for the reuse path; it is not yet a benchmark
 of exact network bytes for repeated large-catalog updates.
 
-Snapshots intentionally reset the append history and write fresh compacted
-segments. Because those files have new immutable identities, a subscriber may
-need to fetch the current selected record shards again after compaction.
-Compaction should therefore be threshold-driven rather than coupled to every
-grabber/RSS poll.
+Snapshots reset append history and write fresh compacted segments. Subscribers
+may need to fetch selected record shards again, so compaction should be
+threshold-driven rather than coupled to every grabber/RSS poll.
+
+The owner-only `POST /api/publish/:pubkey/replace` operation is distinct from
+compaction. It accepts a complete live-record NDJSON file, constructs a fresh
+snapshot containing exactly those records, preserves the list public key and
+switches the signed manifest once. Omitted infohashes disappear; empty input
+clears the catalog. Old append history and unreferenced media packs are pruned
+after commit. Subscribers may need to fetch selected record shards again.

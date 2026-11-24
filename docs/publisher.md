@@ -75,28 +75,30 @@ infohashes. Identical duplicate records are skipped.
 - A plain `poster` URL remains metadata only; the publisher does not fetch it.
   No SHA-256 pseudo-URLs are written into the legacy poster field.
 
-## Incremental import semantics
+## Incremental import and authoritative replacement
 
-The publisher endpoint accepts records for the next release; it does not fetch
-source data or decide source precedence. A regular release appends new immutable
-record segment(s) and keeps the previous signed descriptors. When the same
-infohash appears in a later segment, the later **complete row** becomes the
-current record during manifest replay. It is not a field-level patch: omitted
-fields do not inherit values from the old row. A tombstone removes the current
-row. Keep the shard stable for normal updates; shard migration requires an
-old-shard tombstone release followed by a new-shard live-record release.
+A normal release appends new/changed complete rows and explicit tombstones as
+immutable segments. A later live row with the same infohash replaces the earlier
+complete row; this is not a field-level patch.
 
-The grabber should therefore send only changed/new complete rows and explicit
-tombstones after its initial full bootstrap. It must compare against the local
-last acknowledged staged state, not re-send the full source snapshots on every
-poll. The operator still reviews/edits the delta before running this CLI.
-`p2play publish` stages the supplied file; `--release` remains a separate
-explicit action.
+The explicit `--replace` mode (API `POST /api/publish/:pubkey/replace`) accepts
+a complete live-record NDJSON catalog and publishes a fresh signed snapshot
+under the **same public key**. Only live records are accepted; infohashes must
+be unique. An empty file clears the catalog. Every absent infohash is deleted.
+Old append history/tombstones and unreferenced media packs are pruned after the
+new manifest is committed. Existing pending append rows are superseded only
+when replacement succeeds. The manifest is switched once, so subscribers see
+the old or new version, never an intermediate empty catalog.
 
-A snapshot compacts the complete current live state and discards append history.
-It is a maintenance operation, not the normal refresh path: after compaction,
-subscribers may need the new compacted record segments even if their previous
-version was complete.
+The operation is owner-only, requires an existing catalog list and is not
+allowed for meta-lists. It cannot be combined with `--release` or
+`--create-list`. Use it after editing the full grabber export or deliberately
+for cleanup/repair. Do not use it with a delta file.
+
+The ordinary `snapshot` endpoint remains a compaction of the currently
+published live records; it does not replace from an input file. Both operations
+create new immutable segment identities, so subscribers may need to fetch
+selected shards again.
 
 ## Workflow
 
