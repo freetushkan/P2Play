@@ -90,11 +90,33 @@ def main():
         status, out = call(f"/api/publish/{pk}/release", {})
         check(status == 200 and out["seq"] == 2 and out["records"] == 2
               and call("/api/catalog/search?q=movie")[1]["results"] == [], "version 2: a removal")
+
+        replacement = json.dumps({
+            "ih": IH1, "title": "Curated Catalog Entry", "date": 1700000100,
+            "tags": ["clean"],
+        }, ensure_ascii=False) + "\\n"
+        status, out = call(f"/api/publish/{pk}/replace", raw=replacement.encode())
+        check(status == 200 and out["seq"] == 3 and out["records"] == 1
+              and out["input_records"] == 1, "version 3: full replacement")
+        check([r["hash"] for r in call("/api/catalog/search?q=curated")[1]["results"]] == [IH1]
+              and call("/api/catalog/search?q=елки")[1]["results"] == []
+              and call("/api/catalog/search?q=сериал")[1]["results"] == [],
+              "replacement keeps included row and removes omitted rows")
+        check(call(f"/api/publish/{pk}/status")[1]["pubkey"] == pk,
+              "replacement preserves the original public key")
+        src = os.path.join(root, "published-v3")
+        shutil.copytree(os.path.join(a, "lists", pk), src)
+
+        status, out = call(f"/api/publish/{pk}/replace", raw=b"")
+        check(status == 200 and out["seq"] == 4 and out["records"] == 0
+              and out["input_records"] == 0
+              and call("/api/catalog/search?q=curated")[1]["results"] == [],
+              "empty replacement clears the catalog")
+
         ct.stop_daemon(proc)
         proc = None
 
-        # another node takes the version
-        src = os.path.join(a, "lists", pk)
+        # another node takes the saved non-empty version 3
         proc = ct.start_daemon(daemon, b)
         bad = os.path.join(root, "bad")
         shutil.copytree(src, bad)
