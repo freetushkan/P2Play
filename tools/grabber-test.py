@@ -25,12 +25,12 @@ class GrabberTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "grabber-test@example.invalid"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Grabber Test"], check=True)
         self.csv_path = self.repo / "torrents.csv"
-        fixtures = Path(__file__).resolve().parent / "fixtures" / "grabber"
+        fixtures = Path(__file__).resolve().parent.parent / "fixtures" / "grabber"
         self.csv_path.write_bytes((fixtures / "torrents.csv").read_bytes())
         subprocess.run(["git", "-C", str(self.repo), "add", "torrents.csv"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-m", "fixture"], check=True, capture_output=True)
 
-        fixtures = Path(__file__).resolve().parent / "fixtures" / "grabber"
+        fixtures = Path(__file__).resolve().parent.parent / "fixtures" / "grabber"
         self.rutor_json = json.loads((fixtures / "rutor.json").read_text(encoding="utf-8"))
         self.rutor_path = self.root / "rutor.ls"
         self.write_rutor()
