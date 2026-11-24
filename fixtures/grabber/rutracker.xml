@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rutracker>
+  <torrent id="deleted-topic" unixts="1704157445" size="1000">
+    <title>Previously published release</title>
+    <torrent hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" tracker_id="1"/>
+    <forum id="100">Movies</forum>
+    <del/>
+  </torrent>
+  <torrent id="new-topic" registred_at="2024.01.03 10:11:12" size="7654321">
+    <title>RuTracker new release</title>
+    <torrent hash="dddddddddddddddddddddddddddddddddddddddd" tracker_id="2"/>
+    <forum id="100">Movies</forum>
+    <dir name="folder"><file size="7654321" name="video.mkv"/></dir>
+    <old hash="cccccccccccccccccccccccccccccccccccccccc" time="2023.12.01" unixts="1701388800">Previous topic title</old>
+    <dup p="similar">Possible duplicate signal</dup>
+    <content>&lt;p&gt;Sanitized &lt;b&gt;description&lt;/b&gt;&lt;script&gt;bad()&lt;/script&gt;&lt;/p&gt;</content>
+  </torrent>
+</rutracker>

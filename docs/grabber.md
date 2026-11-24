@@ -1,10 +1,12 @@
 # Catalog grabber — design and operator workflow
 
-Status: first working implementation is in progress in P2Play: a standard-library
-Python CLI with transactional SQLite state, local CSV/Rutor adapters, source-priority
-merge, deterministic full/delta NDJSON, per-source failure isolation, quarantine,
-manual overrides/suppressions and explicit acknowledgement. RuTracker XML,
-Jackett/Torznab, generic parser templates and scheduled polling remain follow-up work.
+Status: the grabber foundation and configurable source pipeline are implemented.
+Built-in adapters cover local CSV, Rutor raw-DEFLATE, RuTracker XML/XZ snapshots,
+per-indexer Torznab/Jackett and direct RSS. A separate JSON template engine supports
+JSON paths, bounded CSS-like selectors for pseudo-HTML and named regex groups for
+text sources. The grabber remains review-first: transactional SQLite state, source
+priority, quarantine, editable full/delta NDJSON, manual overrides/suppressions and
+explicit acknowledgement before checkpoints advance.
 
 The operator workflow is deliberately review-first: **run → inspect/edit → publish
 manually with the existing publisher CLI → acknowledge**. The grabber never calls
@@ -48,9 +50,26 @@ Implemented adapters in this first slice:
   ISO-8601 offset date, binary/decimal size conversion and repeated tracker URLs
   are handled. Trackers containing obvious passkeys or credential-bearing URLs
   are rejected. Source-only fields and volatile metrics remain local provenance.
-- **RuTracker and Jackett/Torznab:** profile entries can be kept disabled, but those
-  adapters are not part of this first slice yet; an enabled unsupported adapter is
-  reported as unsupported and makes the run degraded rather than silently succeeding.
+- **RuTracker XML/XZ:** reads an operator-supplied `.xml` or `.xml.xz` snapshot.
+  XZ decompression is streaming, uses a decoder memory cap and a separate expanded
+  byte limit. DTD/entities, corrupt/truncated XZ and oversized XML are rejected.
+  Topic/torrent/forum/old/dup/del nesting, `unixts` preference, UTC fallback for
+  `registred_at`, tracker ID mapping, recursive file counts and raw forum inventory
+  are supported. `old` and `dup` remain local provenance. Only explicit `<del/>`
+  creates a tombstone; it must use the shard of a previously staged record or go
+  to quarantine.
+- **Jackett/Torznab:** each indexer/feed is an independent source ID with its own
+  endpoint, priority, capabilities map, poll limits, overlap window and checkpoint.
+  The adapter reads caps and RSS-style search pages, resolves hashes only from
+  magnet/infohash metadata (never by fetching arbitrary enclosure URLs), records
+  volatile seed/peer metrics only as local provenance, quarantines malformed items
+  and refuses HTTP redirects so API keys are never forwarded to another host.
+- **Direct RSS:** uses the same bounded RSS/XML item parser without Torznab caps;
+  an item needs a verified infohash in a magnet/GUID/attribute.
+- **JSON parser templates:** `tools/grabber_templates.py` supports JSON paths,
+  bounded CSS-like selectors for HTML fragments and named regex groups for
+  line-oriented text. Templates live under the profile's top-level `templates`
+  object and sources refer to them by name. Templates cannot execute Python/code.
 
 The initial slice also provides:
 
@@ -66,6 +85,25 @@ The initial slice also provides:
   file is authoritative and requires `--replace`; independently edited delta files
   are rejected during acknowledgement;
 - no-op behaviour when no source is enabled/configured; no checkpoint is advanced.
+
+The source list and parser templates are stored together in the operator's JSON
+profile. For example, the checked-in `tools/grabber-profile.example.json` contains
+disabled examples for RuTracker `.xml.xz`, one Torznab indexer, direct RSS and a
+generic JSON template source, plus JSON/HTML/text template definitions. Copy the
+profile to a private local file, configure each endpoint/path and secret there, and
+enable only the sources you intend to query.
+
+A Torznab source uses a unique ID per indexer, an endpoint URL without embedded API
+credentials and a separate `api_key` setting. The adapter requests `t=caps`, then
+pages `t=search` results with configured `page_size`, `max_pages` and
+`max_items`. Per-indexer `last_pubdate` and capability hash are checkpointed only
+after `ack`. The overlap window deliberately replays recent items; deduplication
+and source observations make replay idempotent. Direct RSS uses `type: "rss"` and
+`fetch_caps: false`.
+
+RuTracker source `path` may point at `rutracker-YYYYMMDD.xml` or
+`rutracker-YYYYMMDD.xml.xz`. `max_compressed_bytes`, `max_expanded_bytes`
+and `xz_memory_limit` are independent safety limits.
 
 The local state DB, work outputs, quarantine and credentials belong outside Git.
 
@@ -662,9 +700,19 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
 
 ## Tests and acceptance
 
-- Small sanitized fixtures for the CSV header/rows, RuTracker XML (nested and
-  single-file layouts, forum filter and deletion), and raw-DEFLATE Rutor JSON.
-  Never commit production dumps, full CSV snapshots or large cache files.
+- Small sanitized fixtures for the CSV header/rows, RuTracker XML/XZ (nested and
+  single-file layouts, forum filter and deletion), raw-DEFLATE Rutor JSON, Torznab
+  capabilities/recent RSS items and JSON/HTML/text templates. Never commit production
+  dumps, full CSV snapshots or large source caches.
+- XZ tests cover valid, truncated and corrupt streams, compressed/expanded byte
+  limits, decoder memory limits and DTD/entity rejection.
+- RuTracker deletion must use an already published shard or be quarantined; a
+  later higher-priority live observation can restore a tombstoned infohash.
+- Torznab tests use local mock endpoints, include a failed indexer alongside a
+  healthy one, verify capability/category parsing, API-key redaction, redirect
+  refusal, verified hash extraction and idempotent overlap replay.
+- Template tests cover JSON paths, HTML selectors/attributes, named text groups,
+  malformed fields, regex bounds and no dynamic code execution.
 - Cover CSV quoting and Git commit checkpoint advancement only after publisher
   staging; unchanged commits must skip, failed imports must replay safely.
 - Cover XML date parsing with `unixts` preference and UTC fallback for

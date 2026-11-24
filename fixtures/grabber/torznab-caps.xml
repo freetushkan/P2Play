@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <categories>
+    <category id="2000" name="Movies">
+      <subcat id="2010" name="Movies HD"/>
+    </category>
+  </categories>
+</caps>

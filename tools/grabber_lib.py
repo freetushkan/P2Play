@@ -889,27 +889,42 @@ def _merge_observations(rows: Sequence[sqlite3.Row], publisher: Dict[str, Any]) 
     if not rows:
         return None, None
     decoded = []
+    ih = ""
     for row in rows:
         record = json.loads(row["record_json"])
-        categories = json.loads(row["categories_json"])
-        if categories:
-            mapped_tags = _tags_for(categories, publisher)
-            if mapped_tags:
-                record["tags"] = mapped_tags
-            else:
-                record.pop("tags", None)
+        ih = ih or str(record.get("ih") or record.get("del") or "")
+        if "del" not in record:
+            categories = json.loads(row["categories_json"])
+            if categories:
+                mapped_tags = _tags_for(categories, publisher)
+                if mapped_tags:
+                    record["tags"] = mapped_tags
+                else:
+                    record.pop("tags", None)
         decoded.append((int(row["priority"]), record))
     priorities = sorted({priority for priority, _ in decoded})
-    merged: Dict[str, Any] = {"ih": str(decoded[0][1]["ih"])}
+    merged: Optional[Dict[str, Any]] = None
     fields = ("title", "date", "size", "files", "tags", "trackers")
     for priority in priorities:
         group = [record for current_priority, record in decoded if current_priority == priority]
+        tombstones = [record for record in group if "del" in record]
+        live = [record for record in group if "del" not in record]
+        if tombstones and live:
+            return None, f"same-priority live/tombstone conflict at priority {priority}"
+        if tombstones:
+            shards = {_valid_shard(record.get("shard")) for record in tombstones}
+            if len(shards) != 1:
+                return None, f"same-priority tombstone shard conflict at priority {priority}"
+            merged = {"del": ih, "shard": next(iter(shards))}
+            continue
+        if not live:
+            continue
+        # A higher-priority live source may restore an item after a lower-priority
+        # explicit tombstone; restoration starts from that source's own fields.
+        if merged is None or "del" in merged:
+            merged = {"ih": ih}
         for field in fields:
-            values: Dict[str, Any] = {}
-            for record in group:
-                value = record.get(field)
-                if _nonempty(value):
-                    values[_json(value)] = value
+            values = {_json(record[field]): record[field] for record in live if _nonempty(record.get(field))}
             if len(values) > 1:
                 return None, f"same-priority source conflict at priority {priority}: {field}"
             if values:
@@ -952,6 +967,22 @@ def _load_config(path: Path) -> Dict[str, Any]:
             raise GrabberError(f"priority out of range for source {source_id}")
         if source.get("date_field", "created_unix") not in {"created_unix", "published"}:
             raise GrabberError(f"invalid CSV date_field for source {source_id}")
+    templates = config.get("templates", {}) or {}
+    if not isinstance(templates, dict):
+        raise GrabberError("profile.templates must be an object keyed by template name")
+    from grabber_templates import TemplateError, validate_template
+    for template_name, template in templates.items():
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", str(template_name)):
+            raise GrabberError(f"invalid template name: {template_name!r}")
+        try:
+            validate_template(template, str(template_name))
+        except TemplateError as exc:
+            raise GrabberError(f"invalid template {template_name!r}: {exc}") from exc
+    for source in sources:
+        if str(source.get("type", "")) == "template":
+            template_name = str(source.get("template", ""))
+            if template_name not in templates:
+                raise GrabberError(f"source {source['id']!r} references undefined template {template_name!r}")
     publisher = config.get("publisher", {}) or {}
     if not isinstance(publisher, dict):
         raise GrabberError("profile.publisher must be an object")
@@ -1026,7 +1057,13 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                     elif source_type == "rutor":
                         result = _rutor_source(source, state, run_id, publisher, quarantine_dir)
                     else:
-                        result = {"status": "unsupported", "reason": f"adapter {source_type!r} is not implemented in this grabber version"}
+                        from grabber_adapters import SOURCE_ADAPTERS
+                        adapter = SOURCE_ADAPTERS.get(source_type)
+                        if adapter is None:
+                            result = {"status": "unsupported", "reason": f"adapter {source_type!r} is not registered"}
+                        else:
+                            result = adapter(source, config.get("templates", {}), state,
+                                             run_id, publisher, quarantine_dir)
                     state.db.execute(f"RELEASE SAVEPOINT {savepoint}")
                     result["checkpoint_before"] = before
                     result["priority"] = int(source.get("priority", 0))
@@ -1092,6 +1129,12 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                     if previous is None:
                         continue
                     merged = previous
+                if merged is not None and "del" in merged and override is None:
+                    if previous is not None:
+                        tombstone = {"del": ih, "shard": _valid_shard(previous.get("shard", merged["shard"]))}
+                        _write_ndjson_line(delta_stream, digest_delta, tombstone)
+                        delta_count += 1
+                    continue
                 if merged is None:
                     merged = override or previous
                     if merged is None:

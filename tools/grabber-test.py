@@ -13,6 +13,8 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grabber_lib as g
+import grabber_templates as gt
+import grabber_adapters as ga
 
 
 class GrabberTests(unittest.TestCase):
@@ -34,6 +36,11 @@ class GrabberTests(unittest.TestCase):
         self.rutor_json = json.loads((fixtures / "rutor.json").read_text(encoding="utf-8"))
         self.rutor_path = self.root / "rutor.ls"
         self.write_rutor()
+        self.rutracker_xml = (fixtures / "rutracker.xml").read_bytes()
+        self.rutracker_path = self.root / "rutracker-20261031.xml.xz"
+        self.rutracker_path.write_bytes(lzma.compress(self.rutracker_xml))
+        self.torznab_caps = (fixtures / "torznab-caps.xml").read_bytes()
+        self.torznab_feed = (fixtures / "torznab-feed.xml").read_bytes()
         self.profile = self.root / "profile.json"
         self.write_profile()
         self.full = self.root / "work" / "catalog-full.ndjson"
@@ -303,6 +310,195 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual(g._parse_size("1.5 MB", "binary"), 1572864)
         self.assertEqual(g._parse_size("1.5 MB", "decimal"), 1500000)
         self.assertEqual(g._parse_size("1.0000005 B", "decimal"), 1)
+
+
+
+    def test_rutracker_xz_snapshot_tombstone_and_provenance(self):
+        self.write_profile(rutor_enabled=False)
+        first = self.run_once()
+        g.ack_run(self.state, first["run_id"], self.full, 1, "auto")
+        config = json.loads(self.profile.read_text(encoding="utf-8"))
+        config["sources"].append({
+            "id": "rutracker", "type": "rutracker", "enabled": True, "priority": 30,
+            "path": str(self.rutracker_path), "forum_include_ids": ["100"]
+        })
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        second = self.run_once()
+        self.assertEqual(second["sources"]["rutracker"]["status"], "success")
+        self.assertEqual(second["sources"]["rutracker"]["checkpoint"]["compression"], "xz")
+        full, delta = self.read_rows(self.full), self.read_rows(self.delta)
+        self.assertEqual({row["ih"] for row in full}, {"d" * 40})
+        self.assertIn({"del": "a" * 40, "shard": "default"}, delta)
+        row = full[0]
+        self.assertEqual(row["title"], "RuTracker new release")
+        self.assertEqual(row["date"], 1704276672)
+        self.assertEqual(row["files"], 1)
+        self.assertEqual(row["trackers"], ["http://bt2.t-ru.org/ann?magnet"])
+        self.assertEqual(row["tags"], ["movie"])
+        g.ack_run(self.state, second["run_id"], self.full, len(delta), "auto")
+        state = g.State(self.state)
+        try:
+            saved = state.db.execute(
+                "SELECT provenance_json FROM observations WHERE source_id='rutracker' AND ih=?",
+                ("d" * 40,)).fetchone()
+            provenance = json.loads(saved[0])
+            self.assertEqual(provenance["old"][0]["hash"], "c" * 40)
+            self.assertEqual(provenance["dup_hints"][0]["p"], "similar")
+            self.assertEqual(provenance["content_text"], "Sanitized description")
+        finally:
+            state.close()
+        third = self.run_once()
+        self.assertEqual(third["counts"]["delta"], 0)
+        g.ack_run(self.state, third["run_id"], self.full, 0, "auto")
+
+    def test_rutracker_delete_without_published_shard_is_quarantined(self):
+        config = {"version": 1, "publisher": {}, "sources": [
+            {"id": "rutracker", "type": "rutracker", "enabled": True,
+             "priority": 30, "path": str(self.rutracker_path)}]}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        report = self.run_once()
+        self.assertGreater(report["sources"]["rutracker"]["rejected"], 0)
+        self.assertGreater(report["sources"]["rutracker"]["quarantined"], 0)
+        self.assertNotIn("a" * 40, {row["ih"] for row in self.read_rows(self.full)})
+        self.assertIn("d" * 40, {row["ih"] for row in self.read_rows(self.full)})
+        g.discard_run(self.state, report["run_id"])
+
+    def test_rutracker_rejects_corrupt_xz_and_xml_entities(self):
+        self.rutracker_path.write_bytes(b"\xfd7zXZ\x00broken")
+        config = {"version": 1, "publisher": {}, "sources": [
+            {"id": "rutracker", "type": "rutracker", "enabled": True, "path": str(self.rutracker_path)}]}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        report = self.run_once()
+        self.assertEqual(report["sources"]["rutracker"]["status"], "failed")
+        self.assertFalse((self.root / "work" / "pending-run.json").exists())
+        malicious = self.root / "evil.xml"
+        malicious.write_text('<!DOCTYPE x [<!ENTITY boom "boom">]><x/>', encoding="utf-8")
+        raw = malicious.open("rb")
+        try:
+            bounded = ga._BoundedXmlReader(raw, 1024)
+            iterator = __import__("xml.etree.ElementTree", fromlist=["iterparse"]).iterparse(bounded)
+            with self.assertRaisesRegex(g.SourceError, "DTD and entity"):
+                list(iterator)
+        finally:
+            raw.close()
+
+    def test_torznab_caps_recent_items_and_overlap_replay(self):
+        caps, feed = self.torznab_caps, self.torznab_feed
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+                requests.append(query)
+                if query.get("apikey") != ["unit-test-key"]:
+                    handler.send_response(403); handler.end_headers(); return
+                payload = caps if query.get("t") == ["caps"] else feed
+                handler.send_response(200)
+                handler.send_header("Content-Type", "application/xml")
+                handler.send_header("Content-Length", str(len(payload)))
+                handler.end_headers()
+                handler.wfile.write(payload)
+            def log_message(self, fmt, *args):
+                return
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(worker.join, timeout=5)
+        self.addCleanup(server.server_close)
+        config = {
+            "version": 1,
+            "publisher": {"category_map": {"Movies HD": "film"},
+                          "shard_policy": {"default": "default", "category_map": {"film": "films"}}},
+            "sources": [{"id": "jackett-indexer-a", "type": "jackett-torznab", "enabled": True,
+                         "priority": 40, "url": f"http://127.0.0.1:{server.server_port}/api/torznab",
+                         "api_key": "unit-test-key", "timeout": 5, "page_size": 25,
+                         "max_pages": 2, "max_items": 100, "overlap_seconds": 86400}]
+        }
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        first = self.run_once()
+        source = first["sources"]["jackett-indexer-a"]
+        self.assertEqual(source["accepted"], 1)
+        self.assertEqual(source["rejected"], 1)
+        rows = self.read_rows(self.full)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ih"], "e" * 40)
+        self.assertEqual(rows[0]["tags"], ["film"])
+        self.assertEqual(rows[0]["shard"], "films")
+        self.assertNotIn("unit-test-key", self.report.read_text(encoding="utf-8"))
+        self.assertTrue(any(q.get("t") == ["caps"] for q in requests))
+        self.assertTrue(any(q.get("t") == ["search"] for q in requests))
+        g.ack_run(self.state, first["run_id"], self.full, 1, "auto")
+        second = self.run_once()
+        self.assertEqual(second["counts"]["delta"], 0)
+        g.ack_run(self.state, second["run_id"], self.full, 0, "auto")
+
+    def test_bad_indexer_does_not_block_next_indexer(self):
+        caps, feed = self.torznab_caps, self.torznab_feed
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+                payload = caps if query.get("t") == ["caps"] else feed
+                handler.send_response(200)
+                handler.send_header("Content-Length", str(len(payload)))
+                handler.end_headers()
+                handler.wfile.write(payload)
+            def log_message(self, fmt, *args): return
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+        self.addCleanup(server.shutdown); self.addCleanup(worker.join, timeout=5); self.addCleanup(server.server_close)
+        config = {"version": 1, "publisher": {}, "sources": [
+            {"id": "broken-indexer", "type": "torznab", "enabled": True,
+             "priority": 40, "url": "http://127.0.0.1:1/api", "timeout": 1},
+            {"id": "healthy-indexer", "type": "torznab", "enabled": True,
+             "priority": 50, "url": f"http://127.0.0.1:{server.server_port}/api", "timeout": 5}
+        ]}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        report = self.run_once()
+        self.assertEqual(report["sources"]["broken-indexer"]["status"], "failed")
+        self.assertEqual(report["sources"]["healthy-indexer"]["accepted"], 1)
+        self.assertIn("e" * 40, {row["ih"] for row in self.read_rows(self.full)})
+        g.discard_run(self.state, report["run_id"])
+
+    def test_json_html_and_text_template_formats(self):
+        json_template = {"format": "json", "record_path": "$.results[*]",
+            "fields": {"ih": "$.hash", "title": "$.name", "date": "$.created",
+                       "size": "$.bytes", "categories": {"path": "$.categories", "multiple": True}}}
+        parsed = gt.parse_template(
+            b'{"results":[{"hash":"' + b"f" * 40 + b'","name":"JSON release","created":1700000000,"bytes":123,"categories":["Movies"]}]}',
+            json_template)
+        self.assertEqual(parsed[0]["ih"], "f" * 40)
+        html_template = {"format": "html", "item_selector": "div.result",
+            "fields": {"magnet": {"selector": "a.magnet", "attr": "href"},
+                       "title": {"selector": "h2"}, "size": {"selector": "span.size", "attr": "data-bytes"}}}
+        html_rows = gt.parse_template(
+            (f'<div class="result"><h2>HTML release</h2><a class="magnet" href="magnet:?xt=urn:btih:{"1"*40}">get</a><span class="size" data-bytes="456"></span></div>').encode(),
+            html_template)
+        self.assertEqual(html_rows[0]["title"], "HTML release")
+        text_template = {"format": "text",
+            "pattern": r"^(?P<ih>[0-9a-f]{40})\|(?P<title>[^|]+)\|(?P<date>[0-9]+)$",
+            "fields": {"ih": {"group": "ih"}, "title": {"group": "title"}, "date": {"group": "date"}}}
+        rows = gt.parse_template((("2" * 40) + "|Text release|1700000100\n").encode(), text_template)
+        self.assertEqual(rows[0]["title"], "Text release")
+        self.assertEqual(rows[0]["date"], "1700000100")
+
+    def test_template_source_reads_profile_templates_and_acknowledges_checkpoint(self):
+        payload = {"entries": [{"hash": "3" * 40, "name": "Configured template release",
+                                "stamp": 1700000200, "bytes": "1.5 MB"}]}
+        path = self.root / "custom-source.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        config = {"version": 1, "publisher": {},
+            "templates": {"custom-json": {"format": "json", "record_path": "$.entries[*]",
+                "fields": {"ih": "$.hash", "title": "$.name", "date": "$.stamp", "size": "$.bytes"}}},
+            "sources": [{"id": "custom-source", "type": "template", "template": "custom-json",
+                         "enabled": True, "priority": 60, "path": str(path), "size_unit": "binary"}]}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        first = self.run_once()
+        self.assertEqual(first["sources"]["custom-source"]["accepted"], 1)
+        self.assertEqual(self.read_rows(self.full)[0]["size"], 1572864)
+        g.ack_run(self.state, first["run_id"], self.full, 1, "auto")
+        second = self.run_once()
+        self.assertEqual(second["sources"]["custom-source"]["status"], "unchanged")
+        g.ack_run(self.state, second["run_id"], self.full, 0, "auto")
 
 
 if __name__ == "__main__":

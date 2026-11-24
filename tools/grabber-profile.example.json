@@ -42,13 +42,100 @@
       "id": "rutracker",
       "type": "rutracker",
       "enabled": false,
-      "priority": 30
+      "priority": 30,
+      "path": "../sources/rutracker-20261031.xml.xz",
+      "max_compressed_bytes": 268435456,
+      "max_expanded_bytes": 536870912,
+      "xz_memory_limit": 134217728,
+      "forum_include_ids": []
     },
     {
-      "id": "jackett-torznab",
+      "id": "jackett-indexer-example",
       "type": "jackett-torznab",
       "enabled": false,
-      "priority": 40
+      "priority": 40,
+      "url": "http://127.0.0.1:9117/api/v2.0/indexers/example/results/torznab/api",
+      "api_key": "",
+      "timeout": 30,
+      "page_size": 100,
+      "max_pages": 5,
+      "max_items": 5000,
+      "overlap_seconds": 259200,
+      "fetch_caps": true,
+      "params": {}
+    },
+    {
+      "id": "direct-rss-example",
+      "type": "rss",
+      "enabled": false,
+      "priority": 40,
+      "url": "https://example.invalid/releases.rss",
+      "fetch_caps": false,
+      "timeout": 30,
+      "max_items": 1000,
+      "overlap_seconds": 259200
+    },
+    {
+      "id": "generic-json-template",
+      "type": "template",
+      "template": "generic-json",
+      "enabled": false,
+      "priority": 50,
+      "path": "../sources/generic-feed.json"
     }
-  ]
+  ],
+  "templates": {
+    "generic-json": {
+      "format": "json",
+      "record_path": "$.items[*]",
+      "fields": {
+        "ih": "$.infohash",
+        "magnet": "$.magnet",
+        "title": "$.title",
+        "date": "$.published",
+        "size": "$.size",
+        "files": "$.files",
+        "categories": {
+          "path": "$.categories",
+          "multiple": true
+        }
+      }
+    },
+    "generic-html": {
+      "format": "html",
+      "item_selector": "article.release",
+      "fields": {
+        "title": {
+          "selector": "h2"
+        },
+        "magnet": {
+          "selector": "a.magnet",
+          "attr": "href"
+        },
+        "date": {
+          "selector": "time",
+          "attr": "datetime"
+        },
+        "size": {
+          "selector": "span.size",
+          "attr": "data-bytes"
+        }
+      }
+    },
+    "generic-text": {
+      "format": "text",
+      "pattern": "^(?P<ih>[0-9a-f]{40,64})\\\\|(?P<title>[^|]{1,256})\\\\|(?P<date>[0-9]{1,12})$",
+      "fields": {
+        "ih": {
+          "group": "ih"
+        },
+        "title": {
+          "group": "title"
+        },
+        "date": {
+          "group": "date"
+        }
+      }
+    }
+  }
 }
