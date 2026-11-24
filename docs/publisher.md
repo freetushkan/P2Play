@@ -75,6 +75,29 @@ infohashes. Identical duplicate records are skipped.
 - A plain `poster` URL remains metadata only; the publisher does not fetch it.
   No SHA-256 pseudo-URLs are written into the legacy poster field.
 
+## Incremental import semantics
+
+The publisher endpoint accepts records for the next release; it does not fetch
+source data or decide source precedence. A regular release appends new immutable
+record segment(s) and keeps the previous signed descriptors. When the same
+infohash appears in a later segment, the later **complete row** becomes the
+current record during manifest replay. It is not a field-level patch: omitted
+fields do not inherit values from the old row. A tombstone removes the current
+row. Keep the shard stable for normal updates; shard migration requires an
+old-shard tombstone release followed by a new-shard live-record release.
+
+The grabber should therefore send only changed/new complete rows and explicit
+tombstones after its initial full bootstrap. It must compare against the local
+last acknowledged staged state, not re-send the full source snapshots on every
+poll. The operator still reviews/edits the delta before running this CLI.
+`p2play publish` stages the supplied file; `--release` remains a separate
+explicit action.
+
+A snapshot compacts the complete current live state and discards append history.
+It is a maintenance operation, not the normal refresh path: after compaction,
+subscribers may need the new compacted record segments even if their previous
+version was complete.
+
 ## Workflow
 
 Create/select normal/meta lists; load a versioned profile with whitelist, source priorities/enabled flags, tag mapping,

@@ -314,3 +314,33 @@ It checks manifest-first admission, unselected files absent from network storage
 HTTP-triggered packs, mirroring/budget changes, original-infohash partial restart,
 policy reselection, live snapshot generation changes and removal with queued media work.
 The storage harness also checks pointer/manifest key and sequence mismatches before commit.
+
+
+## Incremental version refresh
+
+A regular publisher release keeps the old immutable record descriptors in the
+signed manifest and adds new segment files for the incoming rows. The version
+torrent therefore still describes the complete selected version, but its old
+record paths and hashes are unchanged.
+
+When a subscriber accepts a newer pointer, `meshFetch` seeds the new torrent
+working directory with selected record files already held for the previous
+version. It copies only files that were present and whose byte length and
+SHA-256 match the previous signed descriptor. Libtorrent then checks the copied
+bytes against the new v2 torrent; the new manifest and every descriptor are
+still verified by the normal acceptance path. New or unavailable segments are
+downloaded normally. This is a local reuse optimization, not a wire-format
+change and not trust in an unsigned cache.
+
+The live `meshnet-test.py` scenario now publishes version 1, subscribes a
+second node, then publishes version 2 with both a new infohash and a complete
+replacement row for an existing infohash. It checks that the second node
+preloads the previously held immutable segment and observes the replacement
+row. This is a correctness check for the reuse path; it is not yet a benchmark
+of exact network bytes for repeated large-catalog updates.
+
+Snapshots intentionally reset the append history and write fresh compacted
+segments. Because those files have new immutable identities, a subscriber may
+need to fetch the current selected record shards again after compaction.
+Compaction should therefore be threshold-driven rather than coupled to every
+grabber/RSS poll.

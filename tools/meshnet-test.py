@@ -108,13 +108,29 @@ def main():
         res = call("b", "/api/catalog/search?q=network")[1]["results"]
         check([r["hash"] for r in res] == ["d" * 40], "B: the list searched")
         check(wait("B seeds", lambda: call("b", "/api/lists")[1]["lists"][0]["net"]["seeding"], 20), "B: seeding it")
+        b_records_dir = os.path.join(root, "b", "lists", pk, "records")
+        old_segments = [name for name in os.listdir(b_records_dir) if name.endswith(".z")]
+        check(len(old_segments) == 1, "B: keeps the first immutable record segment locally")
 
-        call("a", f"/api/publish/{pk}/records", raw=json.dumps({"ih": "e" * 40, "title": "Second Film"}).encode())
+        update_batch = "\n".join((
+            json.dumps({"ih": "d" * 40, "title": "Revised Film", "tags": ["movie"]}),
+            json.dumps({"ih": "e" * 40, "title": "Second Film"}),
+        )) + "\n"
+        call("a", f"/api/publish/{pk}/records", raw=update_batch.encode())
         check(call("a", f"/api/publish/{pk}/release", {})[1]["seq"] == 2, "A: version 2")
         time.sleep(2)
         call("b", f"/api/lists/{pk}", {})
         got = wait("B takes version 2", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 2 and l["net"].get("records_ready")])
         check(bool(got) and call("b", "/api/catalog/search?q=second")[1]["results"] != [], "B: version 2 taken")
+        revised = call("b", "/api/catalog/search?q=revised")[1]["results"]
+        check([r["hash"] for r in revised] == ["d" * 40],
+              "B: later segment fully replaces the prior record with the same infohash")
+        check(call("b", "/api/catalog/search?q=network")[1]["results"] == [],
+              "B: fields omitted from a replacement are not implicitly retained")
+        with open(os.path.join(root, "b", "p2play.log"), encoding="utf-8") as log_file:
+            b_log = log_file.read()
+        check("preloaded_cached_record_segments=1" in b_log,
+              "B: reuses the previously held immutable segment for the newer version")
         # the directory swarm: C holds no list, learns of this one and of its holders
         found = wait("C learns of the list", lambda: [l for l in call("c", "/api/lists/discover")[1]["lists"]
                                                        if l["pubkey"] == pk and l["holders"] >= 2 and l["seq"] == 2], 90)

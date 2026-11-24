@@ -18,6 +18,7 @@
 #include <libtorrent/create_torrent.hpp>
 #include <libtorrent/kademlia/ed25519.hpp>
 #include <libtorrent/kademlia/item.hpp>
+#include <libtorrent/hasher.hpp>
 
 #include "core_torrent.hpp"
 #include "mesh_ext.hpp"
@@ -179,6 +180,16 @@ namespace p2p {
         void copyPayload(const std::string &from, const std::string &to, size_t limit) {
             std::ifstream source(from, std::ios::binary);
             if (source.good()) writeAll(to, readAll(from, limit));
+        }
+
+        bool copyVerifiedPayload(const std::string &from, const std::string &to, size_t limit,
+                                 int64_t expectedBytes, const std::string &expectedSha256) {
+            if (expectedBytes <= 0 || static_cast<uint64_t>(expectedBytes) > limit) return false;
+            const auto bytes = readAll(from, limit);
+            if (static_cast<int64_t>(bytes.size()) != expectedBytes) return false;
+            const auto digest = lt::hasher256(bytes).final();
+            if (hexOf(digest.data(), digest.size()) != expectedSha256) return false;
+            return writeAll(to, bytes);
         }
     }
 
@@ -752,6 +763,28 @@ namespace p2p {
         const auto root = m_store.dir() + "/lists/.network"; mkdir(root.c_str(), 0700);
         const auto staging = root + "/" + pk + "-" + std::to_string(++m_meshGeneration);
         mkdir(staging.c_str(), 0700);
+        const auto listRoot = staging + "/" + pk;
+        mkdir(listRoot.c_str(), 0700);
+        mkdir((listRoot + "/records").c_str(), 0700);
+
+        // Append releases retain old immutable record descriptors. Pre-populate the new
+        // torrent's working tree from files already held for this list, but only after
+        // checking them against the previous signed descriptor. Libtorrent still verifies
+        // every copied byte against the new v2 torrent before treating a file as complete.
+        size_t reusedRecordSegments = 0;
+        for (const auto &f : m_mesh.plan(pk)) {
+            if (f.kind != "records" || !f.selected || !f.present ||
+                f.path.compare(0, 8, "records/") != 0) continue;
+            const auto source = m_mesh.listDir(pk) + "/" + f.path;
+            const auto target = listRoot + "/" + f.path;
+            if (copyVerifiedPayload(source, target, Mesh::kMaxSegmentBytes, f.bytes, f.sha256))
+                ++reusedRecordSegments;
+        }
+        if (reusedRecordSegments) {
+            log("[Mesh] list %s: preloaded_cached_record_segments=%zu for version %lld",
+                pk.substr(0, 16).c_str(), reusedRecordSegments, static_cast<long long>(seq));
+        }
+
         lt::add_torrent_params atp;
         atp.info_hashes = lt::info_hash_t(ih); atp.name = pk; atp.save_path = staging;
         atp.flags |= lt::torrent_flags::default_dont_download;

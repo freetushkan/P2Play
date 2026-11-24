@@ -286,11 +286,144 @@ quarantine the deletion for operator review.
 
 The publisher CLI skips identical duplicate records and rejects conflicting
 records for the same hash in one import. It does not perform cross-source
-precedence or metadata upserts. The grabber owns source merge decisions,
-stable source provenance, tombstones and the last published `ih → shard`
-mapping. The append-only MediaMesh manifest does not by itself define a
-metadata-update policy; changed metadata for an already published infohash
-must use an explicit, tested publisher/upsert strategy, not an assumed one.
+precedence. MediaMesh replays record segments in signed manifest order: a later
+live row with the same infohash replaces the earlier row, and a `del` row
+removes it. This is a **whole-record replacement**, not a partial JSON patch:
+a delta row must contain the complete canonical record, because omitted fields
+become empty/default rather than being inherited. The grabber owns source merge,
+stable provenance, explicit tombstones and the last staged `ih → shard` mapping.
+
+Keep the existing shard for an infohash during ordinary refresh. Moving an item
+between shards needs a tombstone in the old shard and a live row in the new one.
+The current publisher groups new segments by shard, so the initial grabber must
+not combine both halves into one release; use a reviewed two-release migration
+or leave the shard unchanged.
+
+
+## Incremental state, delta export and MediaMesh
+
+Do not confuse three different kinds of incrementality:
+
+1. **Source acquisition.** Some sources provide a versioned snapshot, while
+   RSS/Torznab provides a recent-items window that can be polled by cursor.
+2. **Grabber processing and export.** The grabber keeps local source/merge state
+   and emits only the records that differ from the last successfully staged
+   catalog state.
+3. **MediaMesh distribution.** A regular release appends immutable record
+   segment files to the signed manifest. A subscribed node should reuse
+   previously verified files and fetch only new/missing payload.
+
+A full source scan does not imply a full catalog upload. A changed CSV or Rutor
+snapshot may still need a complete parse to discover all additions/updates, but
+the resulting outgoing NDJSON should normally be a small delta.
+
+### Bootstrap and subsequent refreshes
+
+- **Bootstrap:** when there is no acknowledged local state for the target list,
+  parse the available enabled sources, merge the full known catalog and export a
+  complete baseline NDJSON. This is the only normal full-catalog import.
+- **Refresh:** after the baseline is successfully staged and acknowledged,
+  compare the merged canonical state with the last acknowledged staged state.
+  Export only new or changed rows and explicit tombstones. Unchanged records
+  must not be repeated in every release.
+- Compare a stable canonical fingerprint per infohash. Exclude poll time,
+  scrape time, seed/leech/completed counters, local paths, source debug data and
+  other volatile/provenance-only values from the signed-record fingerprint.
+  A source poll that changes only volatile counters must not create a release.
+- A changed row in a delta is a **complete replacement record**, not a patch.
+  Include its current title, shard, date and every currently known non-empty
+  canonical field. Preserve fields that remain valid from lower-priority
+  observations or the last staged row. Do not rely on the publisher to merge
+  partial fields.
+- An unchanged or absent item in a snapshot is not a tombstone. Only explicit,
+  trusted deletion semantics (currently RuTracker `<del/>`) may create
+  `{"del":"<ih>","shard":"<previous-shard>"}`. The old shard must come from
+  local last-staged state, never from a new/default routing guess.
+- Keep shard stable for existing infohashes in the first implementation.
+  Cross-shard migration is a separate reviewed operation: release the old-shard
+  tombstone first, then release the new-shard live row. Do not emit both sides
+  in one ordinary delta until ordering is explicitly implemented and tested.
+
+Provide a full export/repair mode for rebuilding a local state database, but
+make delta export the default once a baseline has been acknowledged. Every run
+still produces an editable NDJSON file, a JSON report and a pending-run
+manifest. The grabber never calls the publisher API or CLI itself.
+
+### Per-source update strategy
+
+| Source | Change detector | Work when changed |
+| --- | --- | --- |
+| torrents-csv-data | Git commit OID plus the `torrents.csv` blob OID | Skip an unchanged blob. When the blob changes, stream-parse the complete snapshot and diff rows by infohash. Do not use line-only Git diffs or assume append-only history until repository semantics are proven. |
+| Rutor `rutor.ls` | SHA-256 of compressed local/downloaded file | Skip identical bytes. A changed file is still a full raw-DEFLATE/JSON snapshot; parse it and diff by infohash. |
+| RuTracker XML | SHA-256 of the operator-supplied dump | Skip identical bytes. A changed dump is parsed as a snapshot; `<del/>` is an explicit event, omission is not. |
+| Each Jackett/Torznab indexer | Per-indexer cursor plus overlap window and stable GUID/infohash set | Poll recent items independently. Replay the overlap idempotently, catch delayed items and do not treat feed-window expiry as deletion. |
+
+Snapshot adapters must retain last-known source observations for entries omitted
+from a later snapshot; omission alone does not revoke an earlier observation.
+Mark those observations as not-seen-in-latest-snapshot for diagnostics. Only a
+source's explicit deletion event or a deliberate operator cleanup may remove
+its contribution. This prevents a truncated feed or partial snapshot from
+silently deleting catalog data.
+
+### Local transactional state and manual acknowledgement
+
+Use a local SQLite database (standard-library `sqlite3`; never commit it to Git)
+for source checkpoints, per-source observations/fingerprints, merged canonical
+rows, last acknowledged staged rows including `ih → shard`, and pending runs.
+SQLite is preferable to loading a multi-million-row catalog into Python objects
+or maintaining several loosely coupled JSON state files. Keep raw inputs and
+quarantine data as bounded files outside the database.
+
+A run builds candidate source changes in a transaction without advancing the
+committed source checkpoints. It writes a pending-run manifest containing the
+run ID, candidate source revisions/cursors, output path and baseline/target
+list identity. Refuse to start another run while an unresolved run exists; the
+operator must acknowledge or explicitly discard it first.
+
+After inspecting/editing the NDJSON, the operator runs publisher dry-run and
+then the normal explicit publisher import. Once the publisher reports that the
+same number of records was successfully staged as there are nonblank rows in
+the edited file, the operator explicitly acknowledges the run. A provisional
+interface is:
+
+```sh
+python3 tools/grabber.py ack --run-id <id> --file work/catalog-delta.ndjson \\
+  --accepted-count <publisher-staged-count>
+```
+
+Acknowledgement hashes the final edited file, validates its rows/count, applies
+those exact rows to local last-staged state and commits only the successful
+sources' candidate checkpoints in one SQLite transaction. It does not contact
+the publisher. If the file, count or run ID does not match, nothing is committed.
+A run with zero delta rows can be acknowledged as an explicit no-op after review;
+no publisher request is needed. Category-inventory-only runs never advance
+checkpoints. If an operator removes a row from the delta, it remains different
+from last-staged state and will be offered again until an explicit ignore rule
+is added; do not silently mark an unpublished row as staged.
+
+### Why this fits MediaMesh
+
+A non-snapshot `release` carries existing signed segment descriptors forward
+and adds new immutable segment file(s) for the new records, grouped by shard.
+Existing segment bytes are not rewritten. The version pointer and torrent
+metadata still change on every sequence, but the payload can remain incremental.
+
+The subscriber must also preserve local bytes across version changes. The
+`meshFetch` path now preloads selected, present record segments from the
+currently held version into the new torrent working directory, but only after
+checking their size and SHA-256 against the previous signed descriptors.
+Libtorrent checks those copied bytes against the new v2 torrent before treating
+them as complete; the new signed manifest is still verified independently.
+Files that are new, absent, unselected, or fail verification are downloaded
+(or remain unavailable) through the normal selective path. This does not change
+the MediaMesh v1 wire format.
+
+A `snapshot`/compaction is deliberately different: it replays current live
+records into fresh segment files and drops historical segments/tombstones.
+Because the compacted files have new immutable names, subscribers may need to
+download the compacted selected shards again. Do not compact on every RSS poll.
+Choose a configurable threshold based on segment count/bytes, redundant history
+and tombstone ratio, then measure it with a large catalog before fixing defaults.
 
 ## Failure isolation and partial-source operation
 
