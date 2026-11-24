@@ -82,6 +82,40 @@ Verified upstream contracts (paths relative to that commit):
    field keeps the existing token; the explicit checkbox clears it. To change a
    token, enter the replacement. The stored token is never pre-filled or returned.
 
+## Android host and embedded-core boundary
+
+The pinned Silo source includes the Goja plugin manager and its plugin HTTP routes.
+The upstream Silo.3 release also publishes Android server binaries (including
+arm64 and arm7). This makes an Android Silo host technically plausible, but the
+MediaMesh plugin has **not yet been installed and exercised on a real Android
+Silo host**; do not mark this deployment as verified until that test is done.
+
+P2Play itself has an Android APK build for `arm64-v8a` and `armeabi-v7a`. The APK
+packages the native `p2playd` executable and launches it through an Android
+foreground `ServerService` (default HTTP port 8090). This is a standalone server
+service, not the future `pPlay_embedded` mode.
+
+The current MediaMesh Silo plugin uses the host's synchronous `ts.http` binding
+to call a configured P2Play daemon. It can therefore use an external P2Play
+service on the same Android device (for example `http://127.0.0.1:8090`) or a
+remote daemon, provided the service is reachable. The plugin runtime does not
+expose process creation or a P2Play C API binding: JavaScript cannot start,
+stop, or link `p2play_core` by itself. A Silo-managed local core would require a
+new host-level launcher/lifecycle bridge and separate packaging, not merely a
+plugin change.
+
+Android acceptance remains open:
+- install the ZIP through the Android Silo plugin manager and confirm plugin
+  routes/menu registration;
+- run the P2Play Android foreground service on the same device and test
+  authenticated calls from the plugin to its loopback HTTP endpoint;
+- verify service stop/restart, permissions, background restrictions and
+  persistence on a real device.
+
+Sources: [Silo.3 Android server assets](https://github.com/YouROK/TorrServer/releases/tag/Silo.3),
+[pinned Silo plugin runtime](https://github.com/YouROK/TorrServer/tree/3610db846fd2132f06aa626a4cb94f4a0cfa69ae/internal/plugin),
+and P2Play's `android/app` / `ci/android-apk.sh`.
+
 ## Data flow and permissions
 
 | Plugin function | Native daemon API | Silo permission |

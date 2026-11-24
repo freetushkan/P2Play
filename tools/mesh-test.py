@@ -68,6 +68,11 @@ def main():
         res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 1080P"))[1]["results"]
         check([r["hash"] for r in res] == [IH1] and res[0]["torrs"].startswith("torrs://") and res[0]["lists"] == [pk],
               "search: Cyrillic in another case, a torrs:// link")
+        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал WEB-DL"))[1]["results"]
+        check([r["hash"] for r in res] == [IH1],
+              "multi-keyword search: terms can match the title and tags")
+        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 4K"))[1]["results"]
+        check(res == [], "multi-keyword search requires every query term to match")
         scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk)[1]["results"]
         check([r["hash"] for r in scoped] == [IH1], "search scoped to a selected catalog list")
         scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk + "," + "f" * 64)[1]["results"]
