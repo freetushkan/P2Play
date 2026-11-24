@@ -95,9 +95,15 @@ Field mapping from the supplied sample:
 - `CreateDate` → canonical `date`, parsed as ISO-8601 with its supplied
   UTC offset. `Year` is optional enrichment, not a replacement for the date.
 - `Categories` → source category and then configurable category-to-tag mapping.
-- `Size` is human-readable (examples: `706.17 MB`, `1.33 GB`). Parse with
-  decimal arithmetic and explicit unit factors established by representative
-  fixtures; do not use binary floating point or silently guess MB/GB semantics.
+- `Size` is human-readable (examples: `706.17 MB`, `1.33 GB`). The
+  default assumption is Windows-style binary units despite the source's MB/GB
+  labels: 1 MB = 1,048,576 bytes (MiB), 1 GB = 1,073,741,824 bytes (GiB).
+  This is an operational assumption, not verified against a source specification.
+  Parse the numeric part with decimal arithmetic (never binary floating point),
+  multiply by the configured factor and round to the nearest whole byte. Preserve
+  the original size string in local provenance. Make the unit mode configurable
+  (`binary` by default, `decimal` as an override) so it can be corrected without
+  changing the adapter.
 - `Magnet` → source magnet; extract each repeated `tr` query parameter as
   a tracker URL. `Tracker: "Rutor"` is a source label, not an announce URL.
   `Link` is a relative source-page path/provenance; do not fetch arbitrary
@@ -138,10 +144,10 @@ Mapping and behavior:
 
 - Root `torrent@id` is the stable topic/source ID. Nested `torrent@hash`
   is the infohash; validate and lowercase it. Root `size` is bytes.
-- Prefer root `unixts` as registration time. If missing, parse the exact
-  `registred_at` attribute spelling/format using an explicitly configured
-  timezone; never use the machine's implicit local timezone. Keep original
-  text and source ID in local provenance.
+- Prefer root `unixts` as registration time. If missing, parse
+  `registred_at` using **UTC**. The timestamp is approximate metadata;
+  hour-level precision is not critical. Never use the machine's implicit local
+  timezone. Keep the original text and source ID in local provenance.
 - `title` → `title`; `forum@id` plus its text identify the forum/category.
   Add an explicit include-list of forum IDs and report filtered counts.
   Apply this filter before output. Forum-ID-to-tag/shard rules are configurable;
@@ -336,8 +342,11 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
 
 ## Configuration and operations
 
-- Use human-editable local configuration for sources, interval, categories, limits,
-  paths and secrets (select exact config format during implementation).
+- Use human-editable local configuration for sources, source order, optional
+  RuTracker enablement, forum include IDs, category/tag mapping, RuTracker
+  fallback timezone (UTC), Rutor size-unit mode (`binary` by default, optional
+  `decimal` override), shard rules, interval, limits, paths and secrets
+  (select exact config format during implementation).
 - Support dry-run/preview, one-shot import and repeatable polling. Schedule via
   systemd timer; run through the same SOCKS5 or WireGuard/netns tunnel as publisher.
 - Persist checkpoints, deduplication state and retry scheduling.
@@ -353,12 +362,14 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
   Never commit production dumps, full CSV snapshots or large cache files.
 - Cover CSV quoting and Git commit checkpoint advancement only after publisher
   staging; unchanged commits must skip, failed imports must replay safely.
-- Cover XML date/timezone parsing, nested directories, tracker_id mapping,
-  forum filters, deleted topics, old/dup handling, malformed XML/entity input
-  and tombstone shard stability.
+- Cover XML date parsing with `unixts` preference and UTC fallback for
+  `registred_at`, nested directories, tracker_id mapping, forum filters,
+  deleted topics, old/dup handling, malformed XML/entity input and tombstone
+  shard stability.
 - Cover raw-DEFLATE corruption/truncation, expanded-size limits, JSON errors,
-  Hash/Magnet mismatches, ISO offsets, size-unit parsing and repeated tracker
-  query parameters.
+  Hash/Magnet mismatches, ISO offsets, binary Rutor size conversion (including
+  fractional values and nearest-byte rounding), decimal override, preservation
+  of the original size string and repeated tracker query parameters.
 - Test cross-source priority, missing-field retention, tombstones/live-row
   restoration, same-source conflict reporting and one canonical row per hash.
 - Torznab fixtures for caps, category mapping and recent items, including one
