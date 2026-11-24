@@ -126,6 +126,31 @@ def main():
                   "dry-run normalizes rows and skips identical duplicate infohashes")
             check(not server.seen, "dry-run performs no HTTP requests")
 
+            example_profile = Path(__file__).resolve().parent / "publisher-profile.example.json"
+            profiled = run_cli(["publish", "--import", str(ndjson), "--profile",
+                                str(example_profile), "--dry-run"])
+            check(profiled.returncode == 0, "example profile with optional source filters validates")
+
+            empty_profile = root / "no-sources.json"
+            empty_profile.write_text(json.dumps({"version": 1, "sources": []}), encoding="utf-8")
+            no_sources = run_cli(["publish", "--import", str(ndjson), "--profile",
+                                  str(empty_profile), "--dry-run"])
+            check(no_sources.returncode == 0,
+                  "profile with all sources omitted is valid; publisher import stays independent")
+
+            invalid_profile = root / "invalid-regex.json"
+            invalid_profile.write_text(json.dumps({
+                "version": 1,
+                "sources": [{
+                    "id": "torrents-csv-data", "enabled": False, "priority": 10,
+                    "filters": {"title_regex": {"include": ["("], "exclude": []}}
+                }]
+            }), encoding="utf-8")
+            bad_regex = run_cli(["publish", "--import", str(ndjson), "--profile",
+                                 str(invalid_profile), "--dry-run"])
+            check(bad_regex.returncode == 2 and "invalid CSV title regex" in bad_regex.stderr,
+                  "profile rejects invalid CSV title regex before import")
+
             result = run_cli(["publish", "--import", str(ndjson), "--server", base,
                               "--category-map", str(category_map),
                               "--create-list", "Fixture catalog", "--release"])

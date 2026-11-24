@@ -19,12 +19,19 @@ The standard-library CLI now lives in `tools/p2play` and
 local validation, dry-run, owned-list selection or list creation, Bearer login,
 category mapping, output whitelist, description/poster upload and an explicit
 `--release` switch. It does not contain or receive the Ed25519 private key.
-The GUI wrapper, scheduler and policy editor remain future work. A versioned JSON profile (`--profile`) now supplies field whitelist, category mapping, default/category shard routing and ordered source enablement/priority metadata. CLI flags for whitelist, category map and default shard override profile values. The publisher validates source priorities but does not merge sources; that remains the grabber's responsibility. Example: `tools/publisher-profile.example.json`. Qt belongs
+The GUI wrapper, scheduler and policy editor remain future work. A versioned JSON profile (`--profile`) supplies field whitelist, category mapping, default/category shard routing and optional source enablement/priority metadata. Every source is independently optional; omitted or disabled sources do not prevent other adapters from running. The CSV source may also define title regex include/exclude filters for media extensions and release/codec markers. The publisher validates profile structure/regexes but does not execute source adapters or apply those filters; that belongs to the grabber. CLI flags for whitelist, category map and default shard override profile values. The publisher validates source priorities but does not merge sources; that remains the grabber's responsibility. Example: `tools/publisher-profile.example.json`. Qt belongs
 only in the wrapper, never in the shared Qt-free core.
 
-The grabber must merge source layers before calling this CLI. The CLI skips
-identical duplicate rows and rejects conflicting records for the same infohash;
-it deliberately does not apply source priorities or perform metadata upserts.
+The grabber must merge source layers and export an editable NDJSON file before
+the operator calls this CLI. The grabber never sends data to the publisher
+automatically. The operator may inspect/edit the file, run `--dry-run`, then
+invoke publication explicitly. The CLI skips identical duplicate rows and
+rejects conflicting records for the same infohash; it deliberately does not
+apply source priorities or perform metadata upserts.
+
+Category mapping should remain empty/identity until the grabber's per-source
+category inventory has been reviewed against real data. Do not assume category
+merges from illustrative examples.
 
 Run it from a checkout:
 

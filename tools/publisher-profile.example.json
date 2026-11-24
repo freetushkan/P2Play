@@ -14,34 +14,27 @@
       "poster_ref",
       "del"
     ],
-    "category_map": {
-      "Movie": [
-        "movie",
-        "video"
-      ],
-      "TVShow": [
-        "series",
-        "video"
-      ],
-      "CartoonMovie": [
-        "animation",
-        "movie"
-      ]
-    },
+    "category_map": {},
     "shard_policy": {
       "default": "default",
-      "category_map": {
-        "Movie": "movies",
-        "TVShow": "series",
-        "CartoonMovie": "animation"
-      }
+      "category_map": {}
     }
   },
   "sources": [
     {
       "id": "torrents-csv-data",
       "enabled": true,
-      "priority": 10
+      "priority": 10,
+      "filters": {
+        "title_regex": {
+          "mode": "any",
+          "include": [
+            "(?i)\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob|iso)(?:$|[\\s)\\]])",
+            "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b"
+          ],
+          "exclude": []
+        }
+      }
     },
     {
       "id": "rutor",

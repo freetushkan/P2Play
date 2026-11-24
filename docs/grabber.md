@@ -8,10 +8,16 @@ The Python grabber remains a separate operator tool; the publisher PR provides i
 - Implement the grabber in **Python** as a separate operator/developer tool,
   not as part of the C++ daemon or a client runtime dependency.
 - Use a clean pipeline: source adapter → parsed item → normalized catalog
-  record → validation/deduplication → NDJSON / MediaMesh publishing.
+  record → validation/deduplication → editable NDJSON export.
+- The grabber must **not** send data directly to the publisher, call its API or
+  launch the publisher CLI. Manual review/editing of the generated NDJSON is a
+  required stage; publication is a separate explicit operator action.
 - Adding a format should mean adding an adapter, not rewriting normalization
   or publisher code.
 - Support one-shot imports and scheduled incremental refresh of recent releases.
+- Every source is optional and independently enabled/disabled. There is no
+  mandatory base source: a user may run with any subset, including no source
+  enabled (a reported no-op with no checkpoint advancement).
 - Keep credentials, API keys, cookies and personal data out of Git.
 
 ## Configurable parser templates
@@ -67,6 +73,26 @@ a correct full-snapshot parse when the data blob changes; optimize with Git
 diffs only after repository history and fixtures prove that row identity and
 patch semantics are stable. Keep the checkout/local path configurable and avoid
 fetching the large CSV blob merely to inspect commit metadata.
+
+#### CSV title filters
+
+The first source supports configurable regular-expression filters applied to
+its `name` / normalized title. The filter profile has:
+
+- `include`: regex patterns for media filename extensions and release/codec
+  markers (for example `.mkv`, `.mp4`, `DVDRip`, `BDRip`, `WEBRip`,
+  `WEB-DL`, `HDTV`, `AVC`, `HEVC`, `H.264`, `H.265`, `x264`,
+  `x265`, `XviD`);
+- `mode: "any"` (default) accepts a title when at least one include pattern
+  matches; `mode: "all"` requires every include pattern to match;
+- `exclude` drops a title when any exclude pattern matches;
+- empty include/exclude arrays disable that side of the filter.
+
+Patterns are configurable rather than hardwired to one fixed release taxonomy.
+Use Python-compatible regular expressions, compile and validate them before
+processing, apply bounded input/time limits, and report the matched/rejected
+counts and the pattern responsible. The sample profile contains a starter
+pattern set, not a final whitelist; tune it against the real CSV data.
 
 ### 2. Rutor — `rutor.ls` cache
 
@@ -180,6 +206,50 @@ mapping. Forum-to-shard rules must remain stable. If the previous shard is
 unknown, report the deletion for review instead of blindly tombstoning
 `default`.
 
+## Category inventory and manual editing
+
+The grabber always writes an intermediate UTF-8 NDJSON file (one normalized
+record per line) and a run report. It never publishes this file automatically.
+The operator opens the NDJSON, edits/removes/corrects records as needed, runs
+publisher `--dry-run`, and only then invokes the separate publisher command.
+No network request to the publishing API is made by the grabber.
+
+Suggested operator flow:
+
+```sh
+python3 tools/grabber.py run --profile publisher-profile.json \
+  --output work/catalog.ndjson --report work/grabber-report.json \
+  --dump-categories work/categories
+
+# Inspect and manually edit work/catalog.ndjson before publishing.
+tools/p2play publish --profile publisher-profile.json \
+  --import work/catalog.ndjson --list <64-hex-public-key> --dry-run
+tools/p2play publish --profile publisher-profile.json \
+  --import work/catalog.ndjson --list <64-hex-public-key>
+```
+
+The exact grabber command remains a planned interface until its CLI is
+implemented. The essential contract is the editable file boundary, not the
+provisional command spelling.
+
+When `--dump-categories DIR` is supplied, collect unique **raw source
+categories** in parallel with parsing, before category mapping, source-priority
+merging and title/forum filters. Write a separate UTF-8 text file for each
+source (and each Jackett indexer where relevant), sorted deterministically,
+one unique category per line. Where a source exposes stable IDs, preserve the
+ID alongside its display name (for example, RuTracker forum ID and title,
+Torznab category ID and label). Do not merge or rename category values in these
+inventory files. CSV currently has no category column in the supplied sample;
+do not invent categories for it. The report should state which source produced
+each inventory file and how many unique values it contains.
+
+This mode is for discovering the real taxonomy before making policy decisions.
+Do not hardcode category unions/merges yet. Keep publisher `category_map`
+empty/identity by default; after inspecting category inventories, the operator
+can deliberately add mappings (including merging multiple source categories
+into one tag) to the profile. Category inventory mode must not modify publisher
+state or advance source checkpoints by itself.
+
 ## Source order, precedence and merge rules
 
 The pipeline has two ordered phases. The bulk/snapshot phase runs first; the
@@ -243,13 +313,24 @@ unit with its own timeout, checkpoint, status and error report.
   and source location. Never silently drop malformed data. Do not advance a
   source checkpoint past unprocessed data unless rejected items are durably
   quarantined for retry.
-- Each source has an independent checkpoint. A successful source's checkpoint
-  may advance even if another source failed, but only after the final merged
-  batch containing its accepted contribution is acknowledged as staged by the
-  publisher. A failed/unavailable source retains its previous checkpoint.
-- If publisher staging fails or the accepted count does not match, do not
-  advance checkpoints for any source represented by that outgoing batch.
-  Inspect publisher status before retrying; do not blindly repeat mutating POSTs.
+- Each source has an independent checkpoint. Exporting NDJSON does **not**
+  advance any checkpoint: the operator may still edit the file or decide not
+  to publish it.
+- Store candidate checkpoint values in a pending run manifest alongside the
+  NDJSON and report. After manual editing and successful publisher staging,
+  the operator explicitly acknowledges that run. The acknowledgement records
+  the final edited file hash and confirms that the publisher's accepted count
+  equals the number of non-empty NDJSON records before committing eligible
+  source checkpoints.
+- Only sources whose data was successfully processed may advance. Disabled,
+  failed or unavailable sources retain their previous checkpoints. A healthy
+  source may advance even when another source failed, provided the accepted
+  staging included the reviewed merged output derived from that run.
+- If publisher staging fails, the accepted count is unexpected or the edited
+  file cannot be tied to the pending run, do not advance any candidate
+  checkpoints for that publication. Inspect publisher status before retrying;
+  do not blindly repeat mutating POSTs. Category-inventory-only runs never
+  advance checkpoints.
 - A partial run is useful: stage validated contributions from healthy sources
   plus last-known-good cached data, and report missing/stale sources. Never
   invent deletion or replacement data for a missing layer.
@@ -347,8 +428,10 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
   fallback timezone (UTC), Rutor size-unit mode (`binary` by default, optional
   `decimal` override), shard rules, interval, limits, paths and secrets
   (select exact config format during implementation).
-- Support dry-run/preview, one-shot import and repeatable polling. Schedule via
-  systemd timer; run through the same SOCKS5 or WireGuard/netns tunnel as publisher.
+- Support dry-run/preview, one-shot export and repeatable polling. Keep grabbing,
+  manual review and publishing as separate operator actions. Schedule source
+  collection via systemd timer only after the manual-approval workflow is defined;
+  run network source access through the configured SOCKS5 or WireGuard/netns tunnel.
 - Persist checkpoints, deduplication state and retry scheduling.
 - Bound timeouts, result count, download size and concurrency; respect rate limits.
 - Log source status without keys, cookies, credential-bearing URLs or private data.

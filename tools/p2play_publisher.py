@@ -266,13 +266,38 @@ def load_profile(path: Optional[str]) -> Dict[str, Any]:
         raise PublisherError("profile sources must be an array")
     seen = set()
     for item in sources:
-        if not isinstance(item, dict) or set(item) != {"id", "enabled", "priority"}:
-            raise PublisherError("each source must contain exactly id, enabled and priority")
+        if not isinstance(item, dict) or not {"id", "enabled", "priority"}.issubset(item) or set(item) - {
+            "id", "enabled", "priority", "filters"
+        }:
+            raise PublisherError("each source must contain id, enabled and priority, with optional filters")
         if not isinstance(item["id"], str) or not item["id"] or item["id"] in seen:
             raise PublisherError("source IDs must be non-empty and unique")
         if not isinstance(item["enabled"], bool) or isinstance(item["priority"], bool) or not isinstance(item["priority"], int):
             raise PublisherError("source enabled must be boolean and priority must be integer")
         seen.add(item["id"])
+
+        filters = item.get("filters", {})
+        if not isinstance(filters, dict):
+            raise PublisherError("source filters must be an object")
+        if filters and item["id"] != "torrents-csv-data":
+            raise PublisherError("source-specific filters are currently supported only for torrents-csv-data")
+        if set(filters) - {"title_regex"}:
+            raise PublisherError("CSV source supports only the title_regex filter")
+        title_filter = filters.get("title_regex", {})
+        if not isinstance(title_filter, dict) or set(title_filter) - {"mode", "include", "exclude"}:
+            raise PublisherError("title_regex must contain only mode, include and exclude")
+        mode = title_filter.get("mode", "any")
+        if mode not in ("any", "all"):
+            raise PublisherError("title_regex.mode must be 'any' or 'all'")
+        for kind in ("include", "exclude"):
+            patterns = title_filter.get(kind, [])
+            if not isinstance(patterns, list) or not all(isinstance(x, str) and x for x in patterns):
+                raise PublisherError("title_regex." + kind + " must be an array of non-empty regex strings")
+            for pattern in patterns:
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    raise PublisherError("invalid CSV title regex in " + kind + ": " + str(exc)) from exc
     priorities = [x["priority"] for x in sources if x["enabled"]]
     if len(priorities) != len(set(priorities)):
         raise PublisherError("enabled source priorities must be unique")
