@@ -150,6 +150,11 @@ def main():
               "C: HAVE holders are included in knowledge, KNOWN does not inflate popularity")
         check(not call("c", "/api/lists")[1]["lists"],
               "C: discovery-only lookup does not import the version torrent")
+        time.sleep(1)  # allow a background worker turn after pointer acceptance
+        with open(os.path.join(root, "c", "p2play.log"), encoding="utf-8") as log_file:
+            c_log = log_file.read()
+        check(f"[Mesh] list {pk[:16]}: fetching manifest" not in c_log,
+              "C: discovery-only lookup does not start a version-torrent fetch")
         check(call("c", "/api/torrents")[0] == 404 and call("c", "/torrents", {"action": "list"})[0] == 404
               and call("c", "/api/catalog/search?q=x")[0] == 200, "C, a catalog node: no streamer, the catalog")
         print("PASS")

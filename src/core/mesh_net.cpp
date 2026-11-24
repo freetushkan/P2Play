@@ -565,7 +565,10 @@ namespace p2p {
             if (!h.is_valid()) {
                 if (now < n.nextRetry) continue;
                 MeshList card; const bool have = m_mesh.list(pk, card);
-                if (!n.pointer.empty() && (!have || card.seq < n.pointerSeq)) {
+                // A cached discovery-only pointer is metadata, not a subscription:
+                // do not start a version torrent unless the user asked for the list or
+                // this node already holds an older version that needs refreshing.
+                if (!n.pointer.empty() && (n.wanted || have) && (!have || card.seq < n.pointerSeq)) {
                     MeshExtension::Item item;
                     if (MeshExtension::decodeItem(n.pointer, item)) meshFetch(pk, lt::sha256_hash(item.value["ih"].string().data()), item.seq, n.pointer);
                 } else if (have) meshSeed(pk, nullptr);
