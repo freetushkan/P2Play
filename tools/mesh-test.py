@@ -61,11 +61,22 @@ def main():
         proc = ct.start_daemon(daemon, a)
         check(call("/api/lists")[1]["lists"] == [], "fresh server has no catalog lists")
         check(call("/api/catalog/search?q=anything")[1]["results"] == [], "search is empty before a list is added")
-        bad_name = call("/api/publish", {"name": "Bad" + chr(0) + "Name"})
-        check(bad_name[0] == 400, "a catalog name containing NUL is rejected")
         status, out = call("/api/publish", {"name": "Test 0 list", "description": "for the test"})
         pk = out.get("pubkey", "")
         check(status == 201 and len(pk) == 64 and os.path.exists(os.path.join(a, "keys", pk + ".seed")), "a list made, its key kept")
+        status, child = call("/api/publish", {"name": "Child 0 list"})
+        child_pk = child.get("pubkey", "")
+        status, meta = call("/api/publish", {"name": "Meta list", "type": "meta"})
+        meta_pk = meta.get("pubkey", "")
+        check(status == 201 and len(child_pk) == 64 and len(meta_pk) == 64, "child and meta lists created")
+        bad_annotation = call(f"/api/publish/{meta_pk}/meta", {
+            "items": [{"pubkey": child_pk, "annotation": "bad" + chr(0) + "annotation", "enabled": True}]
+        })
+        check(bad_annotation[0] == 400, "a meta-list annotation containing NUL is rejected")
+        good_annotation = call(f"/api/publish/{meta_pk}/meta", {
+            "items": [{"pubkey": child_pk, "annotation": "Version 0", "enabled": True}]
+        })
+        check(good_annotation[0] == 200, "a meta-list annotation containing digit zero is accepted")
         status, out = call(f"/api/publish/{pk}/records", raw=b'{"ih": "xyz", "title": "bad"}\n')
         check(status == 400 and "line 1" in out["error"], "a bad record refused")
         status, out = call(f"/api/publish/{pk}/records", raw=RECORDS.encode())
