@@ -1,7 +1,14 @@
-# Catalog grabber — design notes
+# Catalog grabber — design and operator workflow
 
-Status: three concrete source formats and representative field samples are now known.
-The Python grabber remains a separate operator tool; the publisher PR provides its downstream import API.
+Status: first working implementation is in progress in P2Play: a standard-library
+Python CLI with transactional SQLite state, local CSV/Rutor adapters, source-priority
+merge, deterministic full/delta NDJSON, per-source failure isolation, quarantine,
+manual overrides/suppressions and explicit acknowledgement. RuTracker XML,
+Jackett/Torznab, generic parser templates and scheduled polling remain follow-up work.
+
+The operator workflow is deliberately review-first: **run → inspect/edit → publish
+manually with the existing publisher CLI → acknowledge**. The grabber never calls
+the publisher API or CLI and never publishes automatically.
 
 ## Goals and placement
 
@@ -19,6 +26,48 @@ The Python grabber remains a separate operator tool; the publisher PR provides i
   mandatory base source: a user may run with any subset, including no source
   enabled (a reported no-op with no checkpoint advancement).
 - Keep credentials, API keys, cookies and personal data out of Git.
+
+## Implemented first slice
+
+The current implementation is `tools/grabber.py` plus the standard-library module
+`tools/grabber_lib.py`. It uses JSON profile version 1 and local SQLite state.
+The example profile is `tools/grabber-profile.example.json`; sources are disabled
+by default and must be explicitly enabled/configured by the operator.
+
+Implemented adapters in this first slice:
+
+- **torrents-csv-data:** reads an existing local Git checkout or a configured local
+  CSV file; it never clones/fetches the large dataset. For a Git checkout it records
+  HEAD, the HEAD blob OID and the worktree hash. A changed worktree is streamed and
+  diffed by infohash. Title regex include/exclude filters, `any`/`all` matching
+  and configurable `created_unix`/`published` date policy are supported.
+  Seeder/leecher/completed and scrape/published metrics stay in local provenance.
+- **Rutor:** reads a local `rutor.ls` raw-DEFLATE cache. A remote URL is used only
+  when `remote_enabled: true` is explicitly configured. Compressed/decompressed
+  sizes, JSON depth and record count are bounded. Hash/Magnet consistency,
+  ISO-8601 offset date, binary/decimal size conversion and repeated tracker URLs
+  are handled. Trackers containing obvious passkeys or credential-bearing URLs
+  are rejected. Source-only fields and volatile metrics remain local provenance.
+- **RuTracker and Jackett/Torznab:** profile entries can be kept disabled, but those
+  adapters are not part of this first slice yet; an enabled unsupported adapter is
+  reported as unsupported and makes the run degraded rather than silently succeeding.
+
+The initial slice also provides:
+
+- per-source savepoints and failure isolation; a failed parse cannot leave a partial
+  source batch in the merge, and last-known-good observations remain available;
+- priority-based whole-field merge, same-priority conflict quarantine and stable
+  shard routing for already staged hashes;
+- raw category inventory before category mapping;
+- local `quarantine/<run-id>/` files, bounded per-source error reports and durable
+  manual suppressions/overrides;
+- full/delta hashes and a pending-run manifest. Checkpoints advance only after an
+  explicit `ack` tied to the file and publisher accepted count. A changed full
+  file is authoritative and requires `--replace`; independently edited delta files
+  are rejected during acknowledgement;
+- no-op behaviour when no source is enabled/configured; no checkpoint is advanced.
+
+The local state DB, work outputs, quarantine and credentials belong outside Git.
 
 ## Configurable parser templates
 
@@ -245,9 +294,34 @@ tools/p2play publish --profile publisher-profile.json \
   --import work/catalog-full.ndjson --list <64-hex-public-key> --replace
 ```
 
-The exact grabber command remains a planned interface until its CLI is
-implemented. The essential contract is the editable file boundary, not the
-provisional command spelling.
+The implemented CLI is invoked directly from the checkout:
+
+```sh
+# Export an editable full catalog, its derived delta, report and pending-run manifest.
+python3 -I tools/grabber.py run --profile tools/grabber-profile.example.json \
+  --output work/catalog-full.ndjson --delta work/catalog-delta.ndjson \
+  --report work/grabber-report.json --dump-categories work/categories
+
+# Review the report/full file. Then explicitly stage the delta or full replacement
+# with tools/p2play publish. The grabber itself never calls the publisher.
+
+# Confirm publisher staging; --file always points to catalog-full.ndjson.
+python3 -I tools/grabber.py ack --state work/grabber.sqlite3 \
+  --run-id <run-id> --file work/catalog-full.ndjson \
+  --accepted-count <publisher-staged-record-count> --mode auto
+
+# Discard a reviewed run without advancing source checkpoints.
+python3 -I tools/grabber.py discard --state work/grabber.sqlite3 --run-id <run-id>
+
+# Inspect or clear persistent manual decisions (only when no run is pending).
+python3 -I tools/grabber.py manual list --state work/grabber.sqlite3
+```
+
+By default the state DB is `grabber.sqlite3` beside the report; pass `--state`
+to choose another path. `ack --mode auto` chooses delta when the full file is
+byte-for-byte unchanged, otherwise it requires an authoritative publisher
+replacement. A manually edited delta never qualifies as a normal delta acknowledgement.
+
 
 When `--dump-categories DIR` is supplied, collect unique **raw source
 categories** in parallel with parsing, before category mapping, source-priority
@@ -404,8 +478,9 @@ publisher operation succeeds; failed publication must never advance source
 checkpoints. A provisional interface is:
 
 ```sh
-python3 tools/grabber.py ack --run-id <id> --file work/catalog-delta.ndjson \\
-  --accepted-count <publisher-staged-count>
+python3 -I tools/grabber.py ack --state work/grabber.sqlite3 \\
+  --run-id <id> --file work/catalog-full.ndjson \\
+  --accepted-count <publisher-staged-count> --mode auto
 ```
 
 Acknowledgement verifies run ID, final full-file hash, publication mode and

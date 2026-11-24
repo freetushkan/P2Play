@@ -62,6 +62,7 @@ jobs:
           python3 -I tools/mesh-meta-test.py build/src/app/p2playd
           python3 tools/meshnet-test.py build/src/app/p2playd
           python3 -I tools/ui-test.py build/src/app/p2playd
+          python3 -I tools/grabber-test.py
 
       - name: MediaMesh stage 3 integration
         run: |
