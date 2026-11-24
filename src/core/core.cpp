@@ -393,6 +393,10 @@ namespace p2p {
                                                   lt::alert_category::storage | lt::alert_category::dht |
                                                    lt::alert_category::connect | lt::alert_category::ip_block |
                                                    lt::alert_category::peer);
+        sp.set_bool(lt::settings_pack::enable_outgoing_tcp, !m_settings.disableTcp);
+        sp.set_bool(lt::settings_pack::enable_incoming_tcp, !m_settings.disableTcp);
+        sp.set_bool(lt::settings_pack::enable_outgoing_utp, !m_settings.disableUtp);
+        sp.set_bool(lt::settings_pack::enable_incoming_utp, !m_settings.disableUtp);
         sp.set_bool(lt::settings_pack::enable_lsd, !m_config.console);
         sp.set_bool(lt::settings_pack::enable_upnp, !m_config.console && !m_settings.disableUpnp);
         sp.set_bool(lt::settings_pack::enable_natpmp, !m_config.console && !m_settings.disableUpnp);
@@ -502,6 +506,8 @@ namespace p2p {
         i("DownloadRateLimit", m_settings.downloadRateLimit);
         i("UploadRateLimit", m_settings.uploadRateLimit);
         b("DisableUpload", m_settings.disableUpload);
+        b("DisableTCP", m_settings.disableTcp);
+        b("DisableUTP", m_settings.disableUtp);
         b("DisableDHT", m_settings.disableDht);
         b("DisableMeshDirectory", m_settings.disableMeshDirectory);
         b("DisableUPNP", m_settings.disableUpnp);
@@ -528,6 +534,10 @@ namespace p2p {
         sp.set_int(lt::settings_pack::download_rate_limit, m_settings.downloadRateLimit * 1024);
         sp.set_int(lt::settings_pack::upload_rate_limit,
                    m_settings.disableUpload ? 1 : m_settings.uploadRateLimit * 1024);
+        sp.set_bool(lt::settings_pack::enable_outgoing_tcp, !m_settings.disableTcp);
+        sp.set_bool(lt::settings_pack::enable_incoming_tcp, !m_settings.disableTcp);
+        sp.set_bool(lt::settings_pack::enable_outgoing_utp, !m_settings.disableUtp);
+        sp.set_bool(lt::settings_pack::enable_incoming_utp, !m_settings.disableUtp);
         sp.set_bool(lt::settings_pack::enable_dht, !m_settings.disableDht);
         // a DHT of our own (tests, a LAN): its nodes on private and loopback addresses allowed
         if (!m_settings.dhtBootstrap.empty()) {
@@ -581,8 +591,8 @@ namespace p2p {
                 {"FriendlyName", ""},
                 {"EnableRutorSearch", false},
                 {"EnableIPv6", !m_config.console},
-                {"DisableTCP", false},
-                {"DisableUTP", false},
+                {"DisableTCP", m_settings.disableTcp},
+                {"DisableUTP", m_settings.disableUtp},
                 {"DisableUPNP", m_settings.disableUpnp},
                 {"DisableDHT", m_settings.disableDht},
                 {"DisableMeshDirectory", m_settings.disableMeshDirectory},
@@ -600,7 +610,8 @@ namespace p2p {
         static const std::set<std::string> used = {
                 "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
                 "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
-                "DisableUpload", "DisableDHT", "DisableMeshDirectory", "DisableUPNP", "PeersListenPort"};
+                "DisableUpload", "DisableTCP", "DisableUTP", "DisableDHT", "DisableMeshDirectory",
+                "DisableUPNP", "PeersListenPort"};
         json stored = m_store.publicSettings();
         for (auto it = stored.begin(); it != stored.end(); ++it) {
             if (!used.count(it.key())) {
@@ -1296,6 +1307,7 @@ namespace p2p {
                 } else if (lt::alert_cast<lt::torrent_error_alert>(a) || lt::alert_cast<lt::file_error_alert>(a) ||
                            lt::alert_cast<lt::listen_failed_alert>(a) || lt::alert_cast<lt::listen_succeeded_alert>(a) ||
                            lt::alert_cast<lt::metadata_failed_alert>(a) ||
+                            lt::alert_cast<lt::peer_connect_alert>(a) ||
                             lt::alert_cast<lt::peer_error_alert>(a) ||
                             lt::alert_cast<lt::peer_disconnected_alert>(a) ||
                             lt::alert_cast<lt::peer_blocked_alert>(a)) {

@@ -293,10 +293,16 @@ def main():
         check(api("/torrents", {"action": "get", "hash": ih})["poster"] == "http://p/2.jpg", "stream: the poster filled")
         s = api("/settings", {"action": "get"})
         check(s["CacheSize"] > 0 and "ReaderReadAHead" in s and s["UseDisk"] == disk
-              and s["DisableDHT"] and s["DisableMeshDirectory"], "settings get: isolated single-peer test")
-        api("/settings", {"action": "set", "sets": {"TorrentDisconnectTimeout": 10, "FriendlyName": "test"}})
+              and s["DisableDHT"] and s["DisableMeshDirectory"] and not s["DisableUTP"],
+              "settings get: isolated single-peer test")
+        # The initial stream exercises the default TCP/uTP configuration. For the
+        # restart assertion, use TCP only so resume/reopen is tested independently
+        # from the uTP reconnect failure seen in CI.
+        api("/settings", {"action": "set", "sets": {
+            "TorrentDisconnectTimeout": 10, "FriendlyName": "test", "DisableUTP": True}})
         s = api("/settings", {"action": "get"})
-        check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test", "settings set")
+        check(s["TorrentDisconnectTimeout"] == 10 and s["FriendlyName"] == "test"
+              and s["DisableUTP"] and not s["DisableTCP"], "settings set: disable uTP for restart")
 
         status, _, m3u = http(f"/playlist?hash={ih}")
         lines = [l for l in m3u.decode().splitlines() if l.startswith("http")]

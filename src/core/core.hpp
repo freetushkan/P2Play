@@ -54,6 +54,8 @@ namespace p2p {
         int downloadRateLimit = 0;   // KB/s, 0: none
         int uploadRateLimit = 0;
         bool disableUpload = false;
+        bool disableTcp = false;
+        bool disableUtp = false;
         bool disableDht = false;
         bool disableMeshDirectory = false; // startup-only: do not join the public MediaMesh rendezvous swarm
         bool disableUpnp = false;
