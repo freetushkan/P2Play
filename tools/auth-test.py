@@ -59,7 +59,7 @@ def main():
     try:
         folder, files = ct.make_payload(root)
         ti = ct.make_torrent(folder)
-        ses, _ = ct.start_seeder(ti, os.path.join(root, "seed"))
+        ses = ct.start_seeder(ti, os.path.join(root, "seed"))
         ih = str(ti.info_hashes().v1)
         magnet = lt.make_magnet_uri(ti) + f"&x.pe=127.0.0.1:{ct.SEED_PORT}"
         proc = ct.start_daemon(daemon, data)
