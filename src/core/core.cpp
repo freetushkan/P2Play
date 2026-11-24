@@ -1035,9 +1035,8 @@ namespace p2p {
             return;
         }
         const lt::file_storage &fs = ti->files();
-        // A magnet may have connected to obtain metadata. Stop peer traffic while the
-        // torrent has no selected files; the first reader resumes it after setting priorities.
-        h.pause();
+        // A torrent restored from resume data is added paused in activate(). A fresh
+        // magnet must stay active after metadata arrives so its first reader can select pieces.
         int64_t size = 0;
         std::map<int, lt::file_index_t> index;
         std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
