@@ -99,6 +99,14 @@ class GrabberTests(unittest.TestCase):
 
     def test_inventory_runs_sources_separately_and_reports_categories_and_overlap(self):
         config = json.loads(self.profile.read_text(encoding="utf-8"))
+        csv_source = next(item for item in config["sources"] if item["id"] == "torrents-csv-data")
+        csv_source["inventory_categories"] = {
+            "Video": [r"(?i)\.(?:mkv|mp4)$"],
+            "Audio": [r"(?i)\b(?:FLAC|MP3)\b"],
+        }
+        csv_source["filters"]["title_regex"]["include"].append(r"(?i)\b(?:FLAC|MP3)\b")
+        with self.csv_path.open("a", encoding="utf-8") as csv_stream:
+            csv_stream.write("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,\"Live album FLAC\",300000000,1700000300,1,0,0,0,0\n")
         config["sources"].append({
             "id": "rutracker", "type": "rutracker", "enabled": True,
             "priority": 30, "path": str(self.rutracker_path),
@@ -122,8 +130,16 @@ class GrabberTests(unittest.TestCase):
         rutracker = report["sources"]["rutracker"]
         self.assertEqual(csv["status"], "success")
         self.assertEqual(csv["metrics"]["active_records"], 1)
-        self.assertEqual(csv["metrics"]["category_count"], 0)
-        self.assertIn("no explicit category", csv["category_model"].lower())
+        self.assertEqual(csv["metrics"]["category_count"], 2)
+        self.assertIn("heuristic", csv["category_model"].lower())
+        csv_categories = {item["name"]: item for item in csv["categories"]}
+        self.assertEqual(csv_categories["Video"]["records"], 1)
+        self.assertEqual(csv_categories["Audio"]["records"], 1)
+        self.assertTrue(report["html_report"].endswith("inventory-report.html"))
+        html_report = Path(report["html_report"]).read_text(encoding="utf-8")
+        self.assertIn("Source overview", html_report)
+        self.assertIn("Video", html_report)
+        self.assertIn("Audio", html_report)
         self.assertEqual(rutor["status"], "success")
         self.assertEqual(rutor["metrics"]["active_records"], 2)
         self.assertEqual(rutor["metrics"]["category_count"], 1)

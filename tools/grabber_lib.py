@@ -701,6 +701,28 @@ def _decompress_raw_deflate(data: bytes) -> bytes:
     return output
 
 
+def _compile_inventory_title_groups(source: Dict[str, Any]) -> Dict[str, List[re.Pattern]]:
+    spec = source.get("inventory_categories", {}) or {}
+    if not isinstance(spec, dict) or len(spec) > 32:
+        raise GrabberError("inventory_categories must be an object with at most 32 groups")
+    compiled: Dict[str, List[re.Pattern]] = {}
+    for raw_name, raw_patterns in spec.items():
+        name = _clean_text(raw_name, "inventory category", 128)
+        if not name or not isinstance(raw_patterns, list) or not raw_patterns or len(raw_patterns) > 64:
+            raise GrabberError("each inventory category needs 1..64 regex patterns and a non-empty name")
+        patterns = []
+        for raw in raw_patterns:
+            pattern = str(raw)
+            if len(pattern) > 512 or re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern):
+                raise GrabberError("inventory category regex is too complex or contains nested unbounded quantifiers")
+            try:
+                patterns.append(re.compile(pattern))
+            except re.error as exc:
+                raise GrabberError(f"invalid inventory category regex for {name!r}: {exc}") from exc
+        compiled[name] = patterns
+    return compiled
+
+
 def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Dict[str, Any],
                 quarantine_dir: Path) -> Dict[str, Any]:
     source_id = str(source["id"])
@@ -737,6 +759,10 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                 "filter_reasons": {}, "quarantined": 0, "quarantine_truncated": False,
                 "checkpoint": checkpoint, "errors": []}
     compiled = _compile_title_filter(source)
+    inventory_groups = (
+        _compile_inventory_title_groups(source)
+        if getattr(state, "inventory_mode", False) else {}
+    )
     quarantine_path = quarantine_dir / f"{source_id}.jsonl"
     old_limit = csv.field_size_limit()
     csv.field_size_limit(MAX_CSV_FIELD_BYTES)
@@ -770,9 +796,16 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                         value = str(row.get(metric, "")).strip()
                         if value and re.fullmatch(r"[0-9]{1,20}", value):
                             provenance[metric] = int(value)
+                    inventory_categories = []
+                    for category_name, patterns in inventory_groups.items():
+                        if any(pattern.search(title) for pattern in patterns):
+                            inventory_categories.append(category_name)
+                            state.add_category(run_id, source_id, category_name)
                     counters["parsed"] += 1
-                    result = state.add_observation(run_id, source_id, record["ih"], int(source.get("priority", 0)),
-                                                   record, [], source_ref, revision_key, provenance)
+                    result = state.add_observation(
+                        run_id, source_id, record["ih"], int(source.get("priority", 0)),
+                        record, inventory_categories, source_ref, revision_key, provenance
+                    )
                     if result == "accepted":
                         counters["accepted"] += 1
                     elif result == "duplicate":

@@ -201,6 +201,22 @@ Category models differ by source:
 - torrents-csv-data: its current CSV schema has no explicit category column, so
   inventory can measure rows/sizes but cannot report native categories for it.
 
+For torrents-csv-data, the optional `inventory_categories` object can define
+heuristic title groups independently of the CSV source's native fields. The example
+profile splits the media title patterns into `Video` (container/scene-release patterns)
+and `Audio` (audio-format/codec patterns). The existing `filters.title_regex` still
+decides which rows enter the media inventory; `inventory_categories` only labels
+accepted rows for analysis. A title can match both groups. These labels are not native
+CSV categories and are never copied into publisher tags. They help estimate the
+audio/video split, not decide the final taxonomy. Rutor's native `Anime` category
+remains independently visible and is not merged into Movie/Series.
+
+The HTML companion report is written next to the JSON report using the same basename
+with a `.html` extension. It contains source overview tables, category counts and
+payload-size totals, per-source warnings/filter counters and pairwise hash intersections.
+It is standalone and uses no remote scripts or assets. Category counts and byte totals
+can overlap when the same infohash belongs to multiple categories.
+
 The `publisher.category_map` and `publisher.shard_policy` settings are not used
 to merge, rename or allocate inventory categories. Keep category mapping empty during
 inventory so the report reflects the source's native taxonomy. No ACK is required:
