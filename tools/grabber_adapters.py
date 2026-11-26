@@ -56,31 +56,98 @@ def _http_bytes(url: str, timeout: int, limit: int = g.MAX_HTTP_BYTES) -> bytes:
 
 
 class _XzReader:
-    """Streaming XZ reader with a decoder dictionary-memory cap."""
+    """Streaming XZ reader supporting concatenated streams and valid stream padding."""
+    _MAGIC = b"\xfd7zXZ\x00"
+    _CHUNK = 64 * 1024
+
     def __init__(self, raw, memory_limit: int):
         self.raw = raw
-        self.decoder = lzma.LZMADecompressor(format=lzma.FORMAT_AUTO, memlimit=memory_limit)
+        self.memory_limit = memory_limit
+        self.decoder = self._new_decoder()
+        self.input = bytearray()
         self.pending = bytearray()
         self.eof = False
+        self.streams = 1
+
+    def _new_decoder(self):
+        return lzma.LZMADecompressor(
+            format=lzma.FORMAT_AUTO, memlimit=self.memory_limit
+        )
+
+    def _start_next_stream(self) -> None:
+        # LZMADecompressor stops at the end of one XZ stream. Its unused_data
+        # contains bytes already read from the next stream or from stream padding.
+        self.input.extend(self.decoder.unused_data)
+        self.decoder = None
+        padding_bytes = 0
+
+        while True:
+            if not self.input:
+                chunk = self.raw.read(self._CHUNK)
+                if not chunk:
+                    if padding_bytes % 4:
+                        raise g.SourceError("RuTracker XZ has invalid stream padding")
+                    self.eof = True
+                    return
+                self.input.extend(chunk)
+
+            # XZ stream padding is zero-filled and its total length must be
+            # divisible by four. It may appear between streams or at EOF.
+            first_nonzero = next(
+                (index for index, value in enumerate(self.input) if value),
+                len(self.input),
+            )
+            if first_nonzero:
+                padding_bytes += first_nonzero
+                del self.input[:first_nonzero]
+            if not self.input:
+                continue
+            if padding_bytes % 4:
+                raise g.SourceError("RuTracker XZ has invalid stream padding")
+
+            while len(self.input) < len(self._MAGIC):
+                chunk = self.raw.read(self._CHUNK)
+                if not chunk:
+                    raise g.SourceError(
+                        "RuTracker XZ has trailing data or a truncated concatenated stream"
+                    )
+                self.input.extend(chunk)
+
+            if self.input[:len(self._MAGIC)] != self._MAGIC:
+                raise g.SourceError("RuTracker XZ stream has trailing data")
+
+            self.decoder = self._new_decoder()
+            self.streams += 1
+            return
 
     def read(self, size: int = -1) -> bytes:
-        size = 64 * 1024 if size is None or size < 0 else min(max(1, size), 64 * 1024)
+        size = self._CHUNK if size is None or size < 0 else min(max(1, size), self._CHUNK)
         while len(self.pending) < size and not self.eof:
             try:
-                compressed = self.raw.read(64 * 1024) if self.decoder.needs_input else b""
-                if self.decoder.needs_input and not compressed:
-                    raise g.SourceError("RuTracker XZ stream is truncated")
-                self.pending.extend(self.decoder.decompress(compressed, max_length=64 * 1024))
+                if self.decoder.needs_input:
+                    if self.input:
+                        compressed = bytes(self.input)
+                        self.input.clear()
+                    else:
+                        compressed = self.raw.read(self._CHUNK)
+                    if not compressed:
+                        raise g.SourceError("RuTracker XZ stream is truncated")
+                else:
+                    compressed = b""
+                self.pending.extend(
+                    self.decoder.decompress(compressed, max_length=self._CHUNK)
+                )
             except lzma.LZMAError as exc:
-                raise g.SourceError("RuTracker XZ is corrupt or requests excessive decoder memory") from exc
+                raise g.SourceError(
+                    "RuTracker XZ is corrupt or requests excessive decoder memory"
+                ) from exc
+
             if self.decoder.eof:
-                if self.decoder.unused_data or self.raw.read(1):
-                    raise g.SourceError("RuTracker XZ stream has trailing data")
-                self.eof = True
+                self._start_next_stream()
+
         result = bytes(self.pending[:size])
         del self.pending[:size]
         return result
-
 
 class _BoundedXmlReader:
     def __init__(self, stream, byte_limit: int):
