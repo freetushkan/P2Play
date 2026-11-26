@@ -24,7 +24,15 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_LOCAL_CSV_BYTES = 16 * 1024 * 1024 * 1024
-MAX_EXPANDED_BYTES = 512 * 1024 * 1024
+MAX_RUTRACKER_COMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
+DEFAULT_RUTRACKER_COMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
+MAX_RUTRACKER_EXPANDED_BYTES = 128 * 1024 * 1024 * 1024
+DEFAULT_RUTRACKER_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
+MIN_RUTRACKER_XZ_MEMORY_BYTES = 16 * 1024 * 1024
+MAX_RUTRACKER_XZ_MEMORY_BYTES = 1024 * 1024 * 1024
+DEFAULT_RUTRACKER_XZ_MEMORY_BYTES = 128 * 1024 * 1024
+DEFAULT_RUTRACKER_MAX_TOPICS = 10_000_000
+MAX_RUTRACKER_TOPICS = 50_000_000
 MAX_HTTP_BYTES = 64 * 1024 * 1024
 MAX_JSON_DEPTH = 64
 MAX_ROW_ERRORS = 200
@@ -979,6 +987,24 @@ def _load_config(path: Path) -> Dict[str, Any]:
             raise GrabberError(f"invalid priority for source {source_id}") from exc
         if priority < 0 or priority > 1_000_000:
             raise GrabberError(f"priority out of range for source {source_id}")
+        if str(source.get("type") or source_id) == "rutracker":
+            limits = (
+                ("max_compressed_bytes", 256 * 1024 * 1024, 1,
+                 MAX_RUTRACKER_COMPRESSED_BYTES),
+                ("max_expanded_bytes", 512 * 1024 * 1024, 1,
+                 MAX_RUTRACKER_EXPANDED_BYTES),
+                ("xz_memory_limit", DEFAULT_RUTRACKER_XZ_MEMORY_BYTES,
+                 MIN_RUTRACKER_XZ_MEMORY_BYTES, MAX_RUTRACKER_XZ_MEMORY_BYTES),
+                ("max_topics", DEFAULT_RUTRACKER_MAX_TOPICS, 1, MAX_RUTRACKER_TOPICS),
+            )
+            for field, default, minimum, maximum in limits:
+                value = source.get(field, default)
+                if (isinstance(value, bool) or not isinstance(value, int) or
+                        not minimum <= value <= maximum):
+                    raise GrabberError(
+                        f"{field} for source {source_id} must be an integer "
+                        f"between {minimum} and {maximum}"
+                    )
         if source.get("date_field", "created_unix") not in {"created_unix", "published"}:
             raise GrabberError(f"invalid CSV date_field for source {source_id}")
     templates = config.get("templates", {}) or {}
