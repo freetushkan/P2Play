@@ -218,6 +218,12 @@
 
 ### Этап 5: наполнение каталога
 
+- [ ] Уточнение inventory: единая Category-сводка и размер NDJSON/zlib estimate
+      для всех источников; отключённые/пустые скрыты в HTML и матрице, JSON хранит
+      диагностику. Anime сохраняется отдельно в Rutor/RuTracker и добавлен первым
+      эвристическим CSV group в примере профиля. Локальные тесты проходят; CI и
+      production классификация ещё не подтверждены. См. `docs/grabber.md`.
+
 - [ ] Компактный RuTracker/CSV: отдельный deleted inventory, profile-controlled
       extra_fields, группы forum ID, непересекающиеся Video/Music и выбор lists/shards.
       Локальная реализация и ограничения описаны в `docs/catalog-layout.md`;

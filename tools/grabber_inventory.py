@@ -286,6 +286,50 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
             "basis": "current profile category_groups applied to stored provenance forum_id"}
 
 
+def _category_summary(state: g.State, source: Dict[str, Any], categories) -> Dict[str, Any]:
+    """Native/heuristic categories for all non-forum sources; labels may overlap."""
+    entries = {c["name"]: {**_empty_category(c["name"]), "forum_count": None}
+               for c in categories if c["name"] != "Other"}
+    sizes = {name: _CatalogSize() for name in entries}
+    other = {**_empty_category("Other"), "forum_count": None}
+    other_size = _CatalogSize()
+    for row in state.db.execute(
+        "SELECT record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
+        (source["id"],),
+    ):
+        record = json.loads(row["record_json"])
+        names = list(dict.fromkeys(json.loads(row["categories_json"] or "[]")))
+        for name in names or [None]:
+            if name is None or name == "Other":
+                entry, size = other, other_size
+            else:
+                if name not in entries:
+                    entries[name] = {**_empty_category(name), "forum_count": None}
+                    sizes[name] = _CatalogSize()
+                entry, size = entries[name], sizes[name]
+            if "del" in record:
+                entry["deleted_topics"] += 1
+                continue
+            entry["records"] += 1
+            size.add(record)
+            value = record.get("size")
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                entry["records_with_size"] += 1
+                entry["torrent_size_bytes"] += value
+            else:
+                entry["records_without_size"] += 1
+    for name, entry in entries.items():
+        entry.update(sizes[name].result())
+    other.update(other_size.result())
+    return {"groups": list(entries.values()), "ungrouped": other,
+            "basis": "stored native/heuristic categories; multiple labels may overlap"}
+
+
+def _visible_source(source):
+    return (source.get("status") != "disabled"
+            and source.get("metrics", {}).get("unique_infohashes", 0) > 0)
+
+
 def _intersections(db: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = db.execute(
         """
@@ -335,13 +379,12 @@ def _source_coverage(db: sqlite3.Connection, source_ids: Sequence[str]) -> List[
 
 def _coverage_matrix(source_reports, intersections):
     ids = sorted(source_id for source_id, report in source_reports.items()
-                 if report.get("metrics", {}).get("active_records", 0)
-                 or report.get("status") not in {"disabled", "not-selected"})
+                 if _visible_source(report))
     pairs = {frozenset((r["source_a"], r["source_b"])): r["shared_infohashes"]
              for r in intersections}
     rows = []
     for source_id in ids:
-        active = source_reports[source_id]["metrics"]["active_records"]
+        active = source_reports[source_id]["metrics"].get("active_records", 0)
         rows.append({"source_id": source_id, "active_infohashes": active,
                      "percent_by_source": {
                          other: (round(100 * (active if other == source_id else
@@ -422,6 +465,8 @@ def _write_reports(
             "metrics": metrics,
             "categories": categories,
         }
+        if source_type != "rutracker":
+            source_report["category_group_summary"] = _category_summary(state, source, categories)
         if source_type == "rutracker":
             source_report["category_group_summary"] = _rutracker_group_summary(state, source)
             categories_dir.mkdir(parents=True, exist_ok=True)
@@ -491,6 +536,18 @@ def _write_reports(
         "next_step": "review source reports and intersections; no merged catalog was created",
     }
 
+    visible_ids = [key for key, value in source_reports.items() if _visible_source(value)]
+    if visible_ids:
+        placeholders = ",".join("?" for _ in visible_ids)
+        row = state.db.execute(
+            f"SELECT COUNT(*), COUNT(DISTINCT ih), COUNT(DISTINCT CASE WHEN "
+            f"substr(record_json,1,7)!='{{\"del\":' THEN ih END) FROM observations "
+            f"WHERE source_id IN ({placeholders})", visible_ids).fetchone()
+        result["visible_totals"] = dict(zip(("source_observations",
+            "unique_infohashes_across_sources_including_deletions",
+            "unique_live_infohashes_across_sources"), map(int, row)))
+    else:
+        result["visible_totals"] = {key: 0 for key in result["totals"]}
     result["source_coverage_matrix"] = _coverage_matrix(source_reports, result["source_intersections"])
     result["catalog_size_basis"] = "live normalized NDJSON incl newline; zlib level 6, independent <=8 MiB segments; estimate, not final publisher/SQLite size"
 
@@ -532,7 +589,7 @@ def _format_bytes(value: Any) -> str:
 def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> str:
     return (
         f"<tr><td>{esc(label if label is not None else entry.get('name'))}</td>"
-        f"<td class='num'>{int(entry.get('forum_count', len(entry.get('category_ids', [])))):,}</td>"
+        f"<td class='num'>{entry.get('forum_count') if entry.get('forum_count') is not None else '—'}</td>"
         f"<td class='num'>{int(entry.get('records', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('deleted_topics', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_with_size', 0)):,}</td>"
@@ -546,7 +603,8 @@ def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> 
 def _render_html(report: Dict[str, Any]) -> str:
     esc = lambda value: html.escape(str(value if value is not None else "—"), quote=True)
     created = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(report.get("created_at", 0))))
-    sources = report.get("sources", {})
+    sources = {key: value for key, value in report.get("sources", {}).items()
+               if _visible_source(value)}
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
@@ -573,13 +631,13 @@ def _render_html(report: Dict[str, Any]) -> str:
         f"<p class='muted'>Generated {esc(created)} · run {esc(report.get('run_id'))} · status <span class='status {esc(report.get('status'))}'>{esc(report.get('status'))}</span></p>",
     ]
 
-    totals = report.get("totals", {})
+    totals = report.get("visible_totals", report.get("totals", {}))
     parts.append(
         "<div class='summary'>"
         f"<div><b>{int(totals.get('source_observations', 0)):,}</b><span>source observations</span></div>"
         f"<div><b>{int(totals.get('unique_live_infohashes_across_sources', 0)):,}</b><span>unique live hashes across sources</span></div>"
         f"<div><b>{int(totals.get('unique_infohashes_across_sources_including_deletions', 0)):,}</b><span>unique hashes incl. deletions</span></div>"
-        f"<div><b>{len(sources):,}</b><span>configured sources in report</span></div>"
+        f"<div><b>{len(sources):,}</b><span>visible sources in report</span></div>"
         "</div>"
     )
 
@@ -647,15 +705,15 @@ def _render_html(report: Dict[str, Any]) -> str:
             ungrouped = summary.get("ungrouped", {})
             group_rows.append(_group_html_row(ungrouped, esc, "Other"))
             group_html = (
-                "<h3>RuTracker category groups</h3><div class='table-wrap'><table><thead><tr>"
+                "<h3>Category summary</h3><div class='table-wrap'><table><thead><tr>"
                 "<th>Category</th><th>Included forums</th><th>Active</th><th>Deleted</th>"
                 "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
                 "<th>Catalog NDJSON</th><th>Catalog zlib estimate</th>"
                 "</tr></thead><tbody>" + "".join(group_rows) + "</tbody></table></div>"
-                "<p class='muted'>Current profile category_groups applied to stored forum IDs. "
-                "Each hash belongs to one category or Other; deleted entries contribute no payload size. "
-                "Included forums counts configured IDs; Other counts distinct observed unmatched IDs (missing IDs not counted). Empty groups remain visible. "
-                "Cached inventories reflect their last scan and forum filters; this summary does not rescan XML.</p>"
+                "<p class='muted'>Categories from current forum rules (RuTracker) or stored labels. "
+                "Other is last. Included forums applies only to forum sources; — means not applicable. "
+                "Multiple native/heuristic labels may overlap; source totals deduplicate hashes. "
+                "Deleted entries contribute no catalog or payload bytes. Cached data retains its scan scope.</p>"
             )
         parts.append(
             f"<section><h2>{esc(source_id)} <small>({esc(source.get('type'))})</small></h2>"
@@ -668,7 +726,7 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<div><b>{_format_bytes(metrics.get('catalog_ndjson_bytes'))}</b><span>Catalog NDJSON</span></div>"
             f"<div><b>{_format_bytes(metrics.get('catalog_zlib_estimate_bytes'))}</b><span>Catalog zlib estimate</span></div>"
             f"</div>{warning_html}{group_html}"
-            + ("<details><summary>Native forum details</summary>" if summary is not None else "") +
+            + ("<details><summary>Native category / forum details</summary>" if summary is not None else "") +
             "<div class='table-wrap'><table><thead><tr>"
             "<th>Category / forum</th><th>Native ID(s)</th><th>Records</th><th>Deleted topics</th>"
             "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
@@ -684,7 +742,8 @@ def _render_html(report: Dict[str, Any]) -> str:
             "SQLite size, manifest, torrent or media packs.</p></section>"
         )
 
-    intersections = report.get("source_intersections", [])
+    intersections = [r for r in report.get("source_intersections", [])
+                     if r["source_a"] in sources and r["source_b"] in sources]
     intersection_rows = [
         f"<tr><td>{esc(row.get('source_a'))}</td><td>{esc(row.get('source_b'))}</td>"
         f"<td class='num'>{int(row.get('shared_infohashes', 0)):,}</td></tr>"
@@ -696,7 +755,7 @@ def _render_html(report: Dict[str, Any]) -> str:
         + "".join(intersection_rows)
         + "</tbody></table></div><p class='muted'>Counts only: no source precedence, winner selection or cross-source merge is performed.</p></section>"
     )
-    matrix = report.get("source_coverage_matrix", {"sources": [], "rows": []})
+    matrix = _coverage_matrix(sources, intersections)
     coverage_rows = []
     for row in matrix["rows"]:
         cells = []
@@ -711,8 +770,8 @@ def _render_html(report: Dict[str, Any]) -> str:
         + "</tr></thead><tbody>" + "".join(coverage_rows) + "</tbody></table></div>"
         "<p class='muted'>Cell A,B = shared live hashes / live hashes in A * 100. "
         "Directional: A,B need not equal B,A. Diagonal is 100% for nonempty sources; "
-        "empty rows show —. Deleted hashes excluded. Includes enabled sources and configured "
-        "sources with cached live data even if disabled/unselected; disabled empty examples omitted. "
+        "empty live rows show —. Deleted hashes excluded. Disabled and absent sources are hidden. "
+        "Enabled unselected sources with stored data remain visible. "
         "Consult source statuses for freshness.</p></section>"
     )
     parts.append("<p class='foot'>Inventory only. No list, shard, publishing or subscription decision is implied.</p></body></html>")

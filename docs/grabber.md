@@ -954,3 +954,43 @@ endpoint and API key locally; redact secrets from logs and diagnostic output.
 - Integrate with a local/mock Torznab endpoint, not public trackers or private keys.
 - End-to-end: publish a small signed release and verify normalized records and
   signed description/poster refs from a second node.
+
+## Unified category summaries and visible sources
+
+All adapters now expose `category_group_summary` in the source JSON and per-source
+category JSON, using the same HTML Category / Included forums / Active / Deleted /
+With size / Without size / Payload sum / Catalog NDJSON / Catalog zlib estimate
+columns. RuTracker groups use `category_groups` and provenance forum IDs; other
+adapters aggregate stored native/heuristic categories. `Included forums` is — when
+not applicable. Other (unlabelled records) is last. Native categories remain in
+collapsed details. Multi-label sources may overlap across categories; sizes and
+counts of category rows are not necessarily additive. Source totals deduplicate.
+
+HTML now completely omits disabled sources, even with cached data, and sources
+with no stored observations. This applies to overview, details, pairwise tables,
+coverage matrix, source count and visible totals. Enabled unselected cached
+sources with data remain visible; failed sources with retained data retain a
+warning. JSON keeps all diagnostic statuses/raw cached metrics and legacy totals;
+`visible_totals` and `source_coverage_matrix` correspond to the HTML selection.
+A failed source with no cached rows is hidden in HTML; consult JSON diagnostics.
+No cached SQLite records are deleted by visibility settings.
+
+### Anime in all three snapshot sources
+
+- Rutor: existing native Anime category is retained, never merged into Movie/Series.
+- RuTracker: Anime uses explicit forum IDs from the media profile's category_groups;
+  copy both category_groups and forum_include_ids into a private profile. This
+  does not guess anime from titles in unrelated forums.
+- CSV: the example profile now checks Anime **before** Video and Music in `first`
+  mode. Conservative patterns match explicit anime/аниме words and known bracketed
+  fansub release labels (SubsPlease, HorribleSubs, Erai-raws). Matching patterns
+  are also added to title-filter include rules so such rows can enter inventory.
+  These are configurable heuristics, not complete detection; generic Japanese
+  names, resolutions and codecs alone are not evidence of Anime. Unknown anime
+  may remain Video or be excluded. No public dataset is fetched for tests.
+
+Existing private profiles are not rewritten automatically. Copy the Anime group
+and its include expressions from `tools/grabber-profile.example.json`, place it
+first, retain `inventory_category_mode: "first"`. Policy fingerprint changes
+trigger a CSV rescan. This change is for inventory classification only, not a
+new publishing classifier. Compression remains an estimate, not final client DB.

@@ -137,7 +137,7 @@ class GrabberTests(unittest.TestCase):
             self.assertEqual(ungrouped["deleted_topics"], 1)
             self.assertEqual(ungrouped["torrent_size_bytes"], 20)
             self.assertEqual(sum(g["records"] for g in summary["groups"]) + ungrouped["records"], 6)
-            html = gi._render_html({"sources": {"rutracker": {"type": "rutracker",
+            html = gi._render_html({"sources": {"rutracker": {"type": "rutracker", "metrics": {"unique_infohashes": 8},
                                           "category_group_summary": summary}}})
             self.assertIn("&lt;script&gt;unsafe&lt;/script&gt;", html)
             self.assertNotIn("<script>unsafe</script>", html)
@@ -146,6 +146,10 @@ class GrabberTests(unittest.TestCase):
             self.assertEqual(no_rules["groups"], [])
             self.assertEqual(no_rules["ungrouped"]["records"], 6)
             self.assertEqual(no_rules["ungrouped"]["deleted_topics"], 2)
+            anime = gi._rutracker_group_summary(state, {"id": "rutracker",
+                "category_groups": {"Anime": ["100", "101"]}})
+            self.assertEqual(anime["groups"][0]["name"], "Anime")
+            self.assertEqual(anime["groups"][0]["records"], 2)
         finally:
             state.close()
 
@@ -172,7 +176,7 @@ class GrabberTests(unittest.TestCase):
         serialized = json.loads((root / "report.json").read_text())
         self.assertEqual(serialized["sources"]["rutracker"]["category_group_summary"], summary)
         html = Path(report["html_report"]).read_text()
-        self.assertIn("RuTracker category groups", html)
+        self.assertIn("Category summary", html)
         self.assertIn("Category / forum", html)
         self.assertEqual(inventory()["sources"]["rutracker"]["status"], "unchanged")
         # Regroup disabled cached data; XML cannot be opened, native rows are untouched.
@@ -188,17 +192,51 @@ class GrabberTests(unittest.TestCase):
         empty = inventory()["sources"]["empty-rutracker"]["category_group_summary"]
         self.assertTrue(all(g["records"] == g["deleted_topics"] == 0 for g in empty["groups"]))
 
+    def test_all_source_summaries_anime_and_hidden_disabled_cache(self):
+        example = json.loads((Path(__file__).parent / "grabber-profile.example.json").read_text())
+        csv = example["sources"][0]
+        csv.update(enabled=True, path=str(self.csv_path))
+        csv.pop("repo")
+        self.csv_path.write_text("infohash,name,size_bytes\n" + "a" * 40 +
+            ",[SubsPlease] Example 1080p AAC.mkv,100\n" + "b" * 40 +
+            ",Film x264 AAC,200\n" + "c" * 40 + ",Album FLAC,300\n")
+        config = {"version": 1, "sources": [csv]}
+        root = self.root / "inventory"
+        def inventory():
+            self.profile.write_text(json.dumps(config))
+            return gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        report = inventory()
+        source = report["sources"][csv["id"]]
+        groups = {c["name"]: c for c in source["category_group_summary"]["groups"]}
+        self.assertEqual({k: v["records"] for k, v in groups.items()}, {"Anime": 1, "Video": 1, "Music": 1})
+        self.assertTrue(all(v["catalog_ndjson_bytes"] > 0 and v["catalog_zlib_estimate_bytes"] > 0 for v in groups.values()))
+        self.assertTrue(all(v["forum_count"] is None for v in groups.values()))
+        csv["enabled"] = False
+        report = inventory()
+        html = Path(report["html_report"]).read_text()
+        self.assertNotIn(csv["id"], html)
+        self.assertEqual(report["source_coverage_matrix"]["sources"], [])
+        self.assertEqual(report["visible_totals"]["source_observations"], 0)
+        self.assertEqual(report["sources"][csv["id"]]["metrics"]["active_records"], 3)
+        self.rutor_json[0]["Categories"] = ["Anime"]
+        self.write_rutor()
+        config["sources"] = [{"id": "rutor", "type": "rutor", "enabled": True,
+                              "path": str(self.rutor_path)}]
+        report = inventory()
+        groups = report["sources"]["rutor"]["category_group_summary"]["groups"]
+        self.assertTrue(any(g["name"] == "Anime" and g["records"] > 0 for g in groups))
+
     def test_directional_coverage_matrix_and_size_estimate(self):
-        reports = {name: {"status": "success", "metrics": {"active_records": n}}
+        reports = {name: {"status": "success", "metrics": {"active_records": n, "unique_infohashes": n}}
                    for name, n in (("a", 4), ("b", 2), ("c", 0))}
         reports["disabled-example"] = {"status": "disabled", "metrics": {"active_records": 0}}
         matrix = gi._coverage_matrix(reports, [{"source_a": "a", "source_b": "b", "shared_infohashes": 1}])
-        self.assertEqual(matrix["sources"], ["a", "b", "c"])
+        self.assertEqual(matrix["sources"], ["a", "b"])
         rows = {r["source_id"]: r["percent_by_source"] for r in matrix["rows"]}
-        self.assertEqual(rows["a"], {"a": 100, "b": 25, "c": 0})
-        self.assertEqual(rows["b"], {"a": 50, "b": 100, "c": 0})
-        self.assertTrue(all(v is None for v in rows["c"].values()))
-        html = gi._render_html({"source_coverage_matrix": matrix})
+        self.assertEqual(rows["a"], {"a": 100, "b": 25})
+        self.assertEqual(rows["b"], {"a": 50, "b": 100})
+        self.assertNotIn("c", rows)
+        html = gi._render_html({"sources": reports, "source_intersections": [{"source_a": "a", "source_b": "b", "shared_infohashes": 1}]})
         self.assertIn("25.00%", html)
         self.assertIn("50.00%", html)
         self.assertNotIn("Relative count", html)
@@ -335,6 +373,8 @@ class GrabberTests(unittest.TestCase):
         source = config["sources"][0]
         self.assertFalse(source["enabled"])
         self.assertIn("Music", source["category_groups"])
+        self.assertIn("Anime", source["category_groups"])
+        self.assertIn("1105", source["category_groups"]["Anime"])
         self.assertEqual(set(source["forum_include_ids"]),
                          {i for ids in source["category_groups"].values() for i in ids})
 
