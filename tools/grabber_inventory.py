@@ -273,7 +273,16 @@ def _write_reports(
             "conflicts": int(result.get("conflicts", 0) or 0),
             "stale_cache_used": bool(result.get("stale_cache_used", False)),
             "checkpoint_before": result.get("checkpoint_before"),
-            "checkpoint_after": result.get("checkpoint") if result.get("status") in {"success", "unchanged"} else None,
+            "checkpoint_after": (
+                result.get("checkpoint")
+                if result.get("status") in {"success", "unchanged"}
+                and not result.get("quarantine_truncated") else None
+            ),
+            "checkpoint_deferred": bool(result.get("quarantine_truncated")),
+            "snapshot_replaced": result.get("inventory_snapshot_replaced"),
+            "quarantined": int(result.get("quarantined", 0) or 0),
+            "quarantine_truncated": bool(result.get("quarantine_truncated", False)),
+            "adapter_warnings": list(result.get("warnings", [])),
             "max_topics": result.get("topic_limit"),
             "metrics": metrics,
             "categories": categories,
