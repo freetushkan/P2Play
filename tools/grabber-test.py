@@ -226,6 +226,12 @@ class GrabberTests(unittest.TestCase):
         groups = report["sources"]["rutor"]["category_group_summary"]["groups"]
         self.assertTrue(any(g["name"] == "Anime" and g["records"] > 0 for g in groups))
 
+    def test_html_table_alignment_headers_and_cells(self):
+        html = gi._render_html({})
+        self.assertIn("th,td{text-align:right;", html)
+        self.assertIn("th:first-child,td:first-child{text-align:left}", html)
+        self.assertNotIn("th,td{text-align:left;", html)
+
     def test_directional_coverage_matrix_and_size_estimate(self):
         reports = {name: {"status": "success", "metrics": {"active_records": n, "unique_infohashes": n}}
                    for name, n in (("a", 4), ("b", 2), ("c", 0))}
