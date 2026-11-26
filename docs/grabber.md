@@ -181,9 +181,11 @@ Each source is committed independently. A failed refresh retains its last succes
 observations and marks `stale_cache_used`; another source can still be inventoried.
 Snapshot adapters (CSV, Rutor, RuTracker, templates) replace their prior source
 inventory only after a clean scan. If records were rejected or conflicted, the old
-observations are retained and valid new rows are added, with the pass marked degraded.
-RSS/Torznab are incremental, bounded feed windows; they are not complete historical
-snapshots. Their pagination, overlap and `max_items` settings define coverage.
+observations are retained and valid new rows are added, the pass is marked degraded,
+and its source checkpoint is deferred so the same snapshot can be retried after the
+cause is corrected. RSS/Torznab are incremental, bounded feed windows; they are not
+complete historical snapshots. Their pagination, overlap and `max_items` settings
+define coverage.
 
 Reports contain, per source: unique infohashes, active and deleted entries, records
 with/without size, sum of torrent payload sizes, normalized metadata bytes, records

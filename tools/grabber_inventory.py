@@ -287,9 +287,9 @@ def _write_reports(
             "checkpoint_after": (
                 result.get("checkpoint")
                 if result.get("status") in {"success", "unchanged"}
-                and not result.get("quarantine_truncated") else None
+                and not result.get("checkpoint_deferred") else None
             ),
-            "checkpoint_deferred": bool(result.get("quarantine_truncated")),
+            "checkpoint_deferred": bool(result.get("checkpoint_deferred")),
             "snapshot_replaced": result.get("inventory_snapshot_replaced"),
             "quarantined": int(result.get("quarantined", 0) or 0),
             "quarantine_truncated": bool(result.get("quarantine_truncated", False)),
@@ -592,15 +592,18 @@ def run_inventory(
                         or result.get("quarantine_truncated")
                     )
                     checkpoint = result.get("checkpoint")
+                    checkpoint_deferred = bool(
+                        result.get("quarantine_truncated") or (snapshot and not complete_snapshot)
+                    )
                     _persist_source(
                         state.db, run_id, source_id, snapshot,
-                        complete_snapshot, checkpoint,
-                        bool(result.get("quarantine_truncated")),
+                        complete_snapshot, checkpoint, checkpoint_deferred,
                     )
                     result["inventory_snapshot_replaced"] = bool(complete_snapshot)
+                    result["checkpoint_deferred"] = checkpoint_deferred
                     if snapshot and not complete_snapshot:
                         result.setdefault("warnings", []).append(
-                            "Some source rows were rejected/conflicted; retained prior observations and added valid rows instead of replacing the snapshot."
+                            "Some source rows were rejected/conflicted; retained prior observations and added valid rows instead of replacing the snapshot. The source checkpoint was not advanced, so the same snapshot can be retried after correcting the cause."
                         )
                 elif result.get("status") == "unchanged":
                     # The prior source snapshot/categories are already in this inventory DB.

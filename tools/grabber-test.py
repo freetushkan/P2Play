@@ -168,6 +168,30 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual(repeated["sources"]["rutor"]["status"], "not-selected")
         self.assertEqual(repeated["sources"]["rutor"]["metrics"]["active_records"], 2)
 
+        # A partially parsed snapshot keeps the prior inventory and defers its checkpoint.
+        original_rutor_rows = list(self.rutor_json)
+        self.rutor_json = original_rutor_rows + [{
+            "Hash": "not-an-infohash",
+            "Title": "Bad row",
+            "CreateDate": "2024-01-03T00:00:00Z",
+            "Size": "1 MB",
+            "Categories": ["Broken"],
+        }]
+        self.write_rutor()
+        partial = gi.run_inventory(
+            self.profile, report_path, state_path, categories_dir,
+            source_ids=["rutor"],
+        )
+        partial_rutor = partial["sources"]["rutor"]
+        self.assertEqual(partial_rutor["status"], "degraded")
+        self.assertFalse(partial_rutor["snapshot_replaced"])
+        self.assertTrue(partial_rutor["checkpoint_deferred"])
+        self.assertIsNone(partial_rutor["checkpoint_after"])
+        self.assertEqual(partial_rutor["metrics"]["active_records"], 2)
+
+        self.rutor_json = original_rutor_rows
+        self.write_rutor()
+
         # A failed refresh must not erase the last successful source inventory.
         broken = json.loads(self.profile.read_text(encoding="utf-8"))
         for source in broken["sources"]:
