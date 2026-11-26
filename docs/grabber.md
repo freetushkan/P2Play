@@ -115,7 +115,9 @@ invalid padding are rejected. The limits are independent:
 - `max_compressed_bytes`: default 8 GiB; configurable up to the hard 16 GiB cap.
 - `max_expanded_bytes`: default 64 GiB; configurable up to the hard 128 GiB cap.
 - `xz_memory_limit`: default 128 MiB; allowed range 16 MiB–1 GiB. This limits
-  the XZ decoder dictionary memory, not the total XML size.
+  the XZ decoder dictionary memory, not the total XML size. If the decoder reports
+  that its memory limit was exceeded, increase this value (for example to
+  `1073741824` for 1 GiB) only if the machine has enough available RAM.
 - `max_topics`: default 10,000,000 and hard cap 50,000,000. It counts every
   RuTracker topic scanned, including topics later excluded by forum selection.
 
