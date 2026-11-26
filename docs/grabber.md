@@ -108,7 +108,9 @@ and source observations make replay idempotent. Direct RSS uses `type: "rss"` an
 
 RuTracker source `path` may point at `rutracker-YYYYMMDD.xml` or
 `rutracker-YYYYMMDD.xml.xz`. The XML is read and decompressed as a stream; the
-whole dump is never loaded into memory. The limits are independent:
+whole dump is never loaded into memory. Concatenated XZ streams and valid XZ
+stream padding are supported. Non-zero trailing bytes, truncated streams and
+invalid padding are rejected. The limits are independent:
 
 - `max_compressed_bytes`: default 8 GiB; configurable up to the hard 16 GiB cap.
 - `max_expanded_bytes`: default 64 GiB; configurable up to the hard 128 GiB cap.
