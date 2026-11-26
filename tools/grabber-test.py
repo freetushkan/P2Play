@@ -2,6 +2,7 @@
 """Small, deterministic tests for the review-first catalog grabber."""
 from __future__ import annotations
 
+import io
 import json
 import lzma
 import os
@@ -447,6 +448,41 @@ class GrabberTests(unittest.TestCase):
         self.assertNotIn("a" * 40, {row["ih"] for row in self.read_rows(self.full)})
         self.assertIn("d" * 40, {row["ih"] for row in self.read_rows(self.full)})
         g.discard_run(self.state, report["run_id"])
+
+    def test_rutracker_xz_concatenated_streams_and_padding(self):
+        first = b"<root><item>first</item>"
+        second = b"<item>second</item></root>"
+        payload = (
+            lzma.compress(first)
+            + (b"\x00" * 4)
+            + lzma.compress(second)
+            + (b"\x00" * 8)
+        )
+        reader = ga._XzReader(io.BytesIO(payload), 128 * 1024 * 1024)
+        chunks = []
+        while True:
+            chunk = reader.read(17)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        self.assertEqual(b"".join(chunks), first + second)
+        self.assertEqual(reader.streams, 2)
+
+        invalid_padding = ga._XzReader(
+            io.BytesIO(lzma.compress(b"ok") + b"\x00\x00"),
+            128 * 1024 * 1024,
+        )
+        with self.assertRaisesRegex(g.SourceError, "invalid stream padding"):
+            while invalid_padding.read(8):
+                pass
+
+        trailing_junk = ga._XzReader(
+            io.BytesIO(lzma.compress(b"ok") + b"NOT-XZ"),
+            128 * 1024 * 1024,
+        )
+        with self.assertRaisesRegex(g.SourceError, "trailing data"):
+            while trailing_junk.read(8):
+                pass
 
     def test_rutracker_rejects_corrupt_xz_and_xml_entities(self):
         self.rutracker_path.write_bytes(b"\xfd7zXZ\x00broken")
