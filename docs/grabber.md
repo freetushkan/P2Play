@@ -1019,13 +1019,16 @@ report-only concurrently. This avoids a new hour-long XML import, **not** all CP
 several SQLite passes/compression/intersections on millions of rows still take time.
 
 Inventory CLI now reports progress to stderr (stdout remains final JSON): source,
-stage, elapsed, approximate overall percent, stage ETA and weighted overall ETA.
+stage, elapsed, approximate overall percent and stage ETA. Overall ETA stays
+unknown until remaining-stage durations can be estimated; it is 0 only at completion.
 `--no-progress` disables it. A heartbeat continues during blocking SQL/hash/parse.
 Overall weights are heuristic (input 0–70%, report 70–93%, SQL 93–98%, write 98–100%;
 report-only assigns 0–93% to cached reporting). CSV uses bytes read (buffer read-ahead),
 Rutor uses known item count, XML uses compressed-byte position, report passes use
 SQLite row counts. XZ read-ahead/dictionary and uneven records make byte ETA rough;
-unknown-total feeds/SQL stages explicitly show unknown ETA, not a fabricated exact
+Overall percentage weights represent work allocation, **not elapsed-time fractions**;
+they are never extrapolated into a global ETA. Fast earlier sources do not predict
+the cost of a later XML scan. Unknown-total feeds/SQL stages show unknown ETA, not a fabricated exact
 completion time. 100% is emitted only after successful report writing. This progress
 slice covers `inventory`; publisher `run`/ACK are not changed into a scheduling UI.
 

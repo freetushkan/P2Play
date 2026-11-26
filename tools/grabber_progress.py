@@ -43,8 +43,6 @@ class Progress:
             f = self.fraction
             percent = max(self.percent, self.low + (self.high - self.low) * (f or 0))
             self.percent = percent
-            overall_eta = ((now-self.started) * (100-percent) / percent
-                           if percent > 0 and now-self.started >= 1 else None)
             eta = ((now - self.stage_started) * (1-f) / f
                    if f and f < 1 and now - self.stage_started >= 1 else None)
             print(f"[inventory ~{percent:5.1f}%] {self.label} | "
@@ -52,7 +50,8 @@ class Progress:
                   f"[inventory ~{percent:5.1f}%] {self.label} | stage indeterminate",
                   end=f" | elapsed {now-self.started:.0f}s | stage ETA " +
                       (f"~{eta:.0f}s" if eta is not None else "unknown") +
-                      " | overall ETA " + (f"~{overall_eta:.0f}s (weighted)" if overall_eta is not None else "unknown") + "\n",
+                      " | overall ETA " + ("0s" if self.low == self.high == 100 else
+                                            "unknown (remaining stages not timed)") + "\n",
                   file=sys.stderr, flush=True)
 
     def _loop(self):

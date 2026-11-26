@@ -263,6 +263,26 @@ class GrabberTests(unittest.TestCase):
         empty["ungrouped"]["deleted_topics"] = 1
         self.assertIn("<td>Other</td>", gi._render_html({"sources": {"test": {"metrics": {"unique_infohashes": 1}, "category_group_summary": empty}}}))
 
+    def test_stage_eta_is_not_extrapolated_from_weighted_overall_percent(self):
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+        from grabber_progress import Progress
+        output = io.StringIO()
+        with patch("grabber_progress.time.monotonic", return_value=0):
+            progress = Progress()
+        with redirect_stderr(output), patch("grabber_progress.time.monotonic", return_value=100):
+            progress.stage("rutracker: XML", 23, 49)
+        with redirect_stderr(output), patch("grabber_progress.time.monotonic", return_value=226):
+            progress.update(101, 1000)
+            progress.emit()
+        text = output.getvalue()
+        self.assertIn("stage ETA ~1122s", text)
+        self.assertIn("overall ETA unknown (remaining stages not timed)", text)
+        self.assertNotIn("(weighted)", text)
+        with redirect_stderr(output), patch("grabber_progress.time.monotonic", return_value=230):
+            progress.stage("complete", 100, 100)
+        self.assertIn("overall ETA 0s", output.getvalue())
+
     def test_progress_stderr_and_cli_flags(self):
         from contextlib import redirect_stderr
         from grabber_progress import Progress
