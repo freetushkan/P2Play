@@ -67,7 +67,7 @@ class GrabberTests(unittest.TestCase):
             "version": 1,
             "publisher": {
                 "category_map": {"Movies": "movie"},
-                "shard_policy": {"default": "default", "category_map": {"movie": "films"}},
+                "shard_policy": {"default": "default", "category_map": {"movie": "films"}, "hash_prefix_chars": 0},
             },
             "sources": [
                 {"id": "torrents-csv-data", "type": "csv", "enabled": csv_enabled,
