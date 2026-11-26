@@ -143,7 +143,7 @@ class _XzReader:
                     raise g.SourceError(
                         "RuTracker XZ requires more decoder memory than "
                         f"xz_memory_limit={self.memory_limit} bytes; increase the "
-                        "source's xz_memory_limit (maximum 1 GiB)"
+                        "source's xz_memory_limit (maximum 2 GiB)"
                     ) from exc
                 raise g.SourceError(
                     f"RuTracker XZ decompression failed: {detail}"
@@ -343,7 +343,7 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
     if not 1 <= expanded_limit <= g.MAX_RUTRACKER_EXPANDED_BYTES:
         raise g.SourceError("max_expanded_bytes must be between 1 byte and 128 GiB")
     if not g.MIN_RUTRACKER_XZ_MEMORY_BYTES <= memory_limit <= g.MAX_RUTRACKER_XZ_MEMORY_BYTES:
-        raise g.SourceError("xz_memory_limit must be between 16 MiB and 1 GiB")
+        raise g.SourceError("xz_memory_limit must be between 16 MiB and 2 GiB")
     if not 1 <= max_topics <= g.MAX_RUTRACKER_TOPICS:
         raise g.SourceError("max_topics must be between 1 and 50,000,000")
     if not path.is_file() or path.stat().st_size > compressed_limit:
