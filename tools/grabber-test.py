@@ -411,14 +411,21 @@ class GrabberTests(unittest.TestCase):
                 "path": str(self.rutracker_path), "priority": 30,
                 "max_compressed_bytes": 6666666666,
                 "max_expanded_bytes": 66666666666,
-                "xz_memory_limit": 134217728,
+                "xz_memory_limit": 1152 * 1024 * 1024,
                 "max_topics": 10000000,
             }],
         }
         self.profile.write_text(json.dumps(config), encoding="utf-8")
-        self.assertEqual(g._load_config(self.profile)["sources"][0]["max_expanded_bytes"],
-                         66666666666)
+        loaded = g._load_config(self.profile)["sources"][0]
+        self.assertEqual(loaded["max_expanded_bytes"], 66666666666)
+        self.assertEqual(loaded["xz_memory_limit"], 1152 * 1024 * 1024)
 
+        config["sources"][0]["xz_memory_limit"] = g.MAX_RUTRACKER_XZ_MEMORY_BYTES + 1
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(g.GrabberError, "xz_memory_limit"):
+            g._load_config(self.profile)
+
+        config["sources"][0]["xz_memory_limit"] = 1152 * 1024 * 1024
         config["sources"][0]["max_compressed_bytes"] = g.MAX_RUTRACKER_COMPRESSED_BYTES + 1
         self.profile.write_text(json.dumps(config), encoding="utf-8")
         with self.assertRaisesRegex(g.GrabberError, "max_compressed_bytes"):
