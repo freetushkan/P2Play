@@ -989,9 +989,9 @@ def _load_config(path: Path) -> Dict[str, Any]:
             raise GrabberError(f"priority out of range for source {source_id}")
         if str(source.get("type") or source_id) == "rutracker":
             limits = (
-                ("max_compressed_bytes", 256 * 1024 * 1024, 1,
+                ("max_compressed_bytes", DEFAULT_RUTRACKER_COMPRESSED_BYTES, 1,
                  MAX_RUTRACKER_COMPRESSED_BYTES),
-                ("max_expanded_bytes", 512 * 1024 * 1024, 1,
+                ("max_expanded_bytes", DEFAULT_RUTRACKER_EXPANDED_BYTES, 1,
                  MAX_RUTRACKER_EXPANDED_BYTES),
                 ("xz_memory_limit", DEFAULT_RUTRACKER_XZ_MEMORY_BYTES,
                  MIN_RUTRACKER_XZ_MEMORY_BYTES, MAX_RUTRACKER_XZ_MEMORY_BYTES),
