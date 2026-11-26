@@ -138,8 +138,15 @@ class _XzReader:
                     self.decoder.decompress(compressed, max_length=self._CHUNK)
                 )
             except lzma.LZMAError as exc:
+                detail = str(exc) or exc.__class__.__name__
+                if "memory usage limit exceeded" in detail.casefold():
+                    raise g.SourceError(
+                        "RuTracker XZ requires more decoder memory than "
+                        f"xz_memory_limit={self.memory_limit} bytes; increase the "
+                        "source's xz_memory_limit (maximum 1 GiB)"
+                    ) from exc
                 raise g.SourceError(
-                    "RuTracker XZ is corrupt or requests excessive decoder memory"
+                    f"RuTracker XZ decompression failed: {detail}"
                 ) from exc
 
             if self.decoder.eof:
