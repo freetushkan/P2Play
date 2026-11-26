@@ -1,6 +1,6 @@
 # Platform and runtime matrix
 
-Updated: 2026-11-25. This matrix distinguishes code/build evidence from device-level
+Updated: 2026-11-26. This matrix distinguishes code/build evidence from device-level
 acceptance. "Built" does not imply that the integrated lifecycle has been tested.
 
 ## Intended product layout
@@ -29,19 +29,17 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
   However, no Android device/emulator acceptance test currently proves plugin
   installation, route mounting or the local P2Play HTTP call. Treat this as a
   feasible candidate, not a completed deployment.
-- pPlay `dev` commit `61e9e8513b6f1f2e87af2c873b1cfceb49fc66bd` includes
-  `src/net/p2play_embedded.cpp/.h`, the separate `P2Play_embedded` mode and static
-  `p2play_core` linkage. `ci/prepare-p2play-embedded.sh` clones P2Play and checks out
-  the pinned core commit `b6c7b74916e36a873663fa55d27a9aaa209e7cfe`; standalone
-  `p2playd` is not built into pPlay. The embedded lifecycle starts lazily, stops accepting
-  new requests on deactivation, drains active HTTP/stream requests before stopping and
-  uses a dedicated data directory. The C API log callback is routed into `pplay.log`
-  with the `P2Play:` prefix; owner password is applied through
-  `p2play_config.owner_password`. The full five-platform pPlay workflow and PS5 package
-  job passed in run #1475 on the then-current embedded-core pin. After P2Play PR #35
-  merged as `e33886c383cd0e9d9645777ec1ac73a18711a88f`, pPlay PR #15 proposes
-  updating the embedded pin to that core revision; its full workflow run #1486
-  is pending and must pass before treating the new pin as verified.
+- Audited pPlay `dev` `402ee80a6c7271622659abefb390ab4999ca9009` includes
+  external and embedded clients. Main workflow selects core
+  `1f30ceebd253cd4a71e3b978fcf0e8b70ac1f3dd`; prepare script fallback is a different
+  SHA (`e33886c...`), a tracked build-policy defect. Static `p2play_core` linkage,
+  lazy start, drain, dedicated data directory, owner password and host logging are
+  present in code. Latest observed successful public workflow is for `de03419...`,
+  run `45752020074`, not audited dev HEAD. No fresh physical-device acceptance was
+  performed. Earlier run #1475 remains historical evidence only. Full parity,
+  runtime risks and a proposed single-resolved-SHA/cache design are in
+  [pplay-audit.md](pplay-audit.md). Do not infer runtime verification of latest
+  P2Play master from a build using an older core SHA.
 - The Silo MediaMesh plugin is an HTTP client for an external P2Play daemon. The
   current Goja plugin API exposes no process launcher or `p2play_core` C API.
   To let the plugin manage its own local core, add a host-level native lifecycle

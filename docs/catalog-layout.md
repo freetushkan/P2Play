@@ -166,3 +166,15 @@ manifest/torrent/packs/index и JSON publisher измеряются после �
 Anime: native Rutor, forum-ID rules RuTracker, отдельная первая CSV-группа по
 явным anime/аниме/fansub markers в примере профиля. Это консервативная эвристика,
 не полное распознавание. Пользовательские профили нужно обновить вручную.
+
+## Cached report refresh and extra info sizing
+
+`inventory --report-only` пересобирает отчёт из существующей SQLite без входных
+файлов/хэширования/сети. Категории и размеры пересчитываются, новые input filters
+не применяются, отсутствующие extra не восстанавливаются. Измеряется именно кэш,
+а не обещается актуальный snapshot. Есть stderr progress/приблизительные ETA;
+SQL/feed без известного объёма обозначается unknown. Подробности: `grabber.md`.
+Во всех сводках сравниваются base/with-extra NDJSON и zlib estimate. База —
+ih/title/date/size/tags/trackers Rutor canonical; все иные поля и retained provenance
+являются extra. Wire format и publisher не меняются. Other скрыт только при нуле
+всех числовых столбцов, JSON сохраняется.

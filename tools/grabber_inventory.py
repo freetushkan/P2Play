@@ -120,7 +120,12 @@ def _empty_category(name: str) -> Dict[str, Any]:
     }
 
 
-class _CatalogSize:
+# Canonical fields produced by the Rutor adapter. File counts/media refs and
+# all local provenance are extra, even if useful or also present in other sources.
+RUTOR_BASE_FIELDS = frozenset({"ih", "title", "date", "size", "tags", "trackers"})
+
+
+class _RawSize:
     """Bounded 8 MiB NDJSON segments; zlib estimate, not publisher codec identity."""
     def __init__(self):
         self.raw = 0
@@ -148,6 +153,46 @@ class _CatalogSize:
         self.flush()
         return {"catalog_ndjson_bytes": self.raw,
                 "catalog_zlib_estimate_bytes": self.compressed}
+
+
+class _CatalogSize(_RawSize):
+    def __init__(self):
+        super().__init__()
+        self.base = _RawSize()
+        self.full = _RawSize()
+
+    def add(self, record, provenance=None):
+        super().add(record)
+        base = {key: value for key, value in record.items() if key in RUTOR_BASE_FIELDS}
+        self.base.add(base)
+        extra = {key: value for key, value in record.items() if key not in RUTOR_BASE_FIELDS}
+        if provenance:
+            extra["provenance"] = provenance
+        self.full.add({**base, **({"extra_info": extra} if extra else {})})
+
+    def result(self):
+        result = super().result()
+        for prefix, accumulator in (("base", self.base), ("with_extra", self.full)):
+            values = accumulator.result()
+            result[prefix + "_ndjson_bytes"] = values["catalog_ndjson_bytes"]
+            result[prefix + "_zlib_estimate_bytes"] = values["catalog_zlib_estimate_bytes"]
+        return result
+
+
+def _report_rows(state, source_id, columns, label):
+    progress = getattr(state, "progress", None)
+    total = state.db.execute("SELECT COUNT(*) FROM observations WHERE source_id=?", (source_id,)).fetchone()[0]
+    if progress:
+        mid = (state.report_low + state.report_high) / 2
+        low, high = (state.report_low, mid) if label.startswith("source metrics") else (mid, state.report_high)
+        progress.stage(source_id + ": " + label, low, high)
+    for index, row in enumerate(state.db.execute(
+        f"SELECT {columns} FROM observations WHERE source_id=? ORDER BY ih", (source_id,)), 1):
+        if progress and index % 1000 == 0:
+            progress.update(index, total)
+        yield row
+    if progress:
+        progress.update(total, total or 1)
 
 
 def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -184,10 +229,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
         if category_id and category_id not in entry["category_ids"]:
             entry["category_ids"].append(category_id)
 
-    cursor = state.db.execute(
-        "SELECT ih,record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
-        (source_id,),
-    )
+    cursor = _report_rows(state, source_id, "ih,record_json,categories_json,provenance_json", "source metrics + base/extra compression")
     for row in cursor:
         metrics["unique_infohashes"] += 1
         record = json.loads(row["record_json"])
@@ -197,7 +239,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
             metrics["deleted_topics"] += 1
         else:
             metrics["active_records"] += 1
-            catalog_size.add(record)
+            catalog_size.add(record, json.loads(row["provenance_json"] or "{}"))
             metrics["normalized_record_bytes"] += len(row["record_json"].encode("utf-8"))
             size = record.get("size")
             if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
@@ -256,10 +298,7 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
     sizes = {name: _CatalogSize() for name in groups}
     other_size = _CatalogSize()
     observed_ids = set()
-    for row in state.db.execute(
-        "SELECT record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
-        (str(source["id"]),),
-    ):
+    for row in _report_rows(state, str(source["id"]), "record_json,provenance_json", "group metrics + compression"):
         record = json.loads(row["record_json"])
         provenance = json.loads(row["provenance_json"] or "{}")
         group = by_id.get(str(provenance.get("forum_id", "")))
@@ -270,7 +309,7 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
             entry["deleted_topics"] += 1
             continue
         entry["records"] += 1
-        (sizes[group] if group is not None else other_size).add(record)
+        (sizes[group] if group is not None else other_size).add(record, provenance)
         size = record.get("size")
         if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
             entry["records_with_size"] += 1
@@ -293,10 +332,7 @@ def _category_summary(state: g.State, source: Dict[str, Any], categories) -> Dic
     sizes = {name: _CatalogSize() for name in entries}
     other = {**_empty_category("Other"), "forum_count": None}
     other_size = _CatalogSize()
-    for row in state.db.execute(
-        "SELECT record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
-        (source["id"],),
-    ):
+    for row in _report_rows(state, source["id"], "record_json,categories_json,provenance_json", "category metrics + compression"):
         record = json.loads(row["record_json"])
         names = list(dict.fromkeys(json.loads(row["categories_json"] or "[]")))
         for name in names or [None]:
@@ -311,7 +347,7 @@ def _category_summary(state: g.State, source: Dict[str, Any], categories) -> Dic
                 entry["deleted_topics"] += 1
                 continue
             entry["records"] += 1
-            size.add(record)
+            size.add(record, json.loads(row["provenance_json"] or "{}"))
             value = record.get("size")
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 entry["records_with_size"] += 1
@@ -406,7 +442,10 @@ def _write_reports(
     source_reports: Dict[str, Any] = {}
     category_files: Dict[str, str] = {}
 
-    for source in source_configs:
+    for source_index, source in enumerate(source_configs):
+        start = 0 if getattr(state, "report_only", False) else 70
+        state.report_low = start + (93-start) * source_index / max(1, len(source_configs))
+        state.report_high = start + (93-start) * (source_index + 1) / max(1, len(source_configs))
         source_id = str(source["id"])
         source_type = str(source.get("type") or source_id)
         result = dict(source_results.get(source_id, {}))
@@ -505,6 +544,8 @@ def _write_reports(
         )
         category_files[source_id] = str(category_path)
 
+    if getattr(state, "progress", None):
+        state.progress.stage("SQLite intersections / coverage / totals", 93, 98)
     totals = state.db.execute(
         """
         SELECT COUNT(*) AS source_observations,
@@ -518,6 +559,7 @@ def _write_reports(
     ).fetchone()[0]
     result = {
         "version": 1,
+        "report_only": getattr(state, "report_only", False),
         "run_id": run_id,
         "created_at": int(time.time()),
         "status": "complete",
@@ -549,6 +591,7 @@ def _write_reports(
     else:
         result["visible_totals"] = {key: 0 for key in result["totals"]}
     result["source_coverage_matrix"] = _coverage_matrix(source_reports, result["source_intersections"])
+    result["extra_info_basis"] = "base fields: ih,title,date,size,tags,trackers (Rutor canonical). extra_info: other record fields + retained provenance. Local diagnostic estimate, never publisher payload; omitted extraction cannot be recovered from DB."
     result["catalog_size_basis"] = "live normalized NDJSON incl newline; zlib level 6, independent <=8 MiB segments; estimate, not final publisher/SQLite size"
 
     failing = any(
@@ -564,6 +607,8 @@ def _write_reports(
     elif failing:
         result["status"] = "degraded"
 
+    if getattr(state, "progress", None):
+        state.progress.stage("write JSON / HTML", 98, 100)
     html_path = report_path.with_suffix(".html")
     result["html_report"] = str(html_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -595,8 +640,10 @@ def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> 
         f"<td class='num'>{int(entry.get('records_with_size', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_without_size', 0)):,}</td>"
         f"<td class='num'>{_format_bytes(entry.get('torrent_size_bytes'))}</td>"
-        f"<td class='num'>{_format_bytes(entry.get('catalog_ndjson_bytes'))}</td>"
-        f"<td class='num'>{_format_bytes(entry.get('catalog_zlib_estimate_bytes'))}</td></tr>"
+        f"<td class='num'>{_format_bytes(entry.get('base_ndjson_bytes'))}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('base_zlib_estimate_bytes'))}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('with_extra_ndjson_bytes'))}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('with_extra_zlib_estimate_bytes'))}</td></tr>"
     )
 
 
@@ -653,13 +700,17 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<td class='num'>{int(metrics.get('deleted_topics', 0)):,}</td>"
             f"<td class='num'>{int(metrics.get('category_count', 0)):,}</td>"
             f"<td class='num'>{_format_bytes(metrics.get('torrent_size_bytes'))}</td>"
-            f"<td class='num'>{_format_bytes(metrics.get('normalized_record_bytes'))}</td>"
+            f"<td class='num'>{_format_bytes(metrics.get('base_ndjson_bytes'))}</td>"
+            f"<td class='num'>{_format_bytes(metrics.get('base_zlib_estimate_bytes'))}</td>"
+            f"<td class='num'>{_format_bytes(metrics.get('with_extra_ndjson_bytes'))}</td>"
+            f"<td class='num'>{_format_bytes(metrics.get('with_extra_zlib_estimate_bytes'))}</td>"
             "</tr>"
         )
     parts.append(
         "<section><h2>Source overview</h2><div class='table-wrap'><table><thead><tr>"
         "<th>Source</th><th>Status</th><th>Active</th><th>Deleted</th><th>Categories</th>"
-        "<th>Payload sum</th><th>Normalized JSON</th></tr></thead><tbody>"
+        "<th>Payload sum</th><th>Base NDJSON</th><th>Base zlib estimate</th>"
+        "<th>With extra NDJSON</th><th>With extra zlib estimate</th></tr></thead><tbody>"
         + "".join(overview_rows)
         + "</tbody></table></div><p class='muted'>Category totals can overlap when one item belongs to multiple categories. Source taxonomies are not merged.</p></section>"
     )
@@ -704,12 +755,14 @@ def _render_html(report: Dict[str, Any]) -> str:
             for entry in summary.get("groups", []):
                 group_rows.append(_group_html_row(entry, esc))
             ungrouped = summary.get("ungrouped", {})
-            group_rows.append(_group_html_row(ungrouped, esc, "Other"))
+            if any(value for value in ungrouped.values() if isinstance(value, (int, float))):
+                group_rows.append(_group_html_row(ungrouped, esc, "Other"))
             group_html = (
                 "<h3>Category summary</h3><div class='table-wrap'><table><thead><tr>"
                 "<th>Category</th><th>Included forums</th><th>Active</th><th>Deleted</th>"
                 "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
-                "<th>Catalog NDJSON</th><th>Catalog zlib estimate</th>"
+                "<th>Base NDJSON</th><th>Base zlib estimate</th>"
+                "<th>With extra NDJSON</th><th>With extra zlib estimate</th>"
                 "</tr></thead><tbody>" + "".join(group_rows) + "</tbody></table></div>"
                 "<p class='muted'>Categories from current forum rules (RuTracker) or stored labels. "
                 "Other is last. Included forums applies only to forum sources; — means not applicable. "
@@ -724,8 +777,10 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<div><b>{int(metrics.get('unique_infohashes', 0)):,}</b><span>unique hashes incl. deletions</span></div>"
             f"<div><b>{_format_bytes(metrics.get('torrent_size_bytes'))}</b><span>torrent payload size sum</span></div>"
             f"<div><b>{_format_bytes(metrics.get('normalized_record_bytes'))}</b><span>normalized record JSON</span></div>"
-            f"<div><b>{_format_bytes(metrics.get('catalog_ndjson_bytes'))}</b><span>Catalog NDJSON</span></div>"
-            f"<div><b>{_format_bytes(metrics.get('catalog_zlib_estimate_bytes'))}</b><span>Catalog zlib estimate</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('base_ndjson_bytes'))}</b><span>Base NDJSON</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('base_zlib_estimate_bytes'))}</b><span>Base zlib estimate</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('with_extra_ndjson_bytes'))}</b><span>With extra NDJSON</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('with_extra_zlib_estimate_bytes'))}</b><span>With extra zlib estimate</span></div>"
             f"</div>{warning_html}{group_html}"
             + ("<details><summary>Native category / forum details</summary>" if summary is not None else "") +
             "<div class='table-wrap'><table><thead><tr>"
@@ -738,7 +793,9 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"without size: {int(metrics.get('records_without_size', 0)):,}; "
             f"rejected: {int(source.get('rejected', 0)):,}; quarantined: {int(source.get('quarantined', 0)):,}.</p>"
             + ("</details>" if summary is not None else "") +
-            "<p class='muted'>Catalog NDJSON includes live normalized records and newlines only. "
+            "<p class='muted'>Base: Rutor canonical ih/title/date/size/tags/trackers. With extra: "
+            "other record fields plus retained provenance, wrapped as extra_info (diagnostics only). "
+            "Missing/unextracted extra cannot be recovered. NDJSON includes newlines. "
             "Zlib level-6 estimate uses independent 8 MiB segments; not actual publisher codec output, "
             "SQLite size, manifest, torrent or media packs.</p></section>"
         )
@@ -785,6 +842,8 @@ def run_inventory(
     state_path: Path,
     categories_dir: Optional[Path] = None,
     source_ids: Optional[Sequence[str]] = None,
+    report_only: bool = False,
+    progress=None,
 ) -> Dict[str, Any]:
     """Inventory enabled sources independently, without a merged publisher export."""
     profile_path = profile_path.expanduser().resolve()
@@ -807,7 +866,16 @@ def run_inventory(
         str(item["id"]) for item in sources if item.get("enabled", True) is True
     }
     publisher = config.get("publisher", {}) or {}
+    if report_only:
+        if not state_path.is_file():
+            raise g.GrabberError("--report-only requires an existing inventory SQLite DB")
+        with sqlite3.connect(state_path.as_uri() + "?mode=ro", uri=True) as check:
+            tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"inventory_categories", "observations", "source_checkpoints"} <= tables:
+                raise g.GrabberError("--report-only requires a previously initialized inventory DB")
     state = g.State(state_path)
+    state.report_only = report_only
+    state.progress = progress
     state.inventory_mode = True
     run_id = str(uuid.uuid4())
     quarantine_dir = report_path.parent / "quarantine" / run_id
@@ -832,6 +900,16 @@ def run_inventory(
                     source_results[source_id] = {"status": "not-selected", "reason": "use --source to inventory this source separately"}
                 continue
 
+            if report_only:
+                count = state.db.execute("SELECT COUNT(*) FROM observations WHERE source_id=?", (source_id,)).fetchone()[0]
+                source_results[source_id] = {"status": "cached" if count else "skipped",
+                    "reason": "report-only: stored observations; profile filters/extraction not reapplied",
+                    "stale_cache_used": bool(count), "checkpoint_before": state.checkpoint(source_id)}
+                continue
+            if progress:
+                progress.stage(source_id + ": input/hash/parse", 70 * index / max(1, len(sources)),
+                               70 * (index + 1) / max(1, len(sources)))
+                source["_progress"] = progress
             source_type = str(source.get("type") or source_id)
             before = state.checkpoint(source_id)
             adapter = __import__("grabber_adapters").SOURCE_ADAPTERS.get(source_type)
@@ -908,6 +986,9 @@ def run_inventory(
         )
         state.db.execute("DELETE FROM runs WHERE id=?", (run_id,))
         state.db.commit()
+        report["report_only"] = report_only
+        if progress:
+            progress.stage("complete", 100, 100)
         return report
     finally:
         try:

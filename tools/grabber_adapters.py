@@ -370,7 +370,13 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
         raise g.SourceError("max_topics must be between 1 and 50,000,000")
     if not path.is_file() or path.stat().st_size > compressed_limit:
         raise g.SourceError("RuTracker dump is missing or exceeds the compressed size limit")
-    digest = g._file_sha256(path)
+    progress = source.get("_progress")
+    if progress:
+        progress_low, progress_high = progress.low, progress.high
+        progress.stage(source_id + ": hash input", progress_low, progress_low + (progress_high-progress_low)*0.1)
+    digest = g._file_sha256(path, progress)
+    if progress:
+        progress.stage(source_id + ": parse XML (compressed byte estimate)", progress_low + (progress_high-progress_low)*0.1, progress_high)
     is_named_xz = path.name.lower().endswith(".xz")
     checkpoint = {"kind": "rutracker-xml-xz" if is_named_xz else "rutracker-xml",
                   "file_sha256": digest, "compressed_bytes": path.stat().st_size}
@@ -410,6 +416,8 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
             is_topic = _xml_name(element.tag) == "torrent" and bool(element.get("id"))
             if is_topic:
                 counters["fetched"] += 1
+                if progress and counters["fetched"] % 1000 == 0:
+                    progress.update(raw.tell(), path.stat().st_size)
                 if counters["fetched"] > max_topics:
                     raise g.SourceError(
                         f"RuTracker XML exceeds configured max_topics limit ({max_topics:,})"

@@ -1,6 +1,6 @@
 # P2Play / MediaMesh — рабочий план
 
-Обновлено: 2026-11-25. Это компактный сопровождаемый план для ветки разработки.
+Обновлено: 2026-11-26. Это компактный сопровождаемый план для ветки разработки.
 Платформенная матрица и границы Android/Silo описаны отдельно в
 `docs/platform-matrix.md`; исходный DOCX в ветке `docs` остаётся справочным.
 Исходный большой документ `P2Play_MediaMesh.docx` и его текстовая версия `P2Play_MediaMesh.md`
@@ -94,6 +94,21 @@
 
 ### Этап 4: клиент и мета-списки
 
+- [ ] Подготовлен code-review pPlay/dev `402ee80` относительно P2Play/master
+      `052d569`: матрица паритета, реальные пробелы, расхождение core pins и план
+      кэширования. `docs/pplay-audit.md`; это не runtime/device acceptance.
+- [ ] pPlay/dev: единый resolver latest master → immutable SHA на workflow,
+      manifest для release/re-run, ccache по platform/ABI/toolchain/flags,
+      Boost cache с fingerprint патчей, исправление diagnostic workflow/include path.
+      Не заменять воспроизводимость mutable checkout в каждом platform job.
+- [ ] pPlay/dev: устранить token URL в Debug log и синхронную запись прогресса
+      из player update; безопасная async очередь/flush/reset/account switch и тесты.
+- [ ] Паритет TorrServer: server watched/reset, file/folder marks, нейтральный
+      artwork path, library list/delete; отдельно согласовать P2Play offline storage
+      и stream-link ownership. Не переиспользовать TorrServer Saved/adapter files.
+- [ ] Embedded acceptance: busy port, rapid activation, bounded graceful shutdown,
+      LAN stream во время drain, owner/users persistence и host shutdown contract.
+
 - [x] Зафиксировать источник порядка работ по мета-спискам: исходный DOCX в ветке
       `docs` — общий справочный документ, его табличная позиция F12 не переопределяет
       последовательность реализации. Технический порядок задаёт этот файл в `master`:
@@ -164,9 +179,9 @@
       `P2Play_embedded` рядом с внешним `P2Play`; в приложение линкуется только static
       `p2play_core`, standalone daemon не включается. Workflow pPlay клонирует P2Play
       и checkout-ит закреплённый commit из `ci/prepare-p2play-embedded.sh`.
-      После P2Play PR #35 создан pPlay PR #15 для обновления embedded core до
-      `e33886c383cd0e9d9645777ec1ac73a18711a88f`; до зелёного CI и merge PR #15
-      встроенная сборка ещё использует предыдущую ревизию.
+      Аудит 2026-11-26: pPlay/dev `402ee80` использует в main workflow core
+      `1f30ceeb...`, fallback prepare script — `e33886c...`; это расхождение
+      и план latest-on-dev / one resolved SHA описаны в `docs/pplay-audit.md`.
       Core запускается лениво при выборе embedded-сети и останавливается после drain
       активных HTTP/stream операций при переключении модуля. Используется отдельный
       каталог данных pPlay. HTTP API сохраняет wildcard bind (`INADDR_ANY` для IPv4),
@@ -177,7 +192,7 @@
       без сброса owner ID, API token и дополнительных пользователей. Для управления
       пользователями используется защищённый users API и клиентский UI pPlay.
       Реализация: `src/net/p2play_embedded.cpp`, `CMakeLists.txt`,
-      `ci/prepare-p2play-embedded.sh` в pPlay. Текущий `dev` commit
+      `ci/prepare-p2play-embedded.sh` в pPlay. Исторический `dev` commit
       `61e9e8513b6f1f2e87af2c873b1cfceb49fc66bd` прошёл полный CI run #1475.
 - [x] Backend users API и Silo rank hierarchy уже реализованы: Owner=100,
       Administrator=50..99, User=10..49 (новый пользователь rank 10), Guest=1..9.
@@ -217,6 +232,11 @@
       не блокирующий текущую реализацию.
 
 ### Этап 5: наполнение каталога
+
+- [ ] Inventory: report-only из SQLite без повторного импорта, stderr progress с
+      source/stage/примерными percent+ETA; сравнение Rutor-base/with-extra размеров
+      NDJSON/zlib для всех источников и групп, скрытие нулевого Other. Реализовано
+      локально с тестами, ожидает CI; production timing не измерен. `docs/grabber.md`.
 
 - [ ] Уточнение inventory: единая Category-сводка и размер NDJSON/zlib estimate
       для всех источников; отключённые/пустые скрыты в HTML и матрице, JSON хранит

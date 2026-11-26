@@ -9,6 +9,15 @@ directory is optional, not mandatory. It is separate from the Silo plugin contra
 in [silo-plugin.md](silo-plugin.md): pPlay and Silo are different hosts and must not
 share assumptions about source layout, runtime bindings, packaging or identity.
 
+## Current audit and implementation status
+
+Updated 2026-11-26 against pPlay/dev `402ee80` and P2Play/master `052d569`.
+See [pplay-audit.md](pplay-audit.md) for the feature-by-feature TorrServer comparison,
+confirmed gaps, security/UI risks and proposed latest-SHA/compiler-cache design.
+Implemented below means present in code, not full device acceptance or feature parity.
+The dedicated P2Play adapter is independent; some shared UI/audio-artwork paths
+still call TorrServe directly and must be migrated to neutral Io operations.
+
 ## 1. File-level independence from TorrServer
 
 The P2Play support module inside pPlay MUST be independent from TorrServer at the
@@ -88,8 +97,9 @@ TorrServer compatibility string.
 
 The external `P2Play` network integration is implemented in `freetushkan/pPlay/dev`.
 Its adapter is isolated in `src/net/p2play.h/.cpp`; `Io` is the only backend dispatcher.
-The shared player and FFmpeg `MediaProbe` use neutral operations and do not call
-TorrServer or P2Play-specific APIs themselves.
+Playback progress and FFmpeg `MediaProbe` use neutral operations. This boundary
+is not yet universal: `player_visual.cpp::pictureUrlsOf` still calls TorrServe
+directly; see the audit before claiming complete shared-player independence.
 
 Completed external-client features:
 - native `GET /api/p2play/version` identity check, Bearer login and account-scoped API calls;
@@ -103,10 +113,11 @@ Completed external-client features:
 
 PR #8 and PR #9 were merged into `dev`; their CI workflows passed for Linux, Android,
 Switch, PS4 and PS5. This is cross-platform build evidence, not a claim of manual
-acceptance on every physical device. Continue Watching UI remains open and is tracked
-in `docs/roadmap.md`.
+acceptance on every physical device. Continue Watching UI is now implemented
+through the per-user progress endpoint and refreshes after playback.
 
-This external client baseline does not implement the in-process embedded lifecycle.
+The external client and the separately implemented embedded lifecycle share the
+HTTP adapter; embedded startup/drain/stop is implemented in `p2play_embedded.cpp`.
 
 ## 4. Embedded pPlay mode
 
@@ -118,9 +129,11 @@ pPlay has two distinct network entries:
 The embedded entry MUST use the static `p2play_core` library, not launch or bundle
 the standalone `p2playd` application. pPlay's build workflow clones the P2Play
 repository into its build workspace and checks out a pinned commit; source files
-are not manually copied from one repository into the other. The pin is maintained
-in `ci/prepare-p2play-embedded.sh` and must be deliberately advanced when embedded
-mode needs newer P2Play core changes. A dedicated
+are not manually copied from one repository into the other. Current workflow pin is `1f30ceebd253cd4a71e3b978fcf0e8b70ac1f3dd`, while
+`ci/prepare-p2play-embedded.sh` has fallback `e33886c383cd0e9d9645777ec1ac73a18711a88f`.
+This mismatch must be removed. Proposed dev policy resolves latest master once
+to a shared immutable SHA per workflow; releases retain exact rebuild metadata.
+This proposal is not implemented by this documentation patch. A dedicated
 `P2P_EMBEDDED_ONLY` CMake configuration should build the embeddable core/API
 without the standalone application target.
 
@@ -176,10 +189,9 @@ embedded-server restarts. The owner remains protected from deletion or demotion.
 
 The current backend already has user management and a numeric hierarchical
 `rank` field. That rank is a coarse privilege level, not a named-role system or a
-per-action capability matrix. A later access-control milestone must define explicit
-roles and permissions (including which actions each role may perform) before pPlay
-presents role assignment as a user-friendly feature. Do not describe the current
-numeric rank as if named roles were already implemented.
+per-action capability matrix. The current UI already offers Administrator/User/Guest presets over numeric rank;
+see [users-and-roles.md](users-and-roles.md). A later milestone must define a full
+per-action capability matrix; do not confuse rank presets with such a matrix.
 
 ## 5. Acceptance checks
 
@@ -198,7 +210,7 @@ The implementation is complete only when tests prove all of the following:
 6. The returned native version matches the version embedded in the P2Play build;
    changing the application version source updates this endpoint without
    changing legacy ping responses.
-7. The embedded build links the static core through the pinned P2Play checkout and
+7. The embedded build links the static core through one immutable resolved P2Play SHA and
    can omit the standalone daemon target without changing the standalone build.
 8. Selecting `P2Play_embedded` starts the service lazily; leaving it drains active
    streams, stops the service and releases its listening port. Selecting any other
@@ -217,9 +229,22 @@ The implementation is complete only when tests prove all of the following:
 13. The current numeric `rank` hierarchy is documented as such. A separate
     follow-up defines named roles and an explicit capability/permission matrix.
 
-The native P2Play version endpoint and external pPlay client baseline are implemented.
-The external client includes its own per-network user-management UI, per-user progress
-sync and duration fallback. Continue Watching UI and the embedded lifecycle, LAN
-deployment, embedded owner provisioning and embedded-specific acceptance remain open.
-The external user-management screen and adapter methods are intended to be reused by
-the future `P2Play_embedded` entry.
+The native identity, external adapter, Continue Watching, embedded lifecycle,
+owner provisioning and embedded reuse of user management are implemented in code.
+Physical LAN/lifecycle acceptance remains open. Full TorrServer parity is not
+complete: watched/reset/folder UI, library listing/deletion, offline storage and
+shared artwork need the work recorded in [pplay-audit.md](pplay-audit.md).
+
+## 6. Additional requirements from the parity audit
+
+- Route playback, artwork, server progress and watched-state operations through
+  neutral host interfaces, preserving file-level adapter independence.
+- Manual watched/reset actions must update the authenticated server state, not
+  merely local watch-later. Define reset of position and viewed together.
+- Do not block player/UI updates on synchronous remote progress writes; use a
+  bounded ordered queue with final-write/reset/account-change guarantees.
+- Redact stream-token URLs before logging; never store credentials in build caches.
+- Support library browse/delete or clearly expose their absence as capabilities.
+- Keep one resolved core SHA across all platform jobs/Android ABIs, record build
+  provenance, and invalidate dependency/compiler caches using actual toolchain,
+  flags, headers and patch fingerprints. See the audit for acceptance criteria.

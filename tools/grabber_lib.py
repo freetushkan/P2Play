@@ -64,7 +64,7 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, progress=None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while True:
@@ -72,6 +72,8 @@ def _file_sha256(path: Path) -> str:
             if not chunk:
                 break
             digest.update(chunk)
+            if progress:
+                progress.update(stream.tell(), path.stat().st_size)
     return digest.hexdigest()
 
 
@@ -776,6 +778,8 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                 raise SourceError("CSV requires infohash and name columns")
             for row in reader:
                 counters["fetched"] += 1
+                if source.get("_progress") and counters["fetched"] % 1000 == 0:
+                    source["_progress"].update(stream.buffer.tell(), path.stat().st_size)
                 source_ref = f"{path}:{reader.line_num}"
                 try:
                     title = _clean_text(row.get("name"), "title")
@@ -896,6 +900,8 @@ def _rutor_source(source: Dict[str, Any], state: State, run_id: str, publisher: 
     if size_mode not in {"binary", "decimal"}:
         raise SourceError("Rutor size_unit must be binary or decimal")
     for index, item in enumerate(payload):
+        if source.get("_progress") and index % 1000 == 0:
+            source["_progress"].update(index, len(payload))
         source_row = f"{source_ref}#{index + 1}"
         try:
             if not isinstance(item, dict):
@@ -1564,6 +1570,8 @@ def build_parser():
                            help="separate inventory SQLite DB (default: inventory.sqlite3 next to report)")
     inventory.add_argument("--categories-dir", type=Path,
                            help="per-source category reports (default: categories next to report)")
+    inventory.add_argument("--report-only", action="store_true", help="rebuild report from existing SQLite only; no input reads, hashes or fetches")
+    inventory.add_argument("--no-progress", action="store_true", help="disable stderr progress")
     inventory.add_argument("--source", action="append", dest="sources",
                            help="process one enabled source ID; repeat to select several")
     ack = sub.add_parser("ack", help="acknowledge successful publisher staging")
@@ -1593,9 +1601,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "inventory":
             from grabber_inventory import run_inventory
             state_path = args.state or (args.report.parent / "inventory.sqlite3")
-            result = run_inventory(
-                args.profile, args.report, state_path, args.categories_dir, args.sources
-            )
+            from grabber_progress import Progress
+            with Progress(enabled=not args.no_progress) as progress:
+                result = run_inventory(
+                    args.profile, args.report, state_path, args.categories_dir, args.sources,
+                    report_only=args.report_only, progress=progress
+                )
         elif args.command == "ack":
             result = ack_run(args.state, args.run_id, args.file, args.accepted_count, args.mode)
         elif args.command == "discard":

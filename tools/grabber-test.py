@@ -226,6 +226,72 @@ class GrabberTests(unittest.TestCase):
         groups = report["sources"]["rutor"]["category_group_summary"]["groups"]
         self.assertTrue(any(g["name"] == "Anime" and g["records"] > 0 for g in groups))
 
+    def test_report_only_without_inputs_and_extra_sizes(self):
+        from unittest.mock import patch
+        config = json.loads(self.profile.read_text())
+        self.profile.write_text(json.dumps(config))
+        root = self.root / "inventory"
+        first = gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        state = g.State(root / "state.sqlite3")
+        before = list(state.db.execute("SELECT source_id,checkpoint_json FROM source_checkpoints"))
+        observations = [tuple(r) for r in state.db.execute("SELECT * FROM observations ORDER BY source_id,ih")]
+        state.close()
+        self.csv_path.unlink()
+        self.rutor_path.unlink()
+        with patch.object(g, "_file_sha256", side_effect=AssertionError("no input hashing")):
+            report = gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3", report_only=True)
+        self.assertTrue(report["report_only"])
+        self.assertTrue(json.loads((root / "report.json").read_text())["report_only"])
+        self.assertEqual(report["sources"]["rutor"]["status"], "cached")
+        state = g.State(root / "state.sqlite3")
+        self.assertEqual([tuple(r) for r in state.db.execute("SELECT * FROM observations ORDER BY source_id,ih")], observations)
+        self.assertEqual([tuple(r) for r in state.db.execute("SELECT source_id,checkpoint_json FROM source_checkpoints")], [tuple(r) for r in before])
+        state.close()
+        with self.assertRaises(g.GrabberError):
+            gi.run_inventory(self.profile, root / "missing.json", root / "missing.sqlite3", report_only=True)
+        size = gi._CatalogSize()
+        record = {"ih": "a"*40, "title": "test", "files": 2, "poster_ref": {"pack": "example"}}
+        size.add(record, {"content_text": "description", "seeders": 5})
+        values = size.result()
+        base = {"ih": "a"*40, "title": "test"}
+        self.assertEqual(values["base_ndjson_bytes"], len((g._json(base)+"\n").encode()))
+        self.assertGreater(values["with_extra_ndjson_bytes"], values["base_ndjson_bytes"])
+        html = (root / "report.html").read_text()
+        self.assertIn("With extra NDJSON", html)
+        empty = {"groups": [], "ungrouped": {"name": "Other", "records": 0, "forum_count": None}}
+        self.assertNotIn("<td>Other</td>", gi._render_html({"sources": {"test": {"metrics": {"unique_infohashes": 1}, "category_group_summary": empty}}}))
+        empty["ungrouped"]["deleted_topics"] = 1
+        self.assertIn("<td>Other</td>", gi._render_html({"sources": {"test": {"metrics": {"unique_infohashes": 1}, "category_group_summary": empty}}}))
+
+    def test_progress_stderr_and_cli_flags(self):
+        from contextlib import redirect_stderr
+        from grabber_progress import Progress
+        output = io.StringIO()
+        with redirect_stderr(output):
+            with Progress(interval=0.01) as progress:
+                progress.stage("rutor: scan", 0, 70)
+                progress.update(50, 100)
+                progress.emit()
+                progress.stage("complete", 100, 100)
+        text = output.getvalue()
+        self.assertIn("rutor: scan", text)
+        self.assertIn("35.0%", text)
+        self.assertIn("100.0%", text)
+        self.assertIn("ETA", text)
+        self.assertFalse(progress.thread.is_alive())
+        args = g.build_parser().parse_args(["inventory", "--profile", "p.json", "--report", "r.json", "--report-only", "--no-progress"])
+        self.assertTrue(args.report_only and args.no_progress)
+        root = self.root / "cli-inventory"
+        gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        cli = subprocess.run([sys.executable, "-I", str(Path(__file__).parent / "grabber.py"),
+            "inventory", "--profile", str(self.profile), "--report", str(root / "cli.json"),
+            "--state", str(root / "state.sqlite3"), "--report-only"], capture_output=True, text=True)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        self.assertTrue(json.loads(cli.stdout)["report_only"])
+        self.assertIn("100.0%", cli.stderr)
+        self.assertIn("source metrics", cli.stderr)
+
+
     def test_html_table_alignment_headers_and_cells(self):
         html = gi._render_html({})
         self.assertIn("th,td{text-align:right;", html)
@@ -252,8 +318,9 @@ class GrabberTests(unittest.TestCase):
         for record in records:
             size.add(record)
         data = "".join(g._json(r) + "\n" for r in records).encode()
-        self.assertEqual(size.result(), {"catalog_ndjson_bytes": len(data),
-                         "catalog_zlib_estimate_bytes": len(zlib.compress(data, level=6))})
+        values = size.result()
+        self.assertEqual(values["catalog_ndjson_bytes"], len(data))
+        self.assertEqual(values["catalog_zlib_estimate_bytes"], len(zlib.compress(data, level=6)))
         self.assertEqual(gi._CatalogSize().result()["catalog_zlib_estimate_bytes"], 0)
 
     def test_coverage_union_deletions_empty_and_cached_sources(self):
