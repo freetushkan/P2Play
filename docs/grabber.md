@@ -107,8 +107,29 @@ and source observations make replay idempotent. Direct RSS uses `type: "rss"` an
 `fetch_caps: false`.
 
 RuTracker source `path` may point at `rutracker-YYYYMMDD.xml` or
-`rutracker-YYYYMMDD.xml.xz`. `max_compressed_bytes`, `max_expanded_bytes`
-and `xz_memory_limit` are independent safety limits.
+`rutracker-YYYYMMDD.xml.xz`. The XML is read and decompressed as a stream; the
+whole dump is never loaded into memory. Concatenated XZ streams and valid XZ
+stream padding are supported. Non-zero trailing bytes, truncated streams and
+invalid padding are rejected. The limits are independent:
+
+- `max_compressed_bytes`: default 8 GiB; configurable up to the hard 16 GiB cap.
+- `max_expanded_bytes`: default 64 GiB; configurable up to the hard 128 GiB cap.
+- `xz_memory_limit`: default 128 MiB; allowed range 16 MiB–2 GiB. This limits
+  the XZ decoder dictionary memory, not the total XML size. If the decoder reports
+  that its memory limit was exceeded, increase this value (for example to
+  `1207959552` for 1152 MiB) only if the machine has enough available RAM.
+- `max_topics`: default 10,000,000 and hard cap 50,000,000. It counts every
+  RuTracker topic scanned, including topics later excluded by forum selection.
+
+`forum_include_ids` is applied before detailed topic normalization. Topics outside
+the selected forums are still scanned in the XML stream and counted against
+`max_topics`, but their file lists, descriptions and historical duplicate data are
+not traversed or staged. An empty array means **all forums**, not none.
+
+The final merged catalog remains separately capped at 1,000,000 records and
+256 MiB of NDJSON import/export data. Increasing the XML input limits does not
+remove those downstream safety limits; use forum selection and the grabber's
+normal source filters to keep the published catalog within them.
 
 The local state DB, work outputs, quarantine and credentials belong outside Git.
 

@@ -56,31 +56,105 @@ def _http_bytes(url: str, timeout: int, limit: int = g.MAX_HTTP_BYTES) -> bytes:
 
 
 class _XzReader:
-    """Streaming XZ reader with a decoder dictionary-memory cap."""
+    """Streaming XZ reader supporting concatenated streams and valid stream padding."""
+    _MAGIC = b"\xfd7zXZ\x00"
+    _CHUNK = 64 * 1024
+
     def __init__(self, raw, memory_limit: int):
         self.raw = raw
-        self.decoder = lzma.LZMADecompressor(format=lzma.FORMAT_AUTO, memlimit=memory_limit)
+        self.memory_limit = memory_limit
+        self.decoder = self._new_decoder()
+        self.input = bytearray()
         self.pending = bytearray()
         self.eof = False
+        self.streams = 1
+
+    def _new_decoder(self):
+        return lzma.LZMADecompressor(
+            format=lzma.FORMAT_AUTO, memlimit=self.memory_limit
+        )
+
+    def _start_next_stream(self) -> None:
+        # LZMADecompressor stops at the end of one XZ stream. Its unused_data
+        # contains bytes already read from the next stream or from stream padding.
+        self.input.extend(self.decoder.unused_data)
+        self.decoder = None
+        padding_bytes = 0
+
+        while True:
+            if not self.input:
+                chunk = self.raw.read(self._CHUNK)
+                if not chunk:
+                    if padding_bytes % 4:
+                        raise g.SourceError("RuTracker XZ has invalid stream padding")
+                    self.eof = True
+                    return
+                self.input.extend(chunk)
+
+            # XZ stream padding is zero-filled and its total length must be
+            # divisible by four. It may appear between streams or at EOF.
+            first_nonzero = next(
+                (index for index, value in enumerate(self.input) if value),
+                len(self.input),
+            )
+            if first_nonzero:
+                padding_bytes += first_nonzero
+                del self.input[:first_nonzero]
+            if not self.input:
+                continue
+            if padding_bytes % 4:
+                raise g.SourceError("RuTracker XZ has invalid stream padding")
+
+            while len(self.input) < len(self._MAGIC):
+                chunk = self.raw.read(self._CHUNK)
+                if not chunk:
+                    raise g.SourceError(
+                        "RuTracker XZ has trailing data or a truncated concatenated stream"
+                    )
+                self.input.extend(chunk)
+
+            if self.input[:len(self._MAGIC)] != self._MAGIC:
+                raise g.SourceError("RuTracker XZ stream has trailing data")
+
+            self.decoder = self._new_decoder()
+            self.streams += 1
+            return
 
     def read(self, size: int = -1) -> bytes:
-        size = 64 * 1024 if size is None or size < 0 else min(max(1, size), 64 * 1024)
+        size = self._CHUNK if size is None or size < 0 else min(max(1, size), self._CHUNK)
         while len(self.pending) < size and not self.eof:
             try:
-                compressed = self.raw.read(64 * 1024) if self.decoder.needs_input else b""
-                if self.decoder.needs_input and not compressed:
-                    raise g.SourceError("RuTracker XZ stream is truncated")
-                self.pending.extend(self.decoder.decompress(compressed, max_length=64 * 1024))
+                if self.decoder.needs_input:
+                    if self.input:
+                        compressed = bytes(self.input)
+                        self.input.clear()
+                    else:
+                        compressed = self.raw.read(self._CHUNK)
+                    if not compressed:
+                        raise g.SourceError("RuTracker XZ stream is truncated")
+                else:
+                    compressed = b""
+                self.pending.extend(
+                    self.decoder.decompress(compressed, max_length=self._CHUNK)
+                )
             except lzma.LZMAError as exc:
-                raise g.SourceError("RuTracker XZ is corrupt or requests excessive decoder memory") from exc
+                detail = str(exc) or exc.__class__.__name__
+                if "memory usage limit exceeded" in detail.casefold():
+                    raise g.SourceError(
+                        "RuTracker XZ requires more decoder memory than "
+                        f"xz_memory_limit={self.memory_limit} bytes; increase the "
+                        "source's xz_memory_limit (maximum 2 GiB)"
+                    ) from exc
+                raise g.SourceError(
+                    f"RuTracker XZ decompression failed: {detail}"
+                ) from exc
+
             if self.decoder.eof:
-                if self.decoder.unused_data or self.raw.read(1):
-                    raise g.SourceError("RuTracker XZ stream has trailing data")
-                self.eof = True
+                self._start_next_stream()
+
         result = bytes(self.pending[:size])
         del self.pending[:size]
         return result
-
 
 class _BoundedXmlReader:
     def __init__(self, stream, byte_limit: int):
@@ -257,15 +331,21 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
         return {"status": "skipped", "reason": "operator-supplied RuTracker XML/XZ path is not configured",
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
     path = Path(str(source["path"])).expanduser().resolve()
-    compressed_limit = int(source.get("max_compressed_bytes", 256 * 1024 * 1024))
-    expanded_limit = int(source.get("max_expanded_bytes", 512 * 1024 * 1024))
-    memory_limit = int(source.get("xz_memory_limit", 128 * 1024 * 1024))
-    if not 1 <= compressed_limit <= 1024 * 1024 * 1024:
-        raise g.SourceError("max_compressed_bytes must be between 1 byte and 1 GiB")
-    if not 1 <= expanded_limit <= 2 * 1024 * 1024 * 1024:
-        raise g.SourceError("max_expanded_bytes must be between 1 byte and 2 GiB")
-    if not 16 * 1024 * 1024 <= memory_limit <= 1024 * 1024 * 1024:
-        raise g.SourceError("xz_memory_limit must be between 16 MiB and 1 GiB")
+    compressed_limit = int(source.get(
+        "max_compressed_bytes", g.DEFAULT_RUTRACKER_COMPRESSED_BYTES))
+    expanded_limit = int(source.get(
+        "max_expanded_bytes", g.DEFAULT_RUTRACKER_EXPANDED_BYTES))
+    memory_limit = int(source.get(
+        "xz_memory_limit", g.DEFAULT_RUTRACKER_XZ_MEMORY_BYTES))
+    max_topics = int(source.get("max_topics", g.DEFAULT_RUTRACKER_MAX_TOPICS))
+    if not 1 <= compressed_limit <= g.MAX_RUTRACKER_COMPRESSED_BYTES:
+        raise g.SourceError("max_compressed_bytes must be between 1 byte and 16 GiB")
+    if not 1 <= expanded_limit <= g.MAX_RUTRACKER_EXPANDED_BYTES:
+        raise g.SourceError("max_expanded_bytes must be between 1 byte and 128 GiB")
+    if not g.MIN_RUTRACKER_XZ_MEMORY_BYTES <= memory_limit <= g.MAX_RUTRACKER_XZ_MEMORY_BYTES:
+        raise g.SourceError("xz_memory_limit must be between 16 MiB and 2 GiB")
+    if not 1 <= max_topics <= g.MAX_RUTRACKER_TOPICS:
+        raise g.SourceError("max_topics must be between 1 and 50,000,000")
     if not path.is_file() or path.stat().st_size > compressed_limit:
         raise g.SourceError("RuTracker dump is missing or exceeds the compressed size limit")
     digest = g._file_sha256(path)
@@ -284,7 +364,8 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
     counters = {"status": "success", "fetched": 0, "parsed": 0, "accepted": 0,
                 "filtered": 0, "rejected": 0, "duplicates": 0, "conflicts": 0,
                 "quarantined": 0, "quarantine_truncated": False, "checkpoint": checkpoint,
-                "errors": [], "compressed_bytes": path.stat().st_size}
+                "errors": [], "compressed_bytes": path.stat().st_size,
+                "topic_limit": max_topics}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
     raw = None
     try:
@@ -304,17 +385,27 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
             is_topic = _xml_name(element.tag) == "torrent" and bool(element.get("id"))
             if is_topic:
                 counters["fetched"] += 1
-                if counters["fetched"] > g.MAX_RECORDS:
-                    raise g.SourceError("RuTracker XML exceeds the publisher record limit")
+                if counters["fetched"] > max_topics:
+                    raise g.SourceError(
+                        f"RuTracker XML exceeds configured max_topics limit ({max_topics:,})"
+                    )
                 source_ref = f"{path}#topic={element.get('id')}"
                 try:
-                    ih, record, categories, provenance = _rutracker_topic(element, state, run_id, source_id)
-                    forum_id = str(provenance.get("forum_id", ""))
-                    for category in categories:
-                        state.add_category(run_id, source_id, category, forum_id or None)
+                    # Forum selection happens before expensive topic normalization
+                    # (file counting, old/dup traversal and description extraction).
+                    forum = _direct_child(element, "forum")
+                    forum_id = str(forum.get("id", "")) if forum is not None else ""
                     if include_ids and forum_id not in include_ids:
+                        forum_name = _direct_text(element, "forum")
+                        if forum_name:
+                            state.add_category(run_id, source_id, forum_name, forum_id or None)
                         counters["filtered"] += 1
                     else:
+                        ih, record, categories, provenance = _rutracker_topic(
+                            element, state, run_id, source_id)
+                        forum_id = str(provenance.get("forum_id", ""))
+                        for category in categories:
+                            state.add_category(run_id, source_id, category, forum_id or None)
                         outcome = state.add_observation(
                             run_id, source_id, ih, int(source.get("priority", 30)),
                             record, categories, source_ref, digest, provenance)
