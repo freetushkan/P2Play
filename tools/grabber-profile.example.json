@@ -45,9 +45,10 @@
       "enabled": false,
       "priority": 30,
       "path": "../sources/rutracker-20261031.xml.xz",
-      "max_compressed_bytes": 268435456,
-      "max_expanded_bytes": 536870912,
+      "max_compressed_bytes": 8589934592,
+      "max_expanded_bytes": 68719476736,
       "xz_memory_limit": 134217728,
+      "max_topics": 10000000,
       "forum_include_ids": []
     },
     {
