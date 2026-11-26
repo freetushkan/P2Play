@@ -18,6 +18,7 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grabber_lib as g
+import grabber_inventory as gi
 import grabber_templates as gt
 import grabber_adapters as ga
 
@@ -95,6 +96,75 @@ class GrabberTests(unittest.TestCase):
 
     def read_rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def test_inventory_runs_sources_separately_and_reports_categories_and_overlap(self):
+        config = json.loads(self.profile.read_text(encoding="utf-8"))
+        config["sources"].append({
+            "id": "rutracker", "type": "rutracker", "enabled": True,
+            "priority": 30, "path": str(self.rutracker_path),
+            "forum_include_ids": [], "max_topics": 10,
+        })
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        inventory_root = self.root / "inventory"
+        report_path = inventory_root / "inventory-report.json"
+        state_path = inventory_root / "inventory.sqlite3"
+        categories_dir = inventory_root / "categories"
+
+        report = gi.run_inventory(
+            self.profile, report_path, state_path, categories_dir,
+        )
+        self.assertEqual(report["status"], "complete")
+        self.assertFalse((inventory_root / "catalog-full.ndjson").exists())
+        self.assertFalse((inventory_root / "catalog-delta.ndjson").exists())
+
+        csv = report["sources"]["torrents-csv-data"]
+        rutor = report["sources"]["rutor"]
+        rutracker = report["sources"]["rutracker"]
+        self.assertEqual(csv["status"], "success")
+        self.assertEqual(csv["metrics"]["active_records"], 1)
+        self.assertEqual(csv["metrics"]["category_count"], 0)
+        self.assertIn("no explicit category", csv["category_model"].lower())
+        self.assertEqual(rutor["status"], "success")
+        self.assertEqual(rutor["metrics"]["active_records"], 2)
+        self.assertEqual(rutor["metrics"]["category_count"], 1)
+        movies = next(x for x in rutor["categories"] if x["name"] == "Movies")
+        self.assertEqual(movies["records"], 2)
+        self.assertGreater(movies["torrent_size_bytes"], 0)
+        self.assertEqual(rutracker["status"], "success")
+        self.assertEqual(rutracker["metrics"]["active_records"], 1)
+        self.assertEqual(rutracker["metrics"]["deleted_topics"], 1)
+        self.assertEqual(rutracker["metrics"]["category_count"], 1)
+        self.assertEqual(next(x for x in rutracker["categories"] if x["name"] == "Movies")["records"], 1)
+
+        shared = {
+            (x["source_a"], x["source_b"]): x["shared_infohashes"]
+            for x in report["source_intersections"]
+        }
+        self.assertEqual(shared[("rutor", "torrents-csv-data")], 1)
+        self.assertTrue((categories_dir / "rutracker.json").is_file())
+
+        # A second pass against unchanged snapshot sources reuses their independent inventory.
+        repeated = gi.run_inventory(
+            self.profile, report_path, state_path, categories_dir,
+            source_ids=["rutracker"],
+        )
+        self.assertEqual(repeated["sources"]["rutracker"]["status"], "unchanged")
+        self.assertEqual(repeated["sources"]["rutor"]["status"], "not-selected")
+        self.assertEqual(repeated["sources"]["rutor"]["metrics"]["active_records"], 2)
+
+        # A failed refresh must not erase the last successful source inventory.
+        broken = json.loads(self.profile.read_text(encoding="utf-8"))
+        for source in broken["sources"]:
+            if source["id"] == "rutor":
+                source["path"] = str(self.root / "missing-rutor.ls")
+        self.profile.write_text(json.dumps(broken), encoding="utf-8")
+        failed = gi.run_inventory(
+            self.profile, report_path, state_path, categories_dir,
+            source_ids=["rutor"],
+        )
+        self.assertEqual(failed["sources"]["rutor"]["status"], "failed")
+        self.assertTrue(failed["sources"]["rutor"]["stale_cache_used"])
+        self.assertEqual(failed["sources"]["rutor"]["metrics"]["active_records"], 2)
 
     def test_csv_rutor_merge_and_category_dump(self):
         report = self.run_once()

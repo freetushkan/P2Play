@@ -252,6 +252,14 @@ def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) ->
     categories = [forum_name] if forum_name else []
 
     if _direct_child(element, "del") is not None:
+        if getattr(state, "inventory_mode", False):
+            record = {"del": ih, "shard": "inventory"}
+            provenance = {
+                "topic_id": topic_id, "deleted": True,
+                "forum_id": forum_id, "forum": forum_name,
+            }
+            return ih, record, categories, provenance
+
         previous = state.staged_record(ih)
         if not previous:
             # After an acknowledged deletion staged_records no longer contains

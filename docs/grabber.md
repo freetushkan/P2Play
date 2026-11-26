@@ -133,6 +133,80 @@ normal source filters to keep the published catalog within them.
 
 The local state DB, work outputs, quarantine and credentials belong outside Git.
 
+## Independent source inventory (no merge / no publishing)
+
+Use `grabber.py inventory` before designing lists or shards. This mode processes
+each enabled source into a dedicated inventory SQLite database, keeps observations
+keyed by `(source_id, infohash)`, stores that source's original category labels and
+IDs, and writes per-source category/size reports plus pairwise infohash intersections.
+It does **not** create `catalog-full.ndjson`, `catalog-delta.ndjson`, publisher
+requests, signed manifests or shard assignments.
+
+Example:
+
+```sh
+python3 -I tools/grabber.py inventory \
+  --profile /path/to/grabber-profile.json \
+  --report /path/to/inventory/inventory-report.json \
+  --state /path/to/inventory/inventory.sqlite3 \
+  --categories-dir /path/to/inventory/categories
+```
+
+To process the heavy RuTracker snapshot independently first, then add other sources
+to the same inventory database:
+
+```sh
+python3 -I tools/grabber.py inventory --source rutracker \
+  --profile /path/to/grabber-profile.json \
+  --report /path/to/inventory/inventory-report.json \
+  --state /path/to/inventory/inventory.sqlite3
+
+python3 -I tools/grabber.py inventory --source rutor \
+  --profile /path/to/grabber-profile.json \
+  --report /path/to/inventory/inventory-report.json \
+  --state /path/to/inventory/inventory.sqlite3
+
+python3 -I tools/grabber.py inventory --source torrents-csv-data \
+  --profile /path/to/grabber-profile.json \
+  --report /path/to/inventory/inventory-report.json \
+  --state /path/to/inventory/inventory.sqlite3
+```
+
+Repeat `--source ID` to select more than one enabled source. Without `--source`,
+all enabled sources are processed. A disabled source is never activated by the CLI;
+enable it in the local profile first. The inventory DB must be separate from the
+normal publisher/grabber state DB.
+
+Each source is committed independently. A failed refresh retains its last successful
+observations and marks `stale_cache_used`; another source can still be inventoried.
+Snapshot adapters (CSV, Rutor, RuTracker, templates) replace their prior source
+inventory only after a clean scan. If records were rejected or conflicted, the old
+observations are retained and valid new rows are added, with the pass marked degraded.
+RSS/Torznab are incremental, bounded feed windows; they are not complete historical
+snapshots. Their pagination, overlap and `max_items` settings define coverage.
+
+Reports contain, per source: unique infohashes, active and deleted entries, records
+with/without size, sum of torrent payload sizes, normalized metadata bytes, records
+with/without categories and a category breakdown (records, deleted topics, known-size
+records, unknown-size records and summed payload size). Taxonomy categories exposed
+by a source but not used by an item remain in the report with zero counts. Pairwise
+intersections count shared live infohashes without merging or choosing a winner.
+
+Category models differ by source:
+- RuTracker: forum ID/name; an empty `forum_include_ids` scans all forums.
+- Rutor: the original `Categories` values.
+- Jackett/Torznab: capabilities category IDs/names and per-item category attributes.
+- RSS: whatever category labels the feed supplies.
+- Templates: categories selected by the configured template.
+- torrents-csv-data: its current CSV schema has no explicit category column, so
+  inventory can measure rows/sizes but cannot report native categories for it.
+
+The `publisher.category_map` and `publisher.shard_policy` settings are not used
+to merge, rename or allocate inventory categories. Keep category mapping empty during
+inventory so the report reflects the source's native taxonomy. No ACK is required:
+inventory checkpoints are local to `inventory.sqlite3` and never affect publisher
+checkpoints or signed catalog state.
+
 ## Configurable parser templates
 
 The parser is not limited to hard-coded site adapters. The built-in user-editable

@@ -1511,6 +1511,18 @@ def build_parser():
     run.add_argument("--report", required=True, type=Path)
     run.add_argument("--state", type=Path, help="SQLite state file (default: grabber.sqlite3 next to report)")
     run.add_argument("--dump-categories", type=Path)
+    inventory = sub.add_parser(
+        "inventory",
+        help="inspect enabled sources independently; never merge or publish a catalog",
+    )
+    inventory.add_argument("--profile", required=True, type=Path)
+    inventory.add_argument("--report", required=True, type=Path)
+    inventory.add_argument("--state", type=Path,
+                           help="separate inventory SQLite DB (default: inventory.sqlite3 next to report)")
+    inventory.add_argument("--categories-dir", type=Path,
+                           help="per-source category reports (default: categories next to report)")
+    inventory.add_argument("--source", action="append", dest="sources",
+                           help="process one enabled source ID; repeat to select several")
     ack = sub.add_parser("ack", help="acknowledge successful publisher staging")
     ack.add_argument("--state", required=True, type=Path)
     ack.add_argument("--run-id", required=True)
@@ -1535,6 +1547,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "run":
             state_path = args.state or (args.report.parent / "grabber.sqlite3")
             result = run_grabber(args.profile, args.output, args.delta, args.report, state_path, args.dump_categories)
+        elif args.command == "inventory":
+            from grabber_inventory import run_inventory
+            state_path = args.state or (args.report.parent / "inventory.sqlite3")
+            result = run_inventory(
+                args.profile, args.report, state_path, args.categories_dir, args.sources
+            )
         elif args.command == "ack":
             result = ack_run(args.state, args.run_id, args.file, args.accepted_count, args.mode)
         elif args.command == "discard":
