@@ -437,6 +437,12 @@ CREATE TABLE IF NOT EXISTS run_categories (
   label TEXT NOT NULL,
   PRIMARY KEY(run_id, source_id, category_key)
 );
+CREATE TABLE IF NOT EXISTS inventory_categories (
+  source_id TEXT NOT NULL,
+  category_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  PRIMARY KEY(source_id, category_key)
+);
 """
 
 
