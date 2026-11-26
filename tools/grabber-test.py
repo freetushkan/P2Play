@@ -97,6 +97,220 @@ class GrabberTests(unittest.TestCase):
     def read_rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def test_rutracker_groups_use_ids_and_partition_live_deleted_sizes(self):
+        state = g.State(self.state)
+        try:
+            source = {"id": "rutracker", "category_groups": {
+                "Movie": [100, "101"], "Music": [200], "Empty": [300],
+                "<script>unsafe</script>": [400]}}
+            data = [
+                ("1", "100", 10, False), ("2", "101", None, False),
+                ("3", "200", 0, False), ("4", "200", 999, True),
+                ("5", "999", 20, False), ("6", None, 50, True),
+                ("7", None, None, False), ("8", "400", 5, False),
+            ]
+            for digit, forum_id, size, deleted in data:
+                record = {"del" if deleted else "ih": digit * 40}
+                if size is not None:
+                    record["size"] = size
+                provenance = {"forum_id": forum_id} if forum_id else {}
+                state.db.execute("INSERT INTO observations VALUES(?,?,?,?,?,?,?,?)",
+                                 ("rutracker", digit * 40, 30, g._json(record),
+                                  '["Misleading shared label"]', "test", "test", g._json(provenance)))
+            summary = gi._rutracker_group_summary(state, source)
+            groups = {r["name"]: r for r in summary["groups"]}
+            self.assertEqual(groups["Movie"]["records"], 2)
+            self.assertEqual(groups["Movie"]["records_with_size"], 1)
+            self.assertEqual(groups["Movie"]["records_without_size"], 1)
+            self.assertEqual(groups["Movie"]["torrent_size_bytes"], 10)
+            self.assertEqual(groups["Music"]["records"], 1)
+            self.assertEqual(groups["Music"]["deleted_topics"], 1)
+            self.assertEqual(groups["Music"]["records_with_size"], 1)
+            self.assertEqual(groups["Music"]["torrent_size_bytes"], 0)
+            self.assertEqual(groups["Empty"]["records"], 0)
+            ungrouped = summary["ungrouped"]
+            self.assertEqual(ungrouped["records"], 2)
+            self.assertEqual(ungrouped["deleted_topics"], 1)
+            self.assertEqual(ungrouped["torrent_size_bytes"], 20)
+            self.assertEqual(sum(g["records"] for g in summary["groups"]) + ungrouped["records"], 6)
+            html = gi._render_html({"sources": {"rutracker": {"type": "rutracker",
+                                          "category_group_summary": summary}}})
+            self.assertIn("&lt;script&gt;unsafe&lt;/script&gt;", html)
+            self.assertNotIn("<script>unsafe</script>", html)
+            self.assertIn("Ungrouped (unknown/missing forum ID or no rule)", html)
+            no_rules = gi._rutracker_group_summary(state, {"id": "rutracker"})
+            self.assertEqual(no_rules["groups"], [])
+            self.assertEqual(no_rules["ungrouped"]["records"], 6)
+            self.assertEqual(no_rules["ungrouped"]["deleted_topics"], 2)
+        finally:
+            state.close()
+
+    def test_rutracker_group_summary_json_html_and_cached_regrouping(self):
+        source = {"id": "rutracker", "type": "rutracker", "enabled": True,
+                  "path": str(self.rutracker_path), "category_groups": {
+                      "Movie": ["100"], "Music": ["200"]}}
+        config = {"version": 1, "sources": [source]}
+        root = self.root / "inventory"
+        def inventory():
+            self.profile.write_text(json.dumps(config))
+            return gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        report = inventory()
+        first = report["sources"]["rutracker"]
+        self.assertEqual(first["status"], "success")
+        native = first["categories"]
+        self.assertEqual([c["name"] for c in native], ["Movies"])
+        summary = first["category_group_summary"]
+        self.assertEqual(summary["groups"][0]["records"], 1)
+        self.assertEqual(summary["groups"][0]["deleted_topics"], 1)
+        self.assertEqual(summary["groups"][1]["records"], 0)
+        per_source = json.loads((root / "categories/rutracker.json").read_text())
+        self.assertEqual(per_source["category_group_summary"], summary)
+        serialized = json.loads((root / "report.json").read_text())
+        self.assertEqual(serialized["sources"]["rutracker"]["category_group_summary"], summary)
+        html = Path(report["html_report"]).read_text()
+        self.assertIn("RuTracker category groups", html)
+        self.assertIn("Category / forum", html)
+        self.assertEqual(inventory()["sources"]["rutracker"]["status"], "unchanged")
+        # Regroup disabled cached data; XML cannot be opened, native rows are untouched.
+        source["enabled"] = False
+        source["path"] = "/nonexistent/not-read.xml"
+        source["category_groups"] = {"Music": [100], "Movie": [200]}
+        repeated = inventory()["sources"]["rutracker"]
+        self.assertEqual(repeated["status"], "disabled")
+        self.assertEqual(repeated["categories"], native)
+        self.assertEqual(repeated["category_group_summary"]["groups"][0]["records"], 1)
+        self.assertEqual(repeated["category_group_summary"]["groups"][0]["deleted_topics"], 1)
+        source["id"] = "empty-rutracker"
+        empty = inventory()["sources"]["empty-rutracker"]["category_group_summary"]
+        self.assertTrue(all(g["records"] == g["deleted_topics"] == 0 for g in empty["groups"]))
+
+    def test_coverage_union_deletions_empty_and_cached_sources(self):
+        state = g.State(self.state)
+        try:
+            # a: 1,2,3; b: 1,2; c: 1 live, 3 deleted; d: 4 deleted.
+            # Hash 1 must not count twice; c's deletion must not cover a's 3.
+            for source, live, deleted in (("a", "123", ""), ("b", "12", ""),
+                                          ("c", "1", "3"), ("d", "", "4")):
+                for digit in live + deleted:
+                    record = {"ih": digit * 40, "title": "test"} if digit in live else {"del": digit * 40}
+                    state.db.execute("INSERT INTO observations VALUES(?,?,?,?,?,?,?,?)",
+                                     (source, digit * 40, 0, g._json(record), "[]", "test", "test", "{}"))
+            rows = {r["source_id"]: r for r in gi._source_coverage(state.db, ["a", "empty", "d"])}
+            self.assertEqual(rows["a"]["covered_by_other_sources"], 2)
+            self.assertEqual(rows["a"]["exclusive_infohashes"], 1)
+            self.assertAlmostEqual(rows["a"]["coverage_percent"], 66.6667)
+            self.assertEqual(rows["b"]["coverage_percent"], 100)
+            self.assertEqual(rows["c"]["coverage_percent"], 100)
+            self.assertIsNone(rows["empty"]["coverage_percent"])
+            self.assertIsNone(rows["d"]["coverage_percent"])
+            html = gi._render_html({"source_coverage": list(rows.values())})
+            self.assertIn("Covered by others (union)", html)
+            self.assertIn("66.67%", html)
+            empty = g.State(self.root / "empty.sqlite3")
+            try:
+                self.assertEqual(gi._source_coverage(empty.db, []), [])
+            finally:
+                empty.close()
+        finally:
+            state.close()
+
+    def test_inventory_without_source_processes_all_enabled_only(self):
+        self.write_profile(csv_enabled=True, rutor_enabled=True)
+        config = json.loads(self.profile.read_text())
+        config["sources"].append({"id": "disabled", "type": "rutracker", "enabled": False,
+                                  "path": "/nonexistent/disabled.xml"})
+        self.profile.write_text(json.dumps(config))
+        root = self.root / "inventory"
+        report = gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        self.assertEqual(report["sources_selected"], ["rutor", "torrents-csv-data"])
+        self.assertEqual(report["sources"]["disabled"]["status"], "disabled")
+        for name in report["sources_selected"]:
+            self.assertEqual(report["sources"][name]["status"], "success")
+        self.assertIn("source_coverage", json.loads((root / "report.json").read_text()))
+        self.assertIn("Source coverage by all other sources", Path(report["html_report"]).read_text())
+        # Explicit selection only refreshes that source; coverage still sees cached rutor.
+        repeat = gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3",
+                                  source_ids=["torrents-csv-data"])
+        self.assertEqual(repeat["sources"]["rutor"]["status"], "not-selected")
+        self.assertEqual(repeat["source_coverage"], report["source_coverage"])
+
+    def test_lean_rutracker_policy_and_raw_inventory(self):
+        import xml.etree.ElementTree as ET
+        topic = ET.fromstring(self.rutracker_xml).findall("torrent")[1]
+        state = g.State(self.state)
+        try:
+            source = {"category_groups": {"Movie": ["100"]},
+                      "extra_fields": {"description": False, "history": False,
+                                       "duplicate_hints": False}}
+            _, record, categories, provenance = ga._rutracker_topic(
+                topic, state, "test", "rutracker", source)
+            self.assertEqual(categories, ["Movie"])
+            self.assertEqual(record["tags"], ["Movie"])
+            self.assertFalse({"old", "dup_hints", "content_text"} & provenance.keys())
+            state.inventory_mode = True
+            self.assertEqual(ga._rutracker_topic(topic, state, "test", "rutracker", source)[2], ["Movies"])
+        finally:
+            state.close()
+
+    def test_inventory_deleted_sidecar_and_policy_refresh(self):
+        source = {"id": "rutracker", "type": "rutracker", "enabled": True,
+                  "path": str(self.rutracker_path)}
+        config = {"version": 1, "sources": [source]}
+        self.profile.write_text(json.dumps(config))
+        root = self.root / "inventory"
+        def inventory():
+            return gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        first = inventory()["sources"]["rutracker"]
+        deleted = self.read_rows(Path(first["deleted_file"]))
+        self.assertEqual([row["ih"] for row in deleted], ["a" * 40])
+        self.assertEqual(first["metrics"]["active_records"], 1)
+        self.assertEqual(inventory()["sources"]["rutracker"]["status"], "unchanged")
+        source["extra_fields"] = {"description": False}
+        self.profile.write_text(json.dumps(config))
+        self.assertEqual(inventory()["sources"]["rutracker"]["status"], "success")
+        db = g.State(root / "state.sqlite3")
+        try:
+            for row in db.db.execute("SELECT provenance_json FROM observations"):
+                self.assertNotIn("content_text", json.loads(row[0]))
+        finally:
+            db.close()
+
+    def test_csv_first_group_and_policy_refresh(self):
+        self.csv_path.write_text("infohash,name\n" + "e" * 40 + ",Film x264 AAC\n" +
+                                 "f" * 40 + ",Album AAC\n")
+        source = {"id": "csv", "type": "csv", "enabled": True,
+                  "path": str(self.csv_path),
+                  "inventory_categories": {"Video": ["x264"], "Music": ["AAC"]}}
+        config = {"version": 1, "sources": [source]}
+        root = self.root / "inventory"
+        def inventory():
+            self.profile.write_text(json.dumps(config))
+            return gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3")
+        self.assertEqual(inventory()["sources"]["csv"]["metrics"]["records_matching_multiple_categories"], 1)
+        source["inventory_category_mode"] = "first"
+        report = inventory()["sources"]["csv"]
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["metrics"]["records_matching_multiple_categories"], 0)
+        self.assertEqual({c["name"]: c["records"] for c in report["categories"]}, {"Video": 1, "Music": 1})
+
+    def test_source_policy_validation_and_curated_profile(self):
+        from grabber_policy import validate_source_policy, policy_revision
+        self.assertNotEqual(
+            policy_revision({"inventory_categories": {"Video": ["x"], "Music": ["y"]}}),
+            policy_revision({"inventory_categories": {"Music": ["y"], "Video": ["x"]}}))
+        for source in ({"extra_fields": {"description": "false"}},
+                       {"category_groups": {"Movie": [100], "Music": ["100"]}},
+                       {"inventory_category_mode": "random"}):
+            with self.assertRaises(ValueError):
+                validate_source_policy(source)
+        path = Path(__file__).resolve().parent / "profiles/rutracker-media.example.json"
+        config = g._load_config(path)
+        source = config["sources"][0]
+        self.assertFalse(source["enabled"])
+        self.assertIn("Music", source["category_groups"])
+        self.assertEqual(set(source["forum_include_ids"]),
+                         {i for ids in source["category_groups"].values() for i in ids})
+
     def test_inventory_runs_sources_separately_and_reports_categories_and_overlap(self):
         config = json.loads(self.profile.read_text(encoding="utf-8"))
         csv_source = next(item for item in config["sources"] if item["id"] == "torrents-csv-data")

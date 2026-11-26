@@ -218,6 +218,18 @@
 
 ### Этап 5: наполнение каталога
 
+- [ ] Компактный RuTracker/CSV: отдельный deleted inventory, profile-controlled
+      extra_fields, группы forum ID, непересекающиеся Video/Music и выбор lists/shards.
+      Локальная реализация и ограничения описаны в `docs/catalog-layout.md`;
+      отметить выполненные части отдельным PR только после успешного CI/merge.
+      Добавлена таблица покрытия каждого источника объединением остальных live
+      inventory (без двойного счёта), JSON/HTML; запуск всех enabled без --source
+      закреплён отдельным тестом. RuTracker inventory дополнен сводкой category_groups
+      рядом с native форумами, с отдельным ungrouped и группировкой cached данных
+      по forum_id; JSON/HTML и тесты обновлены. Эти изменения также ожидают CI.
+      Production пересборка, точный DocSeries и физический CSV export двух каталогов
+      пока не проверены/не реализованы.
+
 - [x] Отдельный Python Grabber реализован в `tools/grabber.py`, `grabber_lib.py`,
       `grabber_adapters.py` и `grabber_templates.py`. Источники независимо включаются
       через JSON profile: torrents-csv-data, Rutor, RuTracker XML/XZ, Jackett/Torznab,

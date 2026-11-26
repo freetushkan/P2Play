@@ -212,6 +212,35 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
     return metrics, ordered
 
 
+def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive groups from stored forum IDs, never from potentially ambiguous labels."""
+    configured = source.get("category_groups", {})
+    groups = {name: {**_empty_category(name), "category_ids": [str(i) for i in ids]}
+              for name, ids in configured.items()}
+    by_id = {str(i): name for name, ids in configured.items() for i in ids}
+    ungrouped = _empty_category("Ungrouped")
+    for row in state.db.execute(
+        "SELECT record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
+        (str(source["id"]),),
+    ):
+        record = json.loads(row["record_json"])
+        provenance = json.loads(row["provenance_json"] or "{}")
+        group = by_id.get(str(provenance.get("forum_id", "")))
+        entry = groups[group] if group is not None else ungrouped
+        if "del" in record:
+            entry["deleted_topics"] += 1
+            continue
+        entry["records"] += 1
+        size = record.get("size")
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+            entry["records_with_size"] += 1
+            entry["torrent_size_bytes"] += size
+        else:
+            entry["records_without_size"] += 1
+    return {"groups": list(groups.values()), "ungrouped": ungrouped,
+            "basis": "current profile category_groups applied to stored provenance forum_id"}
+
+
 def _intersections(db: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = db.execute(
         """
@@ -229,6 +258,34 @@ def _intersections(db: sqlite3.Connection) -> List[Dict[str, Any]]:
          "shared_infohashes": int(row["shared_infohashes"])}
         for row in rows
     ]
+
+
+def _source_coverage(db: sqlite3.Connection, source_ids: Sequence[str]) -> List[Dict[str, Any]]:
+    """Coverage by the UNION of other stored live inventories, not pairwise sums."""
+    counts = {}
+    for row in db.execute(
+        """SELECT a.source_id, COUNT(*) AS active,
+                  SUM(CASE WHEN EXISTS (
+                      SELECT 1 FROM observations b
+                      WHERE b.ih=a.ih AND b.source_id!=a.source_id
+                        AND substr(b.record_json,1,7)!='{"del":'
+                  ) THEN 1 ELSE 0 END) AS covered
+           FROM observations a
+           WHERE substr(a.record_json,1,7)!='{"del":'
+           GROUP BY a.source_id ORDER BY a.source_id"""
+    ):
+        counts[row["source_id"]] = (int(row["active"]), int(row["covered"]))
+    result = []
+    for source_id in sorted(set(source_ids) | set(counts)):
+        active, covered = counts.get(source_id, (0, 0))
+        result.append({
+            "source_id": source_id,
+            "active_infohashes": active,
+            "covered_by_other_sources": covered,
+            "coverage_percent": round(100 * covered / active, 4) if active else None,
+            "exclusive_infohashes": active - covered,
+        })
+    return result
 
 
 def _write_reports(
@@ -257,7 +314,11 @@ def _write_reports(
         if source_type in {"csv", "torrents-csv-data"} and source.get("filters"):
             warnings.append("CSV title filters are enabled; this inventory covers only matching rows.")
         if source_type in {"csv", "torrents-csv-data"} and source.get("inventory_categories"):
-            warnings.append("CSV Video/Audio groups are heuristic title matches, not source-native categories; a record can match both.")
+            warnings.append(
+                "CSV groups are heuristic title matches, not source-native categories; "
+                + ("first matching group wins." if source.get("inventory_category_mode") == "first"
+                   else "a record can match multiple groups.")
+            )
         if source_type in FEED_SOURCE_TYPES:
             warnings.append("This is a bounded feed/indexer window, not a complete historical snapshot.")
             if source.get("max_items"):
@@ -298,6 +359,24 @@ def _write_reports(
             "metrics": metrics,
             "categories": categories,
         }
+        if source_type == "rutracker":
+            source_report["category_group_summary"] = _rutracker_group_summary(state, source)
+            categories_dir.mkdir(parents=True, exist_ok=True)
+            deleted_path = categories_dir / f"{_safe_name(source_id)}-deleted.ndjson"
+            temporary = deleted_path.with_suffix(".tmp")
+            try:
+                with temporary.open("w", encoding="utf-8") as stream:
+                    for row in state.db.execute(
+                        "SELECT ih,record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
+                        (source_id,),
+                    ):
+                        if "del" in json.loads(row["record_json"]):
+                            stream.write(g._json({"ih": row["ih"],
+                                **json.loads(row["provenance_json"])}) + "\n")
+                temporary.replace(deleted_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            source_report["deleted_file"] = str(deleted_path)
         source_reports[source_id] = source_report
         categories_dir.mkdir(parents=True, exist_ok=True)
         category_path = categories_dir / f"{_safe_name(source_id)}.json"
@@ -312,6 +391,8 @@ def _write_reports(
                 "status": source_report["status"],
                 "metrics": metrics,
                 "categories": categories,
+                **({"category_group_summary": source_report["category_group_summary"]}
+                   if "category_group_summary" in source_report else {}),
             }) + "\n").encode("utf-8"),
         )
         category_files[source_id] = str(category_path)
@@ -341,6 +422,8 @@ def _write_reports(
         },
         "sources": source_reports,
         "source_intersections": _intersections(state.db),
+        "source_coverage": _source_coverage(state.db, list(source_reports)),
+        "source_coverage_scope": "all stored live inventories, including cached/unselected/disabled sources",
         "category_files": category_files,
         "next_step": "review source reports and intersections; no merged catalog was created",
     }
@@ -378,6 +461,18 @@ def _format_bytes(value: Any) -> str:
             return f"{amount:,.1f} {unit}" if unit != "B" else f"{number:,} B"
         amount /= 1024
     return f"{number:,} B"
+
+
+def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> str:
+    return (
+        f"<tr><td>{esc(label if label is not None else entry.get('name'))}</td>"
+        f"<td>{esc(', '.join(entry.get('category_ids', [])) or '—')}</td>"
+        f"<td class='num'>{int(entry.get('records', 0)):,}</td>"
+        f"<td class='num'>{int(entry.get('deleted_topics', 0)):,}</td>"
+        f"<td class='num'>{int(entry.get('records_with_size', 0)):,}</td>"
+        f"<td class='num'>{int(entry.get('records_without_size', 0)):,}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('torrent_size_bytes'))}</td></tr>"
+    )
 
 
 def _render_html(report: Dict[str, Any]) -> str:
@@ -478,6 +573,24 @@ def _render_html(report: Dict[str, Any]) -> str:
             "<ul class='warnings'>" + "".join(f"<li>{esc(item)}</li>" for item in warnings) + "</ul>"
             if warnings else ""
         )
+        group_html = ""
+        summary = source.get("category_group_summary")
+        if summary is not None:
+            group_rows = []
+            for entry in summary.get("groups", []):
+                group_rows.append(_group_html_row(entry, esc))
+            ungrouped = summary.get("ungrouped", {})
+            group_rows.append(_group_html_row(ungrouped, esc, "Ungrouped (unknown/missing forum ID or no rule)"))
+            group_html = (
+                "<h3>RuTracker category groups</h3><div class='table-wrap'><table><thead><tr>"
+                "<th>Group</th><th>Configured forum IDs</th><th>Active</th><th>Deleted</th>"
+                "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
+                "</tr></thead><tbody>" + "".join(group_rows) + "</tbody></table></div>"
+                "<p class='muted'>Current profile category_groups applied to stored forum IDs. "
+                "Each hash belongs to one group or Ungrouped; deleted entries contribute no payload size. "
+                "Native forum taxonomy below is unchanged. Empty configured groups remain visible. "
+                "Cached inventories reflect their last scan and forum filters; this summary does not rescan XML.</p>"
+            )
         parts.append(
             f"<section><h2>{esc(source_id)} <small>({esc(source.get('type'))})</small></h2>"
             f"<p class='muted'>{esc(source.get('category_model', ''))} · scope: {esc(source.get('scope'))}</p>"
@@ -486,7 +599,7 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<div><b>{int(metrics.get('unique_infohashes', 0)):,}</b><span>unique hashes incl. deletions</span></div>"
             f"<div><b>{_format_bytes(metrics.get('torrent_size_bytes'))}</b><span>torrent payload size sum</span></div>"
             f"<div><b>{_format_bytes(metrics.get('normalized_record_bytes'))}</b><span>normalized record JSON</span></div>"
-            f"</div>{warning_html}"
+            f"</div>{warning_html}{group_html}"
             "<div class='table-wrap'><table><thead><tr>"
             "<th>Category / forum</th><th>Native ID(s)</th><th>Records</th><th>Deleted topics</th>"
             "<th>With size</th><th>Without size</th><th>Payload size sum</th><th>Relative count</th>"
@@ -510,6 +623,29 @@ def _render_html(report: Dict[str, Any]) -> str:
         "<th>Source A</th><th>Source B</th><th>Shared live infohashes</th></tr></thead><tbody>"
         + "".join(intersection_rows)
         + "</tbody></table></div><p class='muted'>Counts only: no source precedence, winner selection or cross-source merge is performed.</p></section>"
+    )
+    coverage_rows = []
+    for row in report.get("source_coverage", []):
+        percent = row.get("coverage_percent")
+        percentage = f"{float(percent):.2f}%" if percent is not None else "—"
+        coverage_rows.append(
+            f"<tr><td>{esc(row.get('source_id'))}</td>"
+            f"<td class='num'>{int(row.get('active_infohashes', 0)):,}</td>"
+            f"<td class='num'>{int(row.get('covered_by_other_sources', 0)):,}</td>"
+            f"<td class='num'>{percentage}</td>"
+            f"<td class='num'>{int(row.get('exclusive_infohashes', 0)):,}</td></tr>"
+        )
+    parts.append(
+        "<section><h2>Source coverage by all other sources</h2>"
+        "<div class='table-wrap'><table><thead><tr><th>Source</th>"
+        "<th>Active hashes</th><th>Covered by others (union)</th>"
+        "<th>Coverage</th><th>Exclusive hashes</th></tr></thead><tbody>"
+        + ("".join(coverage_rows) or "<tr><td colspan='5'>No inventory data.</td></tr>")
+        + "</tbody></table></div><p class='muted'>Each live hash counts once, even if present "
+        "in several other sources. Deleted observations never count. The denominator is this "
+        "source's active hashes; empty sources have no percentage. Uses all stored inventories, "
+        "including cached, unselected and disabled sources (also sources removed from the profile). "
+        "Consult source statuses for freshness; coverage does not imply equal metadata or availability.</p></section>"
     )
     parts.append("<p class='foot'>Inventory only. No list, shard, publishing or subscription decision is implied.</p></body></html>")
     return "".join(parts)

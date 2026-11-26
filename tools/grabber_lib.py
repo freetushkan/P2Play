@@ -747,8 +747,11 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
     if not path.is_file():
         raise SourceError("configured CSV file does not exist")
+    from grabber_policy import policy_revision
+    checkpoint["policy_sha256"] = policy_revision(source)
     previous = state.checkpoint(source_id)
-    if previous and previous.get("worktree_oid", previous.get("file_sha256")) == revision_key:
+    if (previous and previous.get("policy_sha256") == checkpoint["policy_sha256"]
+            and previous.get("worktree_oid", previous.get("file_sha256")) == revision_key):
         return {"status": "unchanged", "checkpoint": checkpoint,
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
     if path.stat().st_size > MAX_LOCAL_CSV_BYTES:
@@ -801,6 +804,8 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                         if any(pattern.search(title) for pattern in patterns):
                             inventory_categories.append(category_name)
                             state.add_category(run_id, source_id, category_name)
+                            if source.get("inventory_category_mode", "all") == "first":
+                                break
                     counters["parsed"] += 1
                     result = state.add_observation(
                         run_id, source_id, record["ih"], int(source.get("priority", 0)),
@@ -1007,9 +1012,14 @@ def _load_config(path: Path) -> Dict[str, Any]:
     if not isinstance(sources, list):
         raise GrabberError("profile.sources must be an array")
     seen = set()
+    from grabber_policy import validate_source_policy
     for source in sources:
         if not isinstance(source, dict) or not source.get("id"):
             raise GrabberError("each source must be an object with an id")
+        try:
+            validate_source_policy(source)
+        except ValueError as exc:
+            raise GrabberError(str(exc)) from exc
         source_id = str(source["id"])
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", source_id):
             raise GrabberError(f"invalid source id: {source_id!r}")

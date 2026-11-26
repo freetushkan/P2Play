@@ -239,7 +239,9 @@ def _plain_text(markup: str, limit: int = 2048) -> str:
         return html.unescape(re.sub(r"<[^>]{0,1024}>", " ", markup))[:limit]
 
 
-def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
+def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str, source=None) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
+    source = source or {}
+    extras = source.get("extra_fields", {})
     topic_id = str(element.get("id", ""))
     nested = next((node for node in element.iter()
                    if node is not element and _xml_name(node.tag) == "torrent" and node.get("hash")), None)
@@ -278,6 +280,11 @@ def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) ->
         provenance = {"topic_id": topic_id, "deleted": True, "forum_id": forum_id, "forum": forum_name}
         return ih, record, categories, provenance
 
+    from grabber_policy import forum_group
+    group = forum_group(source, forum_id)
+    if group and not getattr(state, "inventory_mode", False):
+        categories = [group]
+
     title = g._clean_text(_direct_text(element, "title"), "title")
     if not title:
         raise ValueError("topic title is empty")
@@ -312,13 +319,13 @@ def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) ->
         "trackers": [tracker],
     }, {})
     old_versions = []
-    for old in element.iter():
+    for old in element.iter() if extras.get("history", True) else ():
         if _xml_name(old.tag) == "old":
             old_versions.append({"hash": old.get("hash"), "time": old.get("time"),
                                  "unixts": old.get("unixts"),
                                  "title": " ".join("".join(old.itertext()).split())[:512]})
     dup_hints = []
-    for dup in element.iter():
+    for dup in element.iter() if extras.get("duplicate_hints", True) else ():
         if _xml_name(dup.tag) == "dup":
             dup_hints.append({"p": dup.get("p"), "text": " ".join("".join(dup.itertext()).split())[:256]})
     provenance = {
@@ -326,7 +333,11 @@ def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) ->
         "registred_at": element.get("registred_at"), "unixts": unix_text,
         "tracker_id": tracker_id, "old": old_versions[:128], "dup_hints": dup_hints[:128],
     }
-    content = _direct_text(element, "content")
+    if not extras.get("history", True):
+        provenance.pop("old", None)
+    if not extras.get("duplicate_hints", True):
+        provenance.pop("dup_hints", None)
+    content = _direct_text(element, "content") if extras.get("description", True) else ""
     if content:
         provenance["content_text"] = _plain_text(content)
     return ih, record, categories, provenance
@@ -334,6 +345,9 @@ def _rutracker_topic(element: ET.Element, state, run_id: str, source_id: str) ->
 
 def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
                      publisher: Dict[str, Any], quarantine_dir: Path) -> Dict[str, Any]:
+    source = dict(source)
+    source["_forum_groups"] = {str(value): name
+        for name, ids in source.get("category_groups", {}).items() for value in ids}
     source_id = str(source["id"])
     if not source.get("path"):
         return {"status": "skipped", "reason": "operator-supplied RuTracker XML/XZ path is not configured",
@@ -360,8 +374,11 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
     is_named_xz = path.name.lower().endswith(".xz")
     checkpoint = {"kind": "rutracker-xml-xz" if is_named_xz else "rutracker-xml",
                   "file_sha256": digest, "compressed_bytes": path.stat().st_size}
+    from grabber_policy import policy_revision
+    checkpoint["policy_sha256"] = policy_revision(source)
     previous = state.checkpoint(source_id)
-    if previous and previous.get("file_sha256") == digest:
+    if (previous and previous.get("file_sha256") == digest
+            and previous.get("policy_sha256") == checkpoint["policy_sha256"]):
         return {"status": "unchanged", "checkpoint": checkpoint,
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
 
@@ -410,10 +427,8 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
                         counters["filtered"] += 1
                     else:
                         ih, record, categories, provenance = _rutracker_topic(
-                            element, state, run_id, source_id)
+                            element, state, run_id, source_id, source)
                         forum_id = str(provenance.get("forum_id", ""))
-                        for category in categories:
-                            state.add_category(run_id, source_id, category, forum_id or None)
                         outcome = state.add_observation(
                             run_id, source_id, ih, int(source.get("priority", 30)),
                             record, categories, source_ref, digest, provenance)

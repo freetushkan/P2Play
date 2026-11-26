@@ -12,6 +12,13 @@ The operator workflow is deliberately review-first: **run → inspect/edit → p
 manually with the existing publisher CLI → acknowledge**. The grabber never calls
 the publisher API or CLI and never publishes automatically.
 
+## Compact source policies (pending PR/CI)
+
+See `docs/catalog-layout.md` for the opt-in RuTracker media profile, deleted
+inventory sidecar, optional provenance extraction, exclusive CSV title groups,
+policy-aware checkpoints and the lists-versus-shards decision. These policies do
+not change signed MediaMesh records or automatically publish/split catalogs.
+
 ## Goals and placement
 
 - Implement the grabber in **Python** as a separate operator/developer tool,
@@ -194,6 +201,78 @@ records, unknown-size records and summed payload size). Taxonomy categories expo
 by a source but not used by an item remain in the report with zero counts. Pairwise
 intersections count shared live infohashes without merging or choosing a winner.
 
+### RuTracker category-group summary (alongside native forums)
+
+A RuTracker source may define `category_groups`, mapping a group name to a
+non-empty array of explicit forum IDs. Use the curated starter profile in
+`tools/profiles/rutracker-media.example.json`, or define your own rules:
+
+```json
+"category_groups": {
+  "Movie": ["100", "101"],
+  "Music": ["200"]
+}
+```
+
+These IDs illustrate syntax only; they are not recommended real forum assignments.
+A forum ID may belong to only one group. Group membership is determined from stored
+`provenance.forum_id`, not forum display names or publisher `category_map`.
+
+The source JSON report and its per-source `categories/<id>.json` now contain
+`category_group_summary`, with `groups`, `ungrouped` and a `basis` description.
+The HTML report displays **RuTracker category groups** immediately before the
+original forum table. Native `categories`, forum IDs/names and source metrics
+are unchanged; no grouping is written back to stored observations.
+
+Each group reports `records` (active hashes), `deleted_topics`,
+`records_with_size`, `records_without_size`, `torrent_size_bytes` and its configured
+forum IDs in `category_ids`. Deleted hashes contribute only to `deleted_topics`,
+never active counts or payload bytes. Zero is a known size. Empty configured groups
+remain visible. Unknown/missing forum IDs and IDs without a matching rule go to
+`ungrouped`, which is separate from configured groups even if a group is literally
+named "Ungrouped". Without rules, all stored records are ungrouped.
+
+The summary is streamed from SQLite using **current profile rules** at report
+creation. It also works for `unchanged`, disabled and unselected cached sources;
+it does not need the original XML. Missing cached provenance is not guessed from
+labels: it goes to ungrouped. For a report-only regrouping with no XML parse, leave
+RuTracker disabled and run inventory with the existing DB (or refresh another
+source explicitly). An enabled RuTracker source can still rescan after a policy
+change because its checkpoint fingerprint has changed.
+
+`forum_include_ids` remains an independent input filter: `[]` scans all forums;
+`category_groups` does not itself filter the input. A summary over cached data
+reflects the previous scan's filters/freshness, not a newly applied include-list.
+Groups plus ungrouped partition the stored source's active and deleted hashes;
+this is a per-source view, not cross-source deduplication or publication.
+
+### Coverage by the remaining sources
+
+The JSON report adds `source_coverage`; the HTML companion adds a separate
+**Source coverage by all other sources** table. For each source it reports:
+
+- `active_infohashes`: the denominator (live hashes in this source);
+- `covered_by_other_sources`: hashes present live in at least one other source;
+- `coverage_percent`: `100 * covered / active`, or null for an empty source;
+- `exclusive_infohashes`: live hashes not present live in any other source.
+
+This is intersection with the **union** of the other inventories, never a sum of
+pairwise intersections: a hash present in three sources counts only once for
+coverage of each source. Deleted observations are excluded on both sides.
+Coverage measures hash presence, not metadata quality, seed availability or
+precedence. Existing pairwise intersections remain available unchanged.
+
+The scope is all stored inventories in this SQLite database, including cached,
+unselected, disabled and formerly configured sources. This makes sequential
+`inventory --source ...` runs comparable. Consult source statuses and freshness;
+a failed refresh may leave older observations contributing to coverage. Empty
+configured sources appear with zero counts and no percentage. Coverage is computed
+in SQLite using the existing infohash index, without loading hash sets into Python.
+
+Omitting `--source` already processes every source enabled in the profile; no
+separate flag is required. Explicit selection narrows **refresh**, not the stored
+comparison scope. A disabled source cannot be enabled by CLI selection.
+
 Category models differ by source:
 - RuTracker: forum ID/name; an empty `forum_include_ids` scans all forums.
 - Rutor: the original `Categories` values.
@@ -206,9 +285,10 @@ Category models differ by source:
 For torrents-csv-data, the optional `inventory_categories` object can define
 heuristic title groups independently of the CSV source's native fields. The example
 profile splits the media title patterns into `Video` (container/scene-release patterns)
-and `Audio` (audio-format/codec patterns). The existing `filters.title_regex` still
+and `Music` (audio-format/codec patterns), with `inventory_category_mode: "first"`
+so Video takes precedence over audio codecs in a video title. The existing `filters.title_regex` still
 decides which rows enter the media inventory; `inventory_categories` only labels
-accepted rows for analysis. A title can match both groups. These labels are not native
+accepted rows for analysis. In legacy/default `all` mode a title can match both groups. These labels are not native
 CSV categories and are never copied into publisher tags. They help estimate the
 audio/video split, not decide the final taxonomy. Rutor's native `Anime` category
 remains independently visible and is not merged into Movie/Series.
