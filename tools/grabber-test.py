@@ -458,6 +458,12 @@ class GrabberTests(unittest.TestCase):
             + lzma.compress(second)
             + (b"\x00" * 8)
         )
+        low_memory = ga._XzReader(io.BytesIO(lzma.compress(b"memory test", preset=9)),
+                                  16 * 1024 * 1024)
+        with self.assertRaisesRegex(g.SourceError, "xz_memory_limit"):
+            while low_memory.read(8):
+                pass
+
         reader = ga._XzReader(io.BytesIO(payload), 128 * 1024 * 1024)
         chunks = []
         while True:
