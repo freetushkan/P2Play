@@ -19,6 +19,7 @@ class FixtureServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.seen = []
         self.records = None
+        self.record_batches = 0
         self.created = False
         self.released = False
 
@@ -73,8 +74,12 @@ class Handler(BaseHTTPRequestHandler):
                 "offset": 0, "length": len(body), "type": "image/png",
             })
         elif self.path == f"/api/publish/{PUBKEY}/records":
-            self.server.records = [json.loads(line) for line in body.decode().splitlines() if line]
-            self._send(200, {"count": len(self.server.records), "pending": len(self.server.records)})
+            rows = [json.loads(line) for line in body.decode().splitlines() if line]
+            if self.server.records is None:
+                self.server.records = []
+            self.server.records.extend(rows)
+            self.server.record_batches += 1
+            self._send(200, {"count": len(rows), "pending": len(self.server.records)})
         elif self.path == f"/api/publish/{PUBKEY}/release":
             self.server.released = True
             self._send(200, {"pubkey": PUBKEY, "seq": 1, "records": len(self.server.records or [])})
@@ -93,7 +98,7 @@ def run_cli(args):
     env["P2PLAY_PASSWORD"] = "test-secret"
     return subprocess.run(
         [sys.executable, str(CLI), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, env=env, timeout=20
+        text=True, env=env, timeout=60
     )
 
 
@@ -170,6 +175,30 @@ def main():
             check(all(auth == "Bearer fixture-token" for method, path, auth in server.seen
                       if path != "/api/auth/login"), "protected requests use the session token")
             check("fixture-token" not in result.stdout + result.stderr, "API token is never printed")
+
+            large_records = [
+                {"ih": f"{index:040x}", "title": f"Large import {index} " + ("x" * 1300)}
+                for index in range(10000)
+            ]
+            large_ndjson = root / "large-records.ndjson"
+            large_ndjson.write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in large_records) + "\n",
+                encoding="utf-8",
+            )
+            server.records = []
+            server.record_batches = 0
+            server.released = False
+            large_result = run_cli([
+                "publish", "--import", str(large_ndjson), "--server", base,
+                "--list", PUBKEY, "--release",
+            ])
+            check(large_result.returncode == 0,
+                  "large append import is staged in multiple HTTP batches: " + large_result.stderr)
+            check(server.record_batches >= 2,
+                  "append import splits payloads below the HTTP request-body limit")
+            check(len(server.records) == len(large_records),
+                  "all records from the multi-batch import reach the publisher")
+            check(server.released, "multi-batch import releases only after every batch succeeds")
 
             unowned = run_cli(["publish", "--import", str(ndjson), "--server", base, "--list", "b" * 64])
             check(unowned.returncode == 2 and "not owned" in unowned.stderr,
