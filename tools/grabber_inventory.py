@@ -346,7 +346,8 @@ def _write_reports(
     }
 
     failing = any(
-        item["status"] in {"failed", "unsupported"} or item["rejected"] or item["conflicts"]
+        item["status"] in {"failed", "unsupported", "skipped"}
+        or item["rejected"] or item["conflicts"]
         for item in source_reports.values()
         if item["status"] not in {"disabled", "not-selected"}
     )
