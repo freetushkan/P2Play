@@ -220,8 +220,11 @@ A forum ID may belong to only one group. Group membership is determined from sto
 
 The source JSON report and its per-source `categories/<id>.json` now contain
 `category_group_summary`, with `groups`, `ungrouped` and a `basis` description.
-The HTML report displays **RuTracker category groups** immediately before the
-original forum table. Native `categories`, forum IDs/names and source metrics
+The HTML report uses **RuTracker category groups** as the primary table, with
+first column **Category**, an **Included forums** count, and **Other** last. The
+original forum table remains available under collapsed **Native forum details**.
+The old **Relative count** bar (count / largest category count) was removed; it
+was neither a percentage of the catalog nor source coverage. Native `categories`, forum IDs/names and source metrics
 are unchanged; no grouping is written back to stored observations.
 
 Each group reports `records` (active hashes), `deleted_topics`,
@@ -229,8 +232,12 @@ Each group reports `records` (active hashes), `deleted_topics`,
 forum IDs in `category_ids`. Deleted hashes contribute only to `deleted_topics`,
 never active counts or payload bytes. Zero is a known size. Empty configured groups
 remain visible. Unknown/missing forum IDs and IDs without a matching rule go to
-`ungrouped`, which is separate from configured groups even if a group is literally
-named "Ungrouped". Without rules, all stored records are ungrouped.
+`ungrouped` (displayed as **Other**), which is separate from configured groups even if a group is literally
+named "Other". Without rules, all stored records are ungrouped.
+
+Included forums counts configured IDs for each group (including empty forums);
+Other counts distinct observed unmatched forum IDs. Missing IDs contribute records
+to Other, but do not invent an additional forum.
 
 The summary is streamed from SQLite using **current profile rules** at report
 creation. It also works for `unchanged`, disabled and unselected cached sources;
@@ -246,32 +253,40 @@ reflects the previous scan's filters/freshness, not a newly applied include-list
 Groups plus ungrouped partition the stored source's active and deleted hashes;
 this is a per-source view, not cross-source deduplication or publication.
 
-### Coverage by the remaining sources
+### Directional coverage matrix
 
-The JSON report adds `source_coverage`; the HTML companion adds a separate
-**Source coverage by all other sources** table. For each source it reports:
+The HTML report shows an N × N **Source coverage matrix** (3 × 3 for three
+inventoried sources). JSON exposes `source_coverage_matrix.sources` and `rows`,
+with each row's `percent_by_source` keyed by column source ID.
+Cell A,B = 100 × shared live hashes(A,B) / active hashes(A). Thus A,B and B,A
+can differ. Diagonal is 100% for nonempty sources, empty row percentages are null
+(HTML —), and absent intersections are zero. Deletions never contribute.
 
-- `active_infohashes`: the denominator (live hashes in this source);
-- `covered_by_other_sources`: hashes present live in at least one other source;
-- `coverage_percent`: `100 * covered / active`, or null for an empty source;
-- `exclusive_infohashes`: live hashes not present live in any other source.
+The matrix includes configured sources with cached live observations, plus sources
+participating in the current refresh even if empty. Disabled/unselected empty
+example sources do not produce extra rows/columns. Cached disabled data remains
+visible: consult source status for freshness. Omit `--source` to refresh all enabled
+sources; selection affects refresh, not cached comparisons. Existing pairwise counts
+and legacy JSON `source_coverage` union metrics remain for compatibility, but the
+union table is no longer shown in HTML. Removed-from-profile inventories are not
+matrix columns (legacy union metrics still use the whole database).
 
-This is intersection with the **union** of the other inventories, never a sum of
-pairwise intersections: a hash present in three sources counts only once for
-coverage of each source. Deleted observations are excluded on both sides.
-Coverage measures hash presence, not metadata quality, seed availability or
-precedence. Existing pairwise intersections remain available unchanged.
+### Inventory catalog size estimates
 
-The scope is all stored inventories in this SQLite database, including cached,
-unselected, disabled and formerly configured sources. This makes sequential
-`inventory --source ...` runs comparable. Consult source statuses and freshness;
-a failed refresh may leave older observations contributing to coverage. Empty
-configured sources appear with zero counts and no percentage. Coverage is computed
-in SQLite using the existing infohash index, without loading hash sets into Python.
+Source metrics and each RuTracker grouped row now include `catalog_ndjson_bytes`
+and `catalog_zlib_estimate_bytes`. NDJSON counts live normalized record JSON in
+infohash order plus one newline per row. Compression is streamed with standard
+Python zlib level 6, splitting on record boundaries at 8 MiB, independently for
+each group/source. Tombstones and local provenance are excluded. Empty sets report
+zero bytes. Group compressed totals need not sum to whole-source compression.
 
-Omitting `--source` already processes every source enabled in the profile; no
-separate flag is required. Explicit selection narrows **refresh**, not the stored
-comparison scope. A disabled source cannot be enabled by CLI selection.
+These are **catalog payload estimates**, NOT the final SQLite database size or
+exact MediaMesh published bytes. MediaMesh uses RFC1950/1951 zlib segments, but its
+portable C++ `zlibDeflate` encoder uses fixed codes/greedy LZ77, not Python zlib's
+level-6 encoder. Publisher routing/tags/refs, JSON serialization, segment ordering,
+manifest, torrent metadata, media packs and client index/storage overhead can all
+change final size. Actual final size requires publishing and measuring that release
+and client DB. `catalog_size_basis` documents this distinction in JSON.
 
 Category models differ by source:
 - RuTracker: forum ID/name; an empty `forum_include_ids` scans all forums.

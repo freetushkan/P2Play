@@ -119,6 +119,10 @@ class GrabberTests(unittest.TestCase):
                                   '["Misleading shared label"]', "test", "test", g._json(provenance)))
             summary = gi._rutracker_group_summary(state, source)
             groups = {r["name"]: r for r in summary["groups"]}
+            self.assertEqual(groups["Movie"]["forum_count"], 2)
+            self.assertGreater(groups["Movie"]["catalog_ndjson_bytes"], 0)
+            self.assertGreater(groups["Movie"]["catalog_zlib_estimate_bytes"], 0)
+            self.assertEqual(groups["Empty"]["catalog_ndjson_bytes"], 0)
             self.assertEqual(groups["Movie"]["records"], 2)
             self.assertEqual(groups["Movie"]["records_with_size"], 1)
             self.assertEqual(groups["Movie"]["records_without_size"], 1)
@@ -137,7 +141,7 @@ class GrabberTests(unittest.TestCase):
                                           "category_group_summary": summary}}})
             self.assertIn("&lt;script&gt;unsafe&lt;/script&gt;", html)
             self.assertNotIn("<script>unsafe</script>", html)
-            self.assertIn("Ungrouped (unknown/missing forum ID or no rule)", html)
+            self.assertIn("Other", html)
             no_rules = gi._rutracker_group_summary(state, {"id": "rutracker"})
             self.assertEqual(no_rules["groups"], [])
             self.assertEqual(no_rules["ungrouped"]["records"], 6)
@@ -184,6 +188,30 @@ class GrabberTests(unittest.TestCase):
         empty = inventory()["sources"]["empty-rutracker"]["category_group_summary"]
         self.assertTrue(all(g["records"] == g["deleted_topics"] == 0 for g in empty["groups"]))
 
+    def test_directional_coverage_matrix_and_size_estimate(self):
+        reports = {name: {"status": "success", "metrics": {"active_records": n}}
+                   for name, n in (("a", 4), ("b", 2), ("c", 0))}
+        reports["disabled-example"] = {"status": "disabled", "metrics": {"active_records": 0}}
+        matrix = gi._coverage_matrix(reports, [{"source_a": "a", "source_b": "b", "shared_infohashes": 1}])
+        self.assertEqual(matrix["sources"], ["a", "b", "c"])
+        rows = {r["source_id"]: r["percent_by_source"] for r in matrix["rows"]}
+        self.assertEqual(rows["a"], {"a": 100, "b": 25, "c": 0})
+        self.assertEqual(rows["b"], {"a": 50, "b": 100, "c": 0})
+        self.assertTrue(all(v is None for v in rows["c"].values()))
+        html = gi._render_html({"source_coverage_matrix": matrix})
+        self.assertIn("25.00%", html)
+        self.assertIn("50.00%", html)
+        self.assertNotIn("Relative count", html)
+        self.assertNotIn("Covered by others (union)", html)
+        size = gi._CatalogSize()
+        records = [{"ih": "a" * 40, "title": "Тест"}, {"ih": "b" * 40, "size": 0}]
+        for record in records:
+            size.add(record)
+        data = "".join(g._json(r) + "\n" for r in records).encode()
+        self.assertEqual(size.result(), {"catalog_ndjson_bytes": len(data),
+                         "catalog_zlib_estimate_bytes": len(zlib.compress(data, level=6))})
+        self.assertEqual(gi._CatalogSize().result()["catalog_zlib_estimate_bytes"], 0)
+
     def test_coverage_union_deletions_empty_and_cached_sources(self):
         state = g.State(self.state)
         try:
@@ -204,8 +232,7 @@ class GrabberTests(unittest.TestCase):
             self.assertIsNone(rows["empty"]["coverage_percent"])
             self.assertIsNone(rows["d"]["coverage_percent"])
             html = gi._render_html({"source_coverage": list(rows.values())})
-            self.assertIn("Covered by others (union)", html)
-            self.assertIn("66.67%", html)
+            self.assertIn("Source coverage matrix", html)
             empty = g.State(self.root / "empty.sqlite3")
             try:
                 self.assertEqual(gi._source_coverage(empty.db, []), [])
@@ -227,7 +254,7 @@ class GrabberTests(unittest.TestCase):
         for name in report["sources_selected"]:
             self.assertEqual(report["sources"][name]["status"], "success")
         self.assertIn("source_coverage", json.loads((root / "report.json").read_text()))
-        self.assertIn("Source coverage by all other sources", Path(report["html_report"]).read_text())
+        self.assertIn("Source coverage matrix", Path(report["html_report"]).read_text())
         # Explicit selection only refreshes that source; coverage still sees cached rutor.
         repeat = gi.run_inventory(self.profile, root / "report.json", root / "state.sqlite3",
                                   source_ids=["torrents-csv-data"])

@@ -226,7 +226,9 @@
       inventory (без двойного счёта), JSON/HTML; запуск всех enabled без --source
       закреплён отдельным тестом. RuTracker inventory дополнен сводкой category_groups
       рядом с native форумами, с отдельным ungrouped и группировкой cached данных
-      по forum_id; JSON/HTML и тесты обновлены. Эти изменения также ожидают CI.
+      по forum_id; JSON/HTML и тесты обновлены. Уточнение: HTML coverage N×N,
+      Category/Included forums/Other, NDJSON bytes и явно оценочный zlib размер;
+      native форумы в details, Relative count убран. Эти изменения также ожидают CI.
       Production пересборка, точный DocSeries и физический CSV export двух каталогов
       пока не проверены/не реализованы.
 

@@ -13,6 +13,7 @@ import re
 import sqlite3
 import time
 import uuid
+import zlib
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import grabber_lib as g
@@ -119,6 +120,36 @@ def _empty_category(name: str) -> Dict[str, Any]:
     }
 
 
+class _CatalogSize:
+    """Bounded 8 MiB NDJSON segments; zlib estimate, not publisher codec identity."""
+    def __init__(self):
+        self.raw = 0
+        self.compressed = 0
+        self.segment_bytes = 0
+        self.encoder = None
+
+    def add(self, record):
+        data = (g._json(record) + "\n").encode("utf-8")
+        if self.segment_bytes and self.segment_bytes + len(data) > 8 * 1024 * 1024:
+            self.flush()
+        if self.encoder is None:
+            self.encoder = zlib.compressobj(level=6)
+        self.compressed += len(self.encoder.compress(data))
+        self.segment_bytes += len(data)
+        self.raw += len(data)
+
+    def flush(self):
+        if self.encoder is not None:
+            self.compressed += len(self.encoder.flush())
+            self.encoder = None
+            self.segment_bytes = 0
+
+    def result(self):
+        self.flush()
+        return {"catalog_ndjson_bytes": self.raw,
+                "catalog_zlib_estimate_bytes": self.compressed}
+
+
 def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     metrics: Dict[str, Any] = {
         "unique_infohashes": 0,
@@ -133,6 +164,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
         "normalized_record_bytes": 0,
         "category_count": 0,
     }
+    catalog_size = _CatalogSize()
     categories: Dict[str, Dict[str, Any]] = {}
 
     taxonomy = state.db.execute(
@@ -165,6 +197,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
             metrics["deleted_topics"] += 1
         else:
             metrics["active_records"] += 1
+            catalog_size.add(record)
             metrics["normalized_record_bytes"] += len(row["record_json"].encode("utf-8"))
             size = record.get("size")
             if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
@@ -208,6 +241,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
     ordered = sorted(categories.values(), key=lambda item: item["name"].casefold())
     for item in ordered:
         item["category_ids"].sort()
+    metrics.update(catalog_size.result())
     metrics["category_count"] = len(ordered)
     return metrics, ordered
 
@@ -218,7 +252,10 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
     groups = {name: {**_empty_category(name), "category_ids": [str(i) for i in ids]}
               for name, ids in configured.items()}
     by_id = {str(i): name for name, ids in configured.items() for i in ids}
-    ungrouped = _empty_category("Ungrouped")
+    ungrouped = _empty_category("Other")
+    sizes = {name: _CatalogSize() for name in groups}
+    other_size = _CatalogSize()
+    observed_ids = set()
     for row in state.db.execute(
         "SELECT record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
         (str(source["id"]),),
@@ -227,16 +264,24 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
         provenance = json.loads(row["provenance_json"] or "{}")
         group = by_id.get(str(provenance.get("forum_id", "")))
         entry = groups[group] if group is not None else ungrouped
+        if group is None and provenance.get("forum_id"):
+            observed_ids.add(str(provenance["forum_id"]))
         if "del" in record:
             entry["deleted_topics"] += 1
             continue
         entry["records"] += 1
+        (sizes[group] if group is not None else other_size).add(record)
         size = record.get("size")
         if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
             entry["records_with_size"] += 1
             entry["torrent_size_bytes"] += size
         else:
             entry["records_without_size"] += 1
+    for name, entry in groups.items():
+        entry.update(sizes[name].result())
+        entry["forum_count"] = len(entry["category_ids"])
+    ungrouped.update(other_size.result())
+    ungrouped["forum_count"] = len(observed_ids)
     return {"groups": list(groups.values()), "ungrouped": ungrouped,
             "basis": "current profile category_groups applied to stored provenance forum_id"}
 
@@ -286,6 +331,24 @@ def _source_coverage(db: sqlite3.Connection, source_ids: Sequence[str]) -> List[
             "exclusive_infohashes": active - covered,
         })
     return result
+
+
+def _coverage_matrix(source_reports, intersections):
+    ids = sorted(source_id for source_id, report in source_reports.items()
+                 if report.get("metrics", {}).get("active_records", 0)
+                 or report.get("status") not in {"disabled", "not-selected"})
+    pairs = {frozenset((r["source_a"], r["source_b"])): r["shared_infohashes"]
+             for r in intersections}
+    rows = []
+    for source_id in ids:
+        active = source_reports[source_id]["metrics"]["active_records"]
+        rows.append({"source_id": source_id, "active_infohashes": active,
+                     "percent_by_source": {
+                         other: (round(100 * (active if other == source_id else
+                                  pairs.get(frozenset((source_id, other)), 0)) / active, 4)
+                                 if active else None) for other in ids}})
+    return {"sources": ids, "rows": rows,
+            "basis": "row live hashes found in column source / row live hashes * 100"}
 
 
 def _write_reports(
@@ -428,6 +491,9 @@ def _write_reports(
         "next_step": "review source reports and intersections; no merged catalog was created",
     }
 
+    result["source_coverage_matrix"] = _coverage_matrix(source_reports, result["source_intersections"])
+    result["catalog_size_basis"] = "live normalized NDJSON incl newline; zlib level 6, independent <=8 MiB segments; estimate, not final publisher/SQLite size"
+
     failing = any(
         item["status"] in {"failed", "unsupported", "skipped"}
         or item["rejected"] or item["conflicts"]
@@ -466,12 +532,14 @@ def _format_bytes(value: Any) -> str:
 def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> str:
     return (
         f"<tr><td>{esc(label if label is not None else entry.get('name'))}</td>"
-        f"<td>{esc(', '.join(entry.get('category_ids', [])) or '—')}</td>"
+        f"<td class='num'>{int(entry.get('forum_count', len(entry.get('category_ids', [])))):,}</td>"
         f"<td class='num'>{int(entry.get('records', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('deleted_topics', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_with_size', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_without_size', 0)):,}</td>"
-        f"<td class='num'>{_format_bytes(entry.get('torrent_size_bytes'))}</td></tr>"
+        f"<td class='num'>{_format_bytes(entry.get('torrent_size_bytes'))}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('catalog_ndjson_bytes'))}</td>"
+        f"<td class='num'>{_format_bytes(entry.get('catalog_zlib_estimate_bytes'))}</td></tr>"
     )
 
 
@@ -540,11 +608,9 @@ def _render_html(report: Dict[str, Any]) -> str:
     for source_id, source in sources.items():
         metrics = source.get("metrics", {})
         categories = source.get("categories", [])
-        maximum = max((int(row.get("records", 0)) for row in categories), default=0)
         category_rows = []
         for category in categories:
             count = int(category.get("records", 0))
-            width = (count / maximum * 100) if maximum else 0
             ids = ", ".join(category.get("category_ids", []) or [])
             category_rows.append(
                 "<tr>"
@@ -554,11 +620,10 @@ def _render_html(report: Dict[str, Any]) -> str:
                 f"<td class='num'>{int(category.get('records_with_size', 0)):,}</td>"
                 f"<td class='num'>{int(category.get('records_without_size', 0)):,}</td>"
                 f"<td class='num'>{_format_bytes(category.get('torrent_size_bytes'))}</td>"
-                f"<td><div class='bar'><span style='width:{width:.2f}%'></span></div></td>"
                 "</tr>"
             )
         if not category_rows:
-            category_rows.append("<tr><td colspan='8' class='muted'>No category observations in this source.</td></tr>")
+            category_rows.append("<tr><td colspan='7' class='muted'>No category observations in this source.</td></tr>")
 
         warnings = list(source.get("warnings", [])) + list(source.get("adapter_warnings", []))
         if source.get("reason"):
@@ -580,15 +645,16 @@ def _render_html(report: Dict[str, Any]) -> str:
             for entry in summary.get("groups", []):
                 group_rows.append(_group_html_row(entry, esc))
             ungrouped = summary.get("ungrouped", {})
-            group_rows.append(_group_html_row(ungrouped, esc, "Ungrouped (unknown/missing forum ID or no rule)"))
+            group_rows.append(_group_html_row(ungrouped, esc, "Other"))
             group_html = (
                 "<h3>RuTracker category groups</h3><div class='table-wrap'><table><thead><tr>"
-                "<th>Group</th><th>Configured forum IDs</th><th>Active</th><th>Deleted</th>"
+                "<th>Category</th><th>Included forums</th><th>Active</th><th>Deleted</th>"
                 "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
+                "<th>Catalog NDJSON</th><th>Catalog zlib estimate</th>"
                 "</tr></thead><tbody>" + "".join(group_rows) + "</tbody></table></div>"
                 "<p class='muted'>Current profile category_groups applied to stored forum IDs. "
-                "Each hash belongs to one group or Ungrouped; deleted entries contribute no payload size. "
-                "Native forum taxonomy below is unchanged. Empty configured groups remain visible. "
+                "Each hash belongs to one category or Other; deleted entries contribute no payload size. "
+                "Included forums counts configured IDs; Other counts distinct observed unmatched IDs (missing IDs not counted). Empty groups remain visible. "
                 "Cached inventories reflect their last scan and forum filters; this summary does not rescan XML.</p>"
             )
         parts.append(
@@ -599,17 +665,23 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<div><b>{int(metrics.get('unique_infohashes', 0)):,}</b><span>unique hashes incl. deletions</span></div>"
             f"<div><b>{_format_bytes(metrics.get('torrent_size_bytes'))}</b><span>torrent payload size sum</span></div>"
             f"<div><b>{_format_bytes(metrics.get('normalized_record_bytes'))}</b><span>normalized record JSON</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('catalog_ndjson_bytes'))}</b><span>Catalog NDJSON</span></div>"
+            f"<div><b>{_format_bytes(metrics.get('catalog_zlib_estimate_bytes'))}</b><span>Catalog zlib estimate</span></div>"
             f"</div>{warning_html}{group_html}"
+            + ("<details><summary>Native forum details</summary>" if summary is not None else "") +
             "<div class='table-wrap'><table><thead><tr>"
             "<th>Category / forum</th><th>Native ID(s)</th><th>Records</th><th>Deleted topics</th>"
-            "<th>With size</th><th>Without size</th><th>Payload size sum</th><th>Relative count</th>"
+            "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
             "</tr></thead><tbody>" + "".join(category_rows) + "</tbody></table></div>"
             f"<p class='muted'>With categories: {int(metrics.get('records_with_categories', 0)):,}; "
             f"without categories: {int(metrics.get('records_without_categories', 0)):,}; "
             f"matching multiple categories: {int(metrics.get('records_matching_multiple_categories', 0)):,}; "
             f"without size: {int(metrics.get('records_without_size', 0)):,}; "
             f"rejected: {int(source.get('rejected', 0)):,}; quarantined: {int(source.get('quarantined', 0)):,}.</p>"
-            "</section>"
+            + ("</details>" if summary is not None else "") +
+            "<p class='muted'>Catalog NDJSON includes live normalized records and newlines only. "
+            "Zlib level-6 estimate uses independent 8 MiB segments; not actual publisher codec output, "
+            "SQLite size, manifest, torrent or media packs.</p></section>"
         )
 
     intersections = report.get("source_intersections", [])
@@ -624,28 +696,24 @@ def _render_html(report: Dict[str, Any]) -> str:
         + "".join(intersection_rows)
         + "</tbody></table></div><p class='muted'>Counts only: no source precedence, winner selection or cross-source merge is performed.</p></section>"
     )
+    matrix = report.get("source_coverage_matrix", {"sources": [], "rows": []})
     coverage_rows = []
-    for row in report.get("source_coverage", []):
-        percent = row.get("coverage_percent")
-        percentage = f"{float(percent):.2f}%" if percent is not None else "—"
-        coverage_rows.append(
-            f"<tr><td>{esc(row.get('source_id'))}</td>"
-            f"<td class='num'>{int(row.get('active_infohashes', 0)):,}</td>"
-            f"<td class='num'>{int(row.get('covered_by_other_sources', 0)):,}</td>"
-            f"<td class='num'>{percentage}</td>"
-            f"<td class='num'>{int(row.get('exclusive_infohashes', 0)):,}</td></tr>"
-        )
+    for row in matrix["rows"]:
+        cells = []
+        for other in matrix["sources"]:
+            value = row["percent_by_source"][other]
+            cells.append("<td class='num'>" + (f"{value:.2f}%" if value is not None else "—") + "</td>")
+        coverage_rows.append(f"<tr><th>{esc(row['source_id'])}</th>" + "".join(cells) + "</tr>")
     parts.append(
-        "<section><h2>Source coverage by all other sources</h2>"
-        "<div class='table-wrap'><table><thead><tr><th>Source</th>"
-        "<th>Active hashes</th><th>Covered by others (union)</th>"
-        "<th>Coverage</th><th>Exclusive hashes</th></tr></thead><tbody>"
-        + ("".join(coverage_rows) or "<tr><td colspan='5'>No inventory data.</td></tr>")
-        + "</tbody></table></div><p class='muted'>Each live hash counts once, even if present "
-        "in several other sources. Deleted observations never count. The denominator is this "
-        "source's active hashes; empty sources have no percentage. Uses all stored inventories, "
-        "including cached, unselected and disabled sources (also sources removed from the profile). "
-        "Consult source statuses for freshness; coverage does not imply equal metadata or availability.</p></section>"
+        "<section><h2>Source coverage matrix</h2><div class='table-wrap'><table>"
+        "<thead><tr><th>Row source / covered by column</th>"
+        + "".join(f"<th>{esc(i)}</th>" for i in matrix["sources"])
+        + "</tr></thead><tbody>" + "".join(coverage_rows) + "</tbody></table></div>"
+        "<p class='muted'>Cell A,B = shared live hashes / live hashes in A * 100. "
+        "Directional: A,B need not equal B,A. Diagonal is 100% for nonempty sources; "
+        "empty rows show —. Deleted hashes excluded. Includes enabled sources and configured "
+        "sources with cached live data even if disabled/unselected; disabled empty examples omitted. "
+        "Consult source statuses for freshness.</p></section>"
     )
     parts.append("<p class='foot'>Inventory only. No list, shard, publishing or subscription decision is implied.</p></body></html>")
     return "".join(parts)
