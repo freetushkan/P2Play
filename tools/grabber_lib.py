@@ -24,6 +24,8 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_LOCAL_CSV_BYTES = 16 * 1024 * 1024 * 1024
+# Keep the independent legacy Rutor raw-DEFLATE expansion bound.
+MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_RUTRACKER_COMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
 DEFAULT_RUTRACKER_COMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
 MAX_RUTRACKER_EXPANDED_BYTES = 128 * 1024 * 1024 * 1024
