@@ -128,6 +128,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
         "records_without_size": 0,
         "records_with_categories": 0,
         "records_without_categories": 0,
+        "records_matching_multiple_categories": 0,
         "torrent_size_bytes": 0,
         "normalized_record_bytes": 0,
         "category_count": 0,
@@ -186,6 +187,8 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
         if not is_deleted:
             if names:
                 metrics["records_with_categories"] += 1
+                if len(names) > 1:
+                    metrics["records_matching_multiple_categories"] += 1
             else:
                 metrics["records_without_categories"] += 1
 
@@ -489,6 +492,7 @@ def _render_html(report: Dict[str, Any]) -> str:
             "</tr></thead><tbody>" + "".join(category_rows) + "</tbody></table></div>"
             f"<p class='muted'>With categories: {int(metrics.get('records_with_categories', 0)):,}; "
             f"without categories: {int(metrics.get('records_without_categories', 0)):,}; "
+            f"matching multiple categories: {int(metrics.get('records_matching_multiple_categories', 0)):,}; "
             f"without size: {int(metrics.get('records_without_size', 0)):,}; "
             f"rejected: {int(source.get('rejected', 0)):,}; quarantined: {int(source.get('quarantined', 0)):,}.</p>"
             "</section>"

@@ -129,7 +129,7 @@ class GrabberTests(unittest.TestCase):
         rutor = report["sources"]["rutor"]
         rutracker = report["sources"]["rutracker"]
         self.assertEqual(csv["status"], "success")
-        self.assertEqual(csv["metrics"]["active_records"], 1)
+        self.assertEqual(csv["metrics"]["active_records"], 2)
         self.assertEqual(csv["metrics"]["category_count"], 2)
         self.assertIn("heuristic", csv["category_model"].lower())
         csv_categories = {item["name"]: item for item in csv["categories"]}

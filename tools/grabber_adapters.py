@@ -398,15 +398,15 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
                         f"RuTracker XML exceeds configured max_topics limit ({max_topics:,})"
                     )
                 source_ref = f"{path}#topic={element.get('id')}"
+                forum = _direct_child(element, "forum")
+                forum_id = str(forum.get("id", "")) if forum is not None else ""
+                forum_name = _direct_text(element, "forum")
+                if forum_name:
+                    state.add_category(run_id, source_id, forum_name, forum_id or None)
                 try:
                     # Forum selection happens before expensive topic normalization
                     # (file counting, old/dup traversal and description extraction).
-                    forum = _direct_child(element, "forum")
-                    forum_id = str(forum.get("id", "")) if forum is not None else ""
                     if include_ids and forum_id not in include_ids:
-                        forum_name = _direct_text(element, "forum")
-                        if forum_name:
-                            state.add_category(run_id, source_id, forum_name, forum_id or None)
                         counters["filtered"] += 1
                     else:
                         ih, record, categories, provenance = _rutracker_topic(
