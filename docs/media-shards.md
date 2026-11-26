@@ -118,9 +118,8 @@ new and staged payloads until commit. An API/file failure rolls newly created pa
 restart prunes orphan committed-directory files. Files are bounded **before** allocation;
 media disk reads are serialized by the writer mutex (one <=16 MiB pack plus object buffers
 at once). There are at most 4096 segment descriptors and 4096 pack descriptors, a 4 MiB
-manifest and 64 KiB record lines. An owner may hold up to two million records across
-signed shards; an ordinary subscriber admits whole shards only while its local budgets fit,
-with hard selected-view ceilings of one million records and 256 MiB aggregate decoded text.
+manifest, 64 KiB record lines, one million decoded records, and 256 MiB aggregate decoded
+record text in a selected version.
 
 ## Large-catalog resource profile
 

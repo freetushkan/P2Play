@@ -67,7 +67,7 @@ class GrabberTests(unittest.TestCase):
             "version": 1,
             "publisher": {
                 "category_map": {"Movies": "movie"},
-                "shard_policy": {"default": "default", "category_map": {"movie": "films"}, "hash_prefix_chars": 0},
+                "shard_policy": {"default": "default", "category_map": {"movie": "films"}},
             },
             "sources": [
                 {"id": "torrents-csv-data", "type": "csv", "enabled": csv_enabled,
@@ -332,17 +332,6 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual(values["a" * 40]["title"], "Higher priority title")
         self.assertIn("c" * 40, values)
         g.discard_run(self.state, rerun["run_id"])
-
-    def test_new_records_use_stable_hash_prefix_shards(self):
-        record_a = {"ih": "a" * 40, "tags": []}
-        record_b = {"ih": "b" * 40, "tags": []}
-        policy = {"shard_policy": {"default": "default", "category_map": {}}}
-        self.assertEqual(g._shard_for(record_a, policy, None), "haa")
-        self.assertEqual(g._shard_for(record_b, policy, None), "hbb")
-        self.assertEqual(g._shard_for(record_a, policy, {"shard": "legacy"}),
-                         "legacy")
-        disabled = {"shard_policy": {"default": "default", "hash_prefix_chars": 0}}
-        self.assertEqual(g._shard_for(record_a, disabled, None), "default")
 
     def test_binary_and_decimal_size_rounding(self):
         self.assertEqual(g._parse_size("1.5 MB", "binary"), 1572864)
@@ -698,7 +687,6 @@ class GrabberTests(unittest.TestCase):
         profile_path = Path(__file__).resolve().parent / "grabber-profile.example.json"
         config = g._load_config(profile_path)
         self.assertIn("generic-json", config["templates"])
-        self.assertEqual(config["publisher"]["shard_policy"]["hash_prefix_chars"], 2)
         self.assertEqual(config["templates"]["generic-text"]["format"], "text")
         self.assertTrue({"csv", "torrents-csv-data", "rutor", "rutracker",
                          "torznab", "jackett-torznab", "rss", "template"}.issubset(

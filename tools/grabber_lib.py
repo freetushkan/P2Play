@@ -42,7 +42,7 @@ MAX_QUARANTINE_BYTES = 2 * 1024 * 1024
 MAX_CSV_FIELD_BYTES = 4 * 1024 * 1024
 MAX_NDJSON_BYTES = 256 * 1024 * 1024
 MAX_NDJSON_LINE = 64 * 1024
-MAX_RECORDS = 2_000_000
+MAX_RECORDS = 1_000_000
 HASH_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 SHARD_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)\s*$", re.I)
@@ -302,11 +302,6 @@ def _shard_for(record: Dict[str, Any], publisher: Dict[str, Any], previous: Opti
     for tag in record.get("tags", []):
         if tag in routes:
             return _valid_shard(routes[tag])
-    prefix_chars = policy.get("hash_prefix_chars", 2)
-    if isinstance(prefix_chars, bool) or not isinstance(prefix_chars, int) or prefix_chars not in (0, 1, 2):
-        raise GrabberError("publisher.shard_policy.hash_prefix_chars must be 0, 1 or 2")
-    if prefix_chars:
-        return _valid_shard("h" + normalize_hash(record.get("ih"))[:prefix_chars])
     return default
 
 
@@ -1048,10 +1043,6 @@ def _load_config(path: Path) -> Dict[str, Any]:
     if not isinstance(policy, dict):
         raise GrabberError("publisher.shard_policy must be an object")
     _valid_shard(policy.get("default", "default"))
-    hash_prefix_chars = policy.get("hash_prefix_chars", 2)
-    if (isinstance(hash_prefix_chars, bool) or not isinstance(hash_prefix_chars, int) or
-            hash_prefix_chars not in (0, 1, 2)):
-        raise GrabberError("publisher.shard_policy.hash_prefix_chars must be 0, 1 or 2")
     shard_routes = policy.get("category_map", {}) or {}
     if not isinstance(shard_routes, dict):
         raise GrabberError("publisher.shard_policy.category_map must be an object")
@@ -1194,7 +1185,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                 _write_ndjson_line(full_stream, digest_full, merged)
                 full_count += 1
                 if full_count > MAX_RECORDS:
-                    raise GrabberError(f"full catalog exceeds the {MAX_RECORDS:,}-record publisher limit")
+                    raise GrabberError("full catalog exceeds the publisher record limit")
                 if previous is None or _record_fingerprint(previous) != _record_fingerprint(merged):
                     _write_ndjson_line(delta_stream, digest_delta, merged)
                     delta_count += 1

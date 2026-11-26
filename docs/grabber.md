@@ -126,17 +126,10 @@ the selected forums are still scanned in the XML stream and counted against
 `max_topics`, but their file lists, descriptions and historical duplicate data are
 not traversed or staged. An empty array means **all forums**, not none.
 
-The final merged catalog is capped at 2,000,000 live records and 256 MiB of
-NDJSON import/export data. The owner may hold that aggregate across signed shards;
-ordinary consumers still decode at most 1,000,000 records and 256 MiB in their
-selected view. Consumers admit complete shards only while both their byte budget
-and selected-record cap fit.
-
-New records use two hexadecimal infohash prefix characters as their default shard
-(`h00` through `hff`). Existing records retain their previously published shard.
-An explicit `publisher.shard_policy.category_map` entry takes precedence over hash
-bucketing; keep each explicitly routed shard below the client record budget. Set
-`hash_prefix_chars` to `0` only to restore the single configured `default` shard.
+The final merged catalog remains separately capped at 1,000,000 records and
+256 MiB of NDJSON import/export data. Increasing the XML input limits does not
+remove those downstream safety limits; use forum selection and the grabber's
+normal source filters to keep the published catalog within them.
 
 The local state DB, work outputs, quarantine and credentials belong outside Git.
 

@@ -19,11 +19,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 MAX_IMPORT_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
-MAX_RECORDS = 2_000_000
+MAX_RECORDS = 1_000_000
 MAX_DESCRIPTION_BYTES = 64 * 1024
 MAX_POSTER_BYTES = 2 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
-MAX_UPLOAD_BATCH_BYTES = 8 * 1024 * 1024
 DEFAULT_WHITELIST = {
     "ih", "title", "shard", "date", "size", "files", "tags", "trackers",
     "poster", "description_ref", "poster_ref", "del",
@@ -162,43 +161,15 @@ class P2PlayApi:
         return value
 
     def add_records(self, pubkey: str, records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-        # HttpServer caps one request body at 16 MiB. Keep append uploads below
-        # that limit while staging a larger import in ordered, non-retried batches.
-        accepted = 0
-        pending = 0
-        batch: List[bytes] = []
-        batch_bytes = 0
-
-        def flush() -> None:
-            nonlocal accepted, pending, batch, batch_bytes
-            if not batch:
-                return
-            body = b"".join(batch)
-            value = self.request(
-                "POST", f"/api/publish/{pubkey}/records", body, "application/x-ndjson"
-            )
-            expected = len(batch)
-            if not isinstance(value, dict) or value.get("count") != expected:
-                raise PublisherError(
-                    "server accepted an unexpected batch count; inspect publisher status before retrying"
-                )
-            accepted += expected
-            pending_value = value.get("pending")
-            if isinstance(pending_value, int) and not isinstance(pending_value, bool):
-                pending = pending_value
-            batch = []
-            batch_bytes = 0
-
-        for row in records:
-            encoded = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-            if len(encoded) > MAX_UPLOAD_BATCH_BYTES:
-                raise PublisherError("one normalized record exceeds the 8 MiB upload batch limit")
-            if batch and batch_bytes + len(encoded) > MAX_UPLOAD_BATCH_BYTES:
-                flush()
-            batch.append(encoded)
-            batch_bytes += len(encoded)
-        flush()
-        return {"count": accepted, "pending": pending}
+        body = "".join(
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in records
+        ).encode("utf-8")
+        value = self.request(
+            "POST", f"/api/publish/{pubkey}/records", body, "application/x-ndjson"
+        )
+        if not isinstance(value, dict):
+            raise PublisherError("server returned an invalid import response")
+        return value
 
     def replace_records(self, pubkey: str, records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         body = "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
