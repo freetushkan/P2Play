@@ -603,6 +603,7 @@ def run_inventory(
                     result["inventory_snapshot_replaced"] = bool(complete_snapshot)
                     result["checkpoint_deferred"] = checkpoint_deferred
                     if snapshot and not complete_snapshot:
+                        result["status"] = "degraded"
                         result.setdefault("warnings", []).append(
                             "Some source rows were rejected/conflicted; retained prior observations and added valid rows instead of replacing the snapshot. The source checkpoint was not advanced, so the same snapshot can be retried after correcting the cause."
                         )
