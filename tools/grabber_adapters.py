@@ -257,15 +257,21 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
         return {"status": "skipped", "reason": "operator-supplied RuTracker XML/XZ path is not configured",
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
     path = Path(str(source["path"])).expanduser().resolve()
-    compressed_limit = int(source.get("max_compressed_bytes", 256 * 1024 * 1024))
-    expanded_limit = int(source.get("max_expanded_bytes", 512 * 1024 * 1024))
-    memory_limit = int(source.get("xz_memory_limit", 128 * 1024 * 1024))
-    if not 1 <= compressed_limit <= 1024 * 1024 * 1024:
-        raise g.SourceError("max_compressed_bytes must be between 1 byte and 1 GiB")
-    if not 1 <= expanded_limit <= 2 * 1024 * 1024 * 1024:
-        raise g.SourceError("max_expanded_bytes must be between 1 byte and 2 GiB")
-    if not 16 * 1024 * 1024 <= memory_limit <= 1024 * 1024 * 1024:
+    compressed_limit = int(source.get(
+        "max_compressed_bytes", g.DEFAULT_RUTRACKER_COMPRESSED_BYTES))
+    expanded_limit = int(source.get(
+        "max_expanded_bytes", g.DEFAULT_RUTRACKER_EXPANDED_BYTES))
+    memory_limit = int(source.get(
+        "xz_memory_limit", g.DEFAULT_RUTRACKER_XZ_MEMORY_BYTES))
+    max_topics = int(source.get("max_topics", g.DEFAULT_RUTRACKER_MAX_TOPICS))
+    if not 1 <= compressed_limit <= g.MAX_RUTRACKER_COMPRESSED_BYTES:
+        raise g.SourceError("max_compressed_bytes must be between 1 byte and 16 GiB")
+    if not 1 <= expanded_limit <= g.MAX_RUTRACKER_EXPANDED_BYTES:
+        raise g.SourceError("max_expanded_bytes must be between 1 byte and 128 GiB")
+    if not g.MIN_RUTRACKER_XZ_MEMORY_BYTES <= memory_limit <= g.MAX_RUTRACKER_XZ_MEMORY_BYTES:
         raise g.SourceError("xz_memory_limit must be between 16 MiB and 1 GiB")
+    if not 1 <= max_topics <= g.MAX_RUTRACKER_TOPICS:
+        raise g.SourceError("max_topics must be between 1 and 50,000,000")
     if not path.is_file() or path.stat().st_size > compressed_limit:
         raise g.SourceError("RuTracker dump is missing or exceeds the compressed size limit")
     digest = g._file_sha256(path)
@@ -284,7 +290,8 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
     counters = {"status": "success", "fetched": 0, "parsed": 0, "accepted": 0,
                 "filtered": 0, "rejected": 0, "duplicates": 0, "conflicts": 0,
                 "quarantined": 0, "quarantine_truncated": False, "checkpoint": checkpoint,
-                "errors": [], "compressed_bytes": path.stat().st_size}
+                "errors": [], "compressed_bytes": path.stat().st_size,
+                "topic_limit": max_topics}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
     raw = None
     try:
@@ -304,17 +311,27 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
             is_topic = _xml_name(element.tag) == "torrent" and bool(element.get("id"))
             if is_topic:
                 counters["fetched"] += 1
-                if counters["fetched"] > g.MAX_RECORDS:
-                    raise g.SourceError("RuTracker XML exceeds the publisher record limit")
+                if counters["fetched"] > max_topics:
+                    raise g.SourceError(
+                        f"RuTracker XML exceeds configured max_topics limit ({max_topics:,})"
+                    )
                 source_ref = f"{path}#topic={element.get('id')}"
                 try:
-                    ih, record, categories, provenance = _rutracker_topic(element, state, run_id, source_id)
-                    forum_id = str(provenance.get("forum_id", ""))
-                    for category in categories:
-                        state.add_category(run_id, source_id, category, forum_id or None)
+                    # Forum selection happens before expensive topic normalization
+                    # (file counting, old/dup traversal and description extraction).
+                    forum = _direct_child(element, "forum")
+                    forum_id = str(forum.get("id", "")) if forum is not None else ""
                     if include_ids and forum_id not in include_ids:
+                        forum_name = _direct_text(element, "forum")
+                        if forum_name:
+                            state.add_category(run_id, source_id, forum_name, forum_id or None)
                         counters["filtered"] += 1
                     else:
+                        ih, record, categories, provenance = _rutracker_topic(
+                            element, state, run_id, source_id)
+                        forum_id = str(provenance.get("forum_id", ""))
+                        for category in categories:
+                            state.add_category(run_id, source_id, category, forum_id or None)
                         outcome = state.add_observation(
                             run_id, source_id, ih, int(source.get("priority", 30)),
                             record, categories, source_ref, digest, provenance)
