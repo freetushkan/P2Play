@@ -346,11 +346,25 @@ class GrabberTests(unittest.TestCase):
         config = json.loads(self.profile.read_text(encoding="utf-8"))
         config["sources"].append({
             "id": "rutracker", "type": "rutracker", "enabled": True, "priority": 30,
-            "path": str(self.rutracker_path), "forum_include_ids": ["100"]
+            "path": str(self.rutracker_path), "forum_include_ids": ["100"],
+            "max_topics": 3
         })
         self.profile.write_text(json.dumps(config), encoding="utf-8")
+        # This topic has no nested torrent/hash. It must be discarded by forum ID
+        # before detailed parsing, rather than quarantined as a malformed record.
+        filtered_topic = (
+            b'  <torrent id="filtered-topic"><title>Ignored music item</title>'
+            b'<forum id="200">Music</forum></torrent>\n'
+        )
+        filtered_xml = self.rutracker_xml.replace(
+            b"</rutracker>", filtered_topic + b"</rutracker>")
+        self.rutracker_path.write_bytes(lzma.compress(filtered_xml))
         second = self.run_once()
         self.assertEqual(second["sources"]["rutracker"]["status"], "success")
+        self.assertEqual(second["sources"]["rutracker"]["fetched"], 3)
+        self.assertEqual(second["sources"]["rutracker"]["filtered"], 1)
+        self.assertEqual(second["sources"]["rutracker"]["rejected"], 0)
+        self.assertEqual(second["sources"]["rutracker"]["topic_limit"], 3)
         self.assertEqual(second["sources"]["rutracker"]["checkpoint"]["compression"], "xz")
         full, delta = self.read_rows(self.full), self.read_rows(self.delta)
         self.assertEqual({row["ih"] for row in full}, {"d" * 40})
@@ -387,6 +401,40 @@ class GrabberTests(unittest.TestCase):
         fourth = self.run_once()
         self.assertEqual(fourth["counts"]["delta"], 0)
         g.ack_run(self.state, fourth["run_id"], self.full, 0, "auto")
+
+    def test_rutracker_large_but_bounded_profile_limits(self):
+        config = {
+            "version": 1,
+            "sources": [{
+                "id": "rutracker", "type": "rutracker", "enabled": True,
+                "path": str(self.rutracker_path), "priority": 30,
+                "max_compressed_bytes": 6666666666,
+                "max_expanded_bytes": 66666666666,
+                "xz_memory_limit": 134217728,
+                "max_topics": 10000000,
+            }],
+        }
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(g._load_config(self.profile)["sources"][0]["max_expanded_bytes"],
+                         66666666666)
+
+        config["sources"][0]["max_compressed_bytes"] = g.MAX_RUTRACKER_COMPRESSED_BYTES + 1
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(g.GrabberError, "max_compressed_bytes"):
+            g._load_config(self.profile)
+
+    def test_rutracker_topic_scan_limit_is_separate_from_catalog_limit(self):
+        self.write_profile(csv_enabled=False, rutor_enabled=False)
+        config = json.loads(self.profile.read_text(encoding="utf-8"))
+        config["sources"].append({
+            "id": "rutracker", "type": "rutracker", "enabled": True,
+            "priority": 30, "path": str(self.rutracker_path), "max_topics": 1,
+        })
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        report = self.run_once()
+        source_report = report["sources"]["rutracker"]
+        self.assertEqual(source_report["status"], "failed")
+        self.assertIn("max_topics", source_report["reason"])
 
     def test_rutracker_delete_without_published_shard_is_quarantined(self):
         config = {"version": 1, "publisher": {}, "sources": [
