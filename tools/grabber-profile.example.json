@@ -4,7 +4,8 @@
     "category_map": {},
     "shard_policy": {
       "default": "default",
-      "category_map": {}
+      "category_map": {},
+      "hash_prefix_chars": 2
     }
   },
   "sources": [

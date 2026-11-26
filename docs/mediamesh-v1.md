@@ -360,6 +360,13 @@ A conforming consumer SHOULD enforce at least the current implementation limits:
 - decoded record line: at most 64 KiB;
 - decoded records in one selected version: at most 1,000,000;
 - aggregate decoded record text in one selected version: at most 256 MiB;
+
+The publisher may hold up to 2,000,000 live records across the signed shards of one
+list. This aggregate owner-side ceiling does not raise the consumer limit: each ordinary
+consumer selects complete shards whose combined signed record counts and compressed byte
+sizes fit its local policy, and decodes no more than 1,000,000 records / 256 MiB of text.
+A consumer that does not need the whole list MUST leave excess shards unselected rather
+than attempting to index the entire aggregate.
 - media description: at most 64 KiB, valid UTF-8, NUL-free;
 - poster: at most 2 MiB, JPEG/PNG/WebP with matching file signature.
 

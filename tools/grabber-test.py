@@ -380,7 +380,7 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual(second["sources"]["rutracker"]["checkpoint"]["compression"], "xz")
         full, delta = self.read_rows(self.full), self.read_rows(self.delta)
         self.assertEqual({row["ih"] for row in full}, {"d" * 40})
-        self.assertIn({"del": "a" * 40, "shard": "haa"}, delta)
+        self.assertIn({"del": "a" * 40, "shard": "default"}, delta)
         row = full[0]
         self.assertEqual(row["title"], "RuTracker new release")
         self.assertEqual(row["date"], 1704276672)

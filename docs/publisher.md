@@ -49,9 +49,19 @@ Without `P2PLAY_PASSWORD`, the CLI prompts without echoing the password.
 Credentials over non-loopback plain HTTP are refused unless the operator
 explicitly passes `--allow-insecure-http`. The CLI never follows redirects
 with an Authorization header and never automatically retries mutating POSTs.
+Append-only imports up to 2,000,000 unique records / 256 MiB are sent as ordered
+8 MiB HTTP batches (the server request-body cap is 16 MiB); release is requested
+only after every batch succeeds. If a batch fails, inspect publisher status before
+retrying: earlier batches may already be staged. The full-replacement endpoint
+still uses one HTTP request and is subject to the 16 MiB request-body cap.
 A network failure during a media upload may leave unreferenced staged bytes;
 inspect publisher status before retrying. Import and release are separate:
 without `--release`, records remain pending for review.
+
+The owner may hold up to 2,000,000 records across multiple signed shards.
+An ordinary subscriber remains limited to 1,000,000 selected records and 256 MiB
+of decoded record text. Its record policy admits whole shards only while both
+selected record count and compressed byte budget fit; it does not fetch the rest.
 
 ## Import compatibility
 

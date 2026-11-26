@@ -25,7 +25,9 @@ namespace p2p {
     namespace {
         constexpr int64_t kMaxBudget = 16ll << 30;
         constexpr size_t kMaxManifest = 4u << 20;
-        constexpr size_t kMaxRecords = 1000000;
+        constexpr size_t kMaxSegmentRecords = 1000000;
+        constexpr size_t kMaxSelectedRecords = 1000000;
+        constexpr size_t kMaxOwnerRecords = 2000000;
 
         bool readFile(const std::string &path, std::string &out, size_t limit) {
             // Check before allocation, then read at most limit+1 even if the file grows.
@@ -405,7 +407,7 @@ namespace p2p {
             std::string shard(s.dict_find_string_value("s", "default"));
             auto b = s.dict_find_int_value("b", -1), n = s.dict_find_int_value("n", -1);
             bool legacy = f.substr(0, 4) == "seg-";
-            if (!segmentName(f, i) || h.size() != 32 || !shardName(shard) || n < 0 || n > static_cast<int64_t>(kMaxRecords) ||
+            if (!segmentName(f, i) || h.size() != 32 || !shardName(shard) || n < 0 || n > static_cast<int64_t>(kMaxSegmentRecords) ||
                 (!legacy && b < 0) || b > static_cast<int64_t>(kMaxSegmentBytes) || !paths.insert("records/" + f).second) return "bad segment entry";
             MeshFile d; d.path = "records/" + f; d.sha256 = hex(h.data(), 32); d.shard = shard; d.kind = "records"; d.records = n;
             auto actual = fileSize(dir + "/" + d.path); d.present = actual >= 0;
@@ -416,11 +418,27 @@ namespace p2p {
         }
         // Admission and availability are atomic per shard: never index an earlier
         // segment while a later update/tombstone in the same shard is absent.
-        std::map<std::string, int64_t> shardBytes;
-        for (const auto &f : out.files) if (f.selected) shardBytes[f.shard] += f.bytes;
+        std::map<std::string, int64_t> shardBytes, shardRecords;
+        for (const auto &f : out.files) if (f.selected) {
+            shardBytes[f.shard] += f.bytes;
+            shardRecords[f.shard] += f.records;
+        }
         std::set<std::string> admitted, unavailable;
-        int64_t usedRecords = 0;
-        for (const auto &s : shardBytes) if (s.second <= p.recordBytes - usedRecords) { admitted.insert(s.first); usedRecords += s.second; }
+        const int64_t maxSelectedRecords = static_cast<int64_t>(
+            out.card.own ? kMaxOwnerRecords : kMaxSelectedRecords);
+        int64_t usedBytes = 0, usedRecords = 0;
+        // A shard is admitted atomically only when both its compressed disk budget
+        // and its signed record count fit. Owners retain the larger aggregate; ordinary
+        // subscribers never decode more than one million records in a selected view.
+        for (const auto &s : shardBytes) {
+            const int64_t shardCount = shardRecords[s.first];
+            if (s.second <= p.recordBytes - usedBytes &&
+                shardCount <= maxSelectedRecords - usedRecords) {
+                admitted.insert(s.first);
+                usedBytes += s.second;
+                usedRecords += shardCount;
+            }
+        }
         for (auto &f : out.files) {
             f.selected = admitted.count(f.shard) != 0;
             if (f.selected && !f.present) unavailable.insert(f.shard);
@@ -435,6 +453,7 @@ namespace p2p {
         }
         std::map<std::string, MeshRecord> records;
         size_t inflated = 0, totalRecords = 0;
+        const size_t maxRecords = out.card.own ? kMaxOwnerRecords : kMaxSelectedRecords;
         for (const auto &d : out.files) {
             if (d.kind != "records" || !d.selected || !d.present || unavailable.count(d.shard)) continue;
             std::string z, text;
@@ -447,7 +466,7 @@ namespace p2p {
                 if (end - pos > kMaxLine) return "record too long";
                 auto line = text.substr(pos, end-pos); pos = end + 1;
                 if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
-                if (++totalRecords > kMaxRecords) return "too many records";
+                if (++totalRecords > maxRecords) return "too many records";
                 ++count; MeshRecord r; std::string removed;
                 auto err = parseRecord(json::parse(line, nullptr, false), r, removed); if (!err.empty()) return d.path + ": " + err;
                 if (r.shard != d.shard) return "record shard disagrees with descriptor";
