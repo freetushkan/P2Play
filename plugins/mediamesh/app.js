@@ -35,10 +35,11 @@ var host=SILO?{
 };
 function showLogin(){$("login-view").hidden=false;["search","lists","library","continue","server","users","settings","preferences"].forEach(function(x){var n=$(x+"-view");if(n)n.hidden=true;});$("settings-modal").hidden=true;$("add-modal").hidden=true;syncModalState();}
 async function run(fn){if(busy)return;busy=true;document.body.setAttribute("aria-busy","true");try{await fn();}catch(e){status(e.message||"Request failed.",true);}finally{busy=false;document.body.removeAttribute("aria-busy");}}
-function el(tag,value,cls){var n=document.createElement(tag);if(value!==undefined)n.textContent=tr(value);if(cls)n.className=cls;return n;}
+function el(tag,value,cls){var n=document.createElement(tag);if(value!==undefined){n.textContent=tr(value);if(n.firstChild&&typeof value==="string")n.firstChild.__i18nSource=value;}if(cls)n.className=cls;return n;}
 function button(label,fn,cls){var b=el("button",label,cls);b.type="button";b.addEventListener("click",function(){run(function(){return fn(b);});});return b;}
 function bytes(n){n=Number(n);if(!Number.isFinite(n)||n<0)return tr("Size unknown");if(n===0)return tr("0 B");var u=["B","KiB","MiB","GiB","TiB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(i?1:0)+" "+u[i];}
-function renderResults(results,targetId,onPick){var t=$(targetId||"results");t.replaceChildren();if(!results.length)t.append(el("p","No releases found.","empty"));results.forEach(function(r){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",r.title||r.hash),el("p",bytes(r.size)+" · "+(r.files||0)+" "+tr("files")),el("p",(r.tags||[]).join(", "),"hint"),el("code",r.hash));var action=onPick?button("Select",function(){onPick(r);}):button(tr("Add to ")+HOST,async function(b){b.disabled=true;await host.add(r);b.textContent=tr("Added");status(tr("Added to ")+HOST+".");});row.append(copy,action);t.append(row);});}
+var renderedResultSets={};
+function renderResults(results,targetId,onPick){var resultId=targetId||"results";renderedResultSets[resultId]={results:results,onPick:onPick};var t=$(resultId);t.replaceChildren();if(!results.length)t.append(el("p","No releases found.","empty"));results.forEach(function(r){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",r.title||r.hash),el("p",bytes(r.size)+" · "+(r.files||0)+" "+tr("files")),el("p",(r.tags||[]).join(", "),"hint"),el("code",r.hash));var action=onPick?button("Select",function(){onPick(r);}):button(tr("Add to ")+HOST,async function(b){b.disabled=true;await host.add(r);b.textContent=tr("Added");status(tr("Added to ")+HOST+".");});row.append(copy,action);t.append(row);});}
 function renderLists(target,lists,discovery){target.replaceChildren();if(!lists.length)target.append(el("p",discovery?"No lists advertised yet.":"No subscribed lists.","empty"));(lists||[]).forEach(function(l){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",l.name||"Unnamed list"),el("p",l.description||"No description"),el("p",tr("Version ")+l.seq,"hint"),el("code",l.pubkey));row.append(copy);if(session.can_admin)row.append(button(discovery?"Subscribe":"Request refresh",async function(){await host.subscribe(l.pubkey);status("Subscription requested.");}));target.append(row);});}
 async function loadLists(){var a=await host.lists();renderLists($("lists"),a.lists,false);var b=await host.discover();renderLists($("discover"),b.lists,true);status("Lists loaded.");}
 var activeMainView="library";
@@ -158,6 +159,23 @@ async function setLanguage(next){
  language=next==="ru"?"ru":"en";
  await loadLocale();
  await savePreference("language",language);
+ Object.keys(renderedResultSets).forEach(function(id){
+  var saved=renderedResultSets[id];
+  if($(id))renderResults(saved.results,id,saved.onPick);
+ });
+ if(!SILO)await loadLibrary();
+ if(!$("settings-modal").hidden){
+  var selected=document.querySelector("[data-settings-view].active");
+  if(selected){
+   var view=selected.dataset.settingsView;
+   if(view==="lists")await loadLists();
+   else if(view==="continue")await loadContinue();
+   else if(view==="server")await loadServer();
+   else if(view==="users")await loadUsers();
+   else if(view==="settings")await loadConnection();
+  }
+ }
+ if(currentHash&&$("torrent-detail")&&!$("torrent-detail").hidden)await loadDetailCover(currentHash);
  status("Language saved.");
 }
 async function toggleTheme(){
