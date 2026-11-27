@@ -78,7 +78,7 @@ namespace p2p {
         }
     }
 
-    void Core::routeP2PlayV1(const HttpRequest &req, HttpResponse &res, const User &user,
+    bool Core::routeP2PlayV1(const HttpRequest &req, HttpResponse &res, const User &user,
                              const std::vector<std::string> &parts) {
         const std::string &method = req.method;
         const bool get = method == "GET" || method == "HEAD";
@@ -324,6 +324,6 @@ namespace p2p {
         if (count >= 2 && at(1) == "v1") {
             return apiError(res, 404, "not found");
         }
-        apiError(res, 404, "not found");
+        return apiError(res, 404, "not found");
     }
 }
