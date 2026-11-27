@@ -1,9 +1,14 @@
 # pPlay ↔ P2Play: аудит паритета и сборки
 
-Дата: 2026-11-26. Это code-review и требования, **не** результат device acceptance.
-Проверены P2Play `master` `052d569` и pPlay `dev`
-`402ee80a6c7271622659abefb390ab4999ca9009`. Все пути `src/app`, `src/player`,
+Дата обновления: 2026-11-27. Это code-review и требования, **не** результат
+device acceptance. Текущие refs: P2Play `master`
+`f5a70868f791a2e1dfc07654767adde0383d7098`; pPlay `dev`
+`23444a68e920329f09c7dbef89ad39c00a18afb2`. Все пути `src/app`, `src/player`,
 `src/filer`, `ci/prepare-p2play-embedded.sh` ниже относятся к pPlay, если не указано иное.
+Отдельная implementation-ветка pPlay `feature/p2play-library-management`
+с commit `1fdebdebe5bde6408923f1f55cd7177aff193a44` содержит первый проход
+library/add/delete UI и native API; ветка не является частью `dev`, PR не создавался,
+сборка/Actions/device acceptance для неё не подтверждены.
 
 ## Вывод
 
@@ -24,8 +29,10 @@ https://github.com/freetushkan/pPlay/actions/runs/45752020074 .
 | --- | --- | --- |
 | Идентификация, credentials, TLS policy | Реализовано | `src/net/p2play.cpp`: verifyServer/apiJson, native version + Bearer; общий HTTP transport |
 | Просмотр torrent files, preview/add, playback | Реализовано | openTorrent/addTorrent/getDirList/toStreamUrl, `Filer::showP2PlayRecord/openP2PlayLink` |
-| Список всех добавленных пользователем torrents | Пробел | Нет GET `/api/torrents` в adapter; корень содержит search/progress/discover/lists, не Library. Уже добавленный torrent доступен через direct path, это не полноценный library browser |
-| Удаление torrent из пользовательской библиотеки | Пробел | В adapter нет DELETE torrent; не путать с deleteUser или удалением локальной копии |
+| Список всех добавленных пользователем torrents | Частично в `dev`; расширено в feature branch | В `dev` уже есть `P2Play::getLibrary` и read-only `.p2play/library` через native `GET /api/v1/library/torrents`, но нет query/category/sort UI. В `feature/p2play-library-management` добавлены q/category/sort/order и фильтр в Filer; ещё не собраны и не приняты на устройствах |
+| Удаление torrent из пользовательской библиотеки | Adapter есть, UI отсутствует в `dev`; UI добавлен в feature branch | `P2Play::deleteTorrent` уже вызывал `DELETE /api/v1/torrents/{hash}`, но не был подключён к интерфейсу. В feature branch добавлены manage menu и подтверждение удаления; API снимает только membership текущего пользователя |
+| Добавление magnet / .torrent из library UI | Частично в `dev`; расширено в feature branch | Persistent `addTorrentLink` по native POST уже используется существующим catalog/deep-link flow; в `dev` не было ручного add action и multipart upload. Feature branch добавляет ручной magnet/link и multipart `.torrent` (лимит клиента 15 MiB при HTTP body limit core 16 MiB) | 
+| Изменение title/category из library UI | Пробел в `dev`; добавлено в feature branch | В feature branch `PUT /api/v1/torrents/{hash}` редактирует общие метаданные infohash; это не per-user display alias. Branch-only, ещё не проверено сборкой |
 | Возобновление позиции, запись duration | Реализовано | `Io::get/setPlaybackProgress`, `Player::load/saveProgress`, per-user file_progress |
 | Continue Watching | Реализовано | `P2Play::getProgress`, virtual progress path, фильтр viewed/position, refresh при возврате из fullscreen |
 | Mark watched / reset file/folder на сервере | Неполный паритет | `Filer::markWatched/markFolder`, reset path в `filer.cpp` используют TorrServe-specific branch. Для P2Play меняется локальный watch-later, серверная метка/позиция не синхронизируются |
@@ -42,6 +49,19 @@ https://github.com/freetushkan/pPlay/actions/runs/45752020074 .
 соответствующие функции; это не копирование всех API TorrServer. Для capability,
 которой нет, UI обязан явно скрыть/объяснить действие, а не молча сохранить только
 локальное состояние с сообщением о серверном успехе.
+
+### Статус native library management на 2026-11-27
+
+P2Play PR #42 уже закрыл серверный контракт и web UI; merge commit указан выше,
+CI jobs успешны (ссылка и границы acceptance — в `docs/roadmap.md` и
+`docs/web-ui.md`). В pPlay `dev` на snapshot `23444a68` существовали
+read-only library listing, persistent magnet add через catalog/deep link и
+функция DELETE adapter, но не были подключены пользовательские library actions,
+category/query/sort controls, ручной magnet add, multipart file upload и PUT
+для title/category. Первый набор этих изменений внесён в
+`feature/p2play-library-management` одним commit; branch сравнивается с `dev`
+как 1 commit ahead / 0 behind, но не проверен сборкой. Это не закрывает пункт
+roadmap до прохождения CI/проверок клиента.
 
 ## Приоритетные дефекты и риски
 

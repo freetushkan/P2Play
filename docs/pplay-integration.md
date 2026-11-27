@@ -11,12 +11,21 @@ share assumptions about source layout, runtime bindings, packaging or identity.
 
 ## Current audit and implementation status
 
-Updated 2026-11-26 against pPlay/dev `402ee80` and P2Play/master `052d569`.
+Updated 2026-11-27 against pPlay/dev
+`23444a68e920329f09c7dbef89ad39c00a18afb2` and P2Play/master
+`f5a70868f791a2e1dfc07654767adde0383d7098`.
 See [pplay-audit.md](pplay-audit.md) for the feature-by-feature TorrServer comparison,
 confirmed gaps, security/UI risks and proposed latest-SHA/compiler-cache design.
 Implemented below means present in code, not full device acceptance or feature parity.
 The dedicated P2Play adapter is independent; some shared UI/audio-artwork paths
 still call TorrServe directly and must be migrated to neutral Io operations.
+
+A working pPlay implementation branch, `feature/p2play-library-management`
+(commit `1fdebdebe5bde6408923f1f55cd7177aff193a44`, based directly on `dev`),
+adds native library query/category/sort, add magnet/link and multipart `.torrent`,
+title/category editing and per-user deletion UI. It is intentionally not a PR.
+It has not been built or run through Actions/device acceptance; do not treat its
+branch-only code as validated or merged `dev` behavior.
 
 ## 1. File-level independence from TorrServer
 

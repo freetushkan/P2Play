@@ -113,25 +113,38 @@
       при фактическом изменении значения.
 - [x] Веб-интерфейс автономного P2Play: вкладка Library, добавление magnet/link и
       multipart `.torrent`, поиск, категории, сортировка, изменение метаданных и
-      удаление с подтверждением. Реализованы собственные версионированные маршруты
-      `/api/v1/library/torrents`, `/api/v1/library/categories` и
-      `/api/v1/torrents/{hash}`. PR #39 влит в master 2026-11-27. Linux API tests,
-      Linux build с `P2P_COMPAT_MATRIX=OFF`, Android, Switch, PS4, PS5, PS5 package и
-      Silo plugin CI прошли. Граница данных: membership per-user, название/категория —
-      общие torrent metadata infohash. Реальные Android/WebView/device checks остаются
-      отдельной эксплуатационной приёмкой. Контракты: `docs/web-ui.md`.
+      удаление с подтверждением. Собственные версионированные маршруты:
+      `/api/v1/library/torrents`, `/api/v1/library/categories`,
+      `POST /api/v1/torrents` и `GET/PUT/DELETE /api/v1/torrents/{hash}`.
+      PR #39 дал базовую вкладку Library; PR #42 завершил управление библиотекой и
+      влит в `master` 2026-11-27, merge commit
+      `f5a70868f791a2e1dfc07654767adde0383d7098`. Linux/API и платформенные jobs
+      P2Play CI ([run 45960270448](https://github.com/freetushkan/P2Play/actions/runs/45960270448))
+      и отдельный Silo plugin CI ([run 45960270383](https://github.com/freetushkan/P2Play/actions/runs/45960270383))
+      завершились успешно. Граница данных: membership per-user, название/категория —
+      общие torrent metadata infohash. Browser/Playwright, реальные Android WebView
+      и device checks остаются отдельной эксплуатационной приёмкой.
+      Контракты: `docs/web-ui.md`.
 
 
-- [ ] Сделать MatriX compatibility opt-in: `P2P_COMPAT_MATRIX=OFF` —
-      default в обычных CMake/CI/package builds; `ON` используется только в отдельной
-      проверке legacy MatriX/HTTP Basic. Проверить, что native `/api/v1`, Silo auth
-      и streaming не зависят от MatriX.
-- [ ] pPlay/dev: мигрировать операции library/add/delete на P2Play native API:
+- [x] MatriX compatibility сделан opt-in: `P2P_COMPAT_MATRIX=OFF` — default
+      в `src/core/CMakeLists.txt`; legacy MatriX API и HTTP Basic собираются только
+      при явном `-DP2P_COMPAT_MATRIX=ON`. Native `/api/v1`, Silo auth и streaming
+      сохраняются без MatriX; Linux CI PR #42 собирал и проверял конфигурацию OFF.
+      Legacy MatriX ON остаётся отдельной compatibility-конфигурацией, а не default.
+- [ ] pPlay/dev: мигрировать и завершить проверку library/add/delete через native API:
       `GET /api/v1/library/torrents`, `GET /api/v1/library/categories`,
       `POST /api/v1/torrents`, `GET/PUT/DELETE /api/v1/torrents/{hash}`.
-      Использовать ответ и ограничения нового API, не трактовать список library
-      как подробный file/stream status. Login и уже существующие Catalog/MediaMesh
-      endpoints мигрировать отдельно только после добавления их versioned contract.
+      Первый implementation commit подготовлен в отдельной ветке
+      `freetushkan/pPlay:feature/p2play-library-management` от `dev`
+      (`23444a68`), commit `1fdebdebe5bde6408923f1f55cd7177aff193a44`:
+      native query/category/sort, magnet и multipart .torrent add, edit title/category,
+      per-user delete с подтверждением и library UI. Это пока branch-only work:
+      PR нет по договорённости, Actions/build/device acceptance не запускались.
+      Перед отметкой done нужны сборка и проверка сценариев на доступных target platforms.
+      Не трактовать compact library card как подробный file/stream status.
+      Login и уже существующие Catalog/MediaMesh endpoints мигрировать отдельно
+      только после добавления их versioned contract.
 - [ ] Сократить сетевые типы pPlay: один `TorrServer` с автоопределением MatriX
       по `/echo` и Silo по `/api/system/ping`; один тип `P2Play` с дополнительным
       режимом instance: external или built-in. External показывает URL/user/password

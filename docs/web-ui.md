@@ -145,4 +145,20 @@ CSP страницы (`script-src 'self'`, без `unsafe-eval`) запреща�
 совместимость внешних MatriX/Silo клиентов и приёмка Android WebView/embedded
 LAN/целевых устройств. Browser CI на Linux не заменяет эти проверки.
 
+## Состояние реализации
+
+PR #42 `web-ui: complete torrent library and server management` влит в
+`master` 2026-11-27 (merge commit
+`f5a70868f791a2e1dfc07654767adde0383d7098`). PR CI: [P2Play workflow
+run 45960270448](https://github.com/freetushkan/P2Play/actions/runs/45960270448)
+и [Silo plugin workflow run
+45960270383](https://github.com/freetushkan/P2Play/actions/runs/45960270383)
+завершились успешно. Платформенные jobs включали Linux core/API/MediaMesh,
+Android, Switch, PS4, PS5 и PS5 package.
+
+Успех этих jobs не означает прохождение browser/Playwright режима
+`tools/ui-test.py --browser` или приёмки Android WebView/реальных устройств:
+эти проверки остаются отдельными. Статус отражает CI и код на момент merge,
+а не универсальную device acceptance.
+
 Публичные compatibility API и wire-format MediaMesh этим шагом не меняются.
