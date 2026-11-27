@@ -186,7 +186,7 @@ def start_daemon(daemon, data, users=True):
     proc = subprocess.Popen([daemon, "--data", data, "--port", str(HTTP_PORT)], stdout=log, stderr=subprocess.STDOUT)
     for _ in range(100):
         try:
-            if http("/echo", timeout=2, auth=False)[0] == 200:
+            if http("/api/system/ping", timeout=2, auth=False)[0] == 200:
                 return proc
         except Exception:
             pass

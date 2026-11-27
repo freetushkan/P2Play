@@ -1,6 +1,6 @@
 # p2play_core: the core (static), C API in p2play.h
 # compatibility layers: each can be left out
-option(P2P_COMPAT_MATRIX "The TorrServer MatriX API and its Basic authentication" ON)
+option(P2P_COMPAT_MATRIX "Optional TorrServer MatriX API and HTTP Basic authentication" OFF)
 
 # the web interface, built in: the Silo plugin's own pages (plugins/mediamesh), one source for both
 set(P2P_UI_DIR ${PROJECT_SOURCE_DIR}/plugins/mediamesh)

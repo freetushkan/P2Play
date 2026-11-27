@@ -38,11 +38,13 @@ namespace p2p {
         const bool get = req.method == "GET" || req.method == "HEAD";
         const bool post = req.method == "POST";
 
-        // public
+        // MatriX compatibility discovery is absent from standard builds.
+#if P2P_COMPAT_MATRIX
         if (get && p == "/echo") {
             res.text(200, echo());
             return;
         }
+#endif
         // the web interface: the Silo plugin's pages (plugins/mediamesh), at /ui/; a browser at /
         // goes there, anything else gets the node's card. It logs in through /api/auth/login.
         if (get && p == "/") {
