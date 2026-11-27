@@ -29,7 +29,7 @@ var host=SILO?{
  search:async function(q,tag){var d=await core("/catalog/search?q="+encodeURIComponent(q)+"&tag="+encodeURIComponent(tag)+"&limit=50");return{results:(d.results||[]).map(function(r){return Object.assign({},r,{supported:true,tags:r.tags||[]});})};},
  lists:function(){return core("/lists");},discover:function(){return core("/lists/discover");},
  subscribe:function(pubkey){return core("/lists/"+encodeURIComponent(pubkey.toLowerCase()),{});},
- add:function(r){var link=r.torrs||(r.hash.length===64?"magnet:?xt=urn:btmh:1220"+r.hash:"magnet:?xt=urn:btih:"+r.hash);return core("/torrents",{link:link,title:r.title,save_to_db:true});}
+ add:function(r){var link=r.torrs||(r.hash.length===64?"magnet:?xt=urn:btmh:1220"+r.hash:"magnet:?xt=urn:btih:"+r.hash);return native("/torrents",{link:link,title:r.title},"POST");}
 };
 function showLogin(){$("login-view").hidden=false;["search","lists","library","continue","server","users","settings"].forEach(function(x){$(x+"-view").hidden=true;});}
 async function run(fn){if(busy)return;busy=true;document.body.setAttribute("aria-busy","true");try{await fn();}catch(e){status(e.message||"Request failed.",true);}finally{busy=false;document.body.removeAttribute("aria-busy");}}
