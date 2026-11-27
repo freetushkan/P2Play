@@ -17,6 +17,7 @@ add_library(p2play_core STATIC
         auth.cpp
         capi.cpp
         core.cpp
+        covers.cpp
         http.cpp
         ram_cache.cpp
         store.cpp

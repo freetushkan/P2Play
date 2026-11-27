@@ -103,10 +103,16 @@ namespace p2p {
                 if (it != record.users.end()) addedAt = it->second;
             }
             const json state = status(torrent);
+            // the server's own picture of the torrent, when the client sent none: the bytes are
+            // served by GET /api/v1/torrents/{hash}/cover, never inlined in a library listing
+            std::string coverSource;
+            const bool hasCover = record.poster.empty() && coverInfo(record.hash, coverSource);
             return json{
                 {"hash", record.hash},
                 {"title", record.title},
                 {"poster", record.poster},
+                {"cover", hasCover},
+                {"cover_source", hasCover ? coverSource : std::string()},
                 {"category", record.category},
                 {"size", record.size},
                 {"timestamp", record.timestamp},
@@ -240,7 +246,7 @@ namespace p2p {
         // POST /api/v1/torrents — JSON {link,title,category} or multipart {file,title,category}.
         // A successful POST always adds the torrent to this user's library.
         if (count == 3 && at(2) == "torrents" && method == "POST") {
-            std::string link, title, category, torrentFile;
+            std::string link, title, category, poster, torrentFile;
             bool hasFile = false;
             const std::string contentType = req.header("content-type");
             if (contentType.rfind("multipart/form-data", 0) == 0) {
@@ -252,6 +258,7 @@ namespace p2p {
                 link = apiTrim(field("link"));
                 title = apiTrim(field("title"));
                 category = apiTrim(field("category"));
+                poster = apiTrim(field("poster"));
                 auto file = fields.find("file");
                 if (file != fields.end()) {
                     if (file->second.first.empty()) return apiError(res, 400, "file part must include a filename");
@@ -264,6 +271,7 @@ namespace p2p {
                 link = apiTrim(apiString(body, "link"));
                 title = apiTrim(apiString(body, "title"));
                 category = apiTrim(apiString(body, "category"));
+                poster = apiTrim(apiString(body, "poster"));
             }
 
             if (hasFile && !link.empty()) return apiError(res, 400, "provide either a torrent file or a link, not both");
@@ -275,14 +283,16 @@ namespace p2p {
             if (!hasFile && (!apiSafeText(link, 16384) || link.find_first_of("\r\n") != std::string::npos)) {
                 return apiError(res, 400, "link is invalid or too long");
             }
-            if (!apiSafeText(title, 512) || !apiSafeText(category, 128)) {
-                return apiError(res, 400, "title or category is too long or contains control characters");
+            if (!apiSafeText(title, 512) || !apiSafeText(category, 128) || !apiSafeText(poster, 2048)) {
+                return apiError(res, 400, "title, category or poster is too long or contains control characters");
             }
 
             std::string error;
+            // A poster given here is the client's own (a pPlay/Silo poster or a catalog one):
+            // the server keeps it and never replaces it with its own cover extraction.
             TorrentPtr torrent = hasFile
-                ? addMetadata(torrentFile, title, "", category, "", user.id, error)
-                : add(link, title, "", category, "", user.id, error);
+                ? addMetadata(torrentFile, title, poster, category, "", user.id, error)
+                : add(link, title, poster, category, "", user.id, error);
             if (!torrent) return apiError(res, 400, error.empty() ? "torrent could not be added" : error);
 
             log("[Web] native library add by %s: %s (%s)", user.name.c_str(), torrent->rec.hash.c_str(),
@@ -360,8 +370,8 @@ namespace p2p {
             json next = settingsJson();
             bool restartRequired = false;
             static const std::set<std::string> booleanKeys = {
-                "UseDisk", "DiskCacheEnabled", "CacheListsInMemory", "DisableUpload", "DisableTCP", "DisableUTP",
-                "DisableDHT", "DisableMeshDirectory", "DisableUPNP"
+                "UseDisk", "DiskCacheEnabled", "CacheListsInMemory", "CoverProbe", "DisableUpload", "DisableTCP",
+                "DisableUTP", "DisableDHT", "DisableMeshDirectory", "DisableUPNP"
             };
             static const std::set<std::string> integerKeys = {
                 "CacheSize", "DiskCacheSize", "ReaderReadAHead", "PreloadCache", "TorrentDisconnectTimeout",
@@ -370,10 +380,12 @@ namespace p2p {
             static const std::set<std::string> stringKeys = {"TorrentsSavePath", "P2PDhtBootstrap"};
             for (auto it = values.begin(); it != values.end(); ++it) {
                 const std::string &key = it.key();
+                // a value the caller repeats is not a change: the client may send the whole form
+                const bool changed = !next.contains(key) || next[key] != it.value();
                 if (booleanKeys.count(key)) {
                     if (!it.value().is_boolean()) return apiError(res, 400, key + " must be boolean");
                     next[key] = it.value();
-                    if (key == "UseDisk") restartRequired = true;
+                    if (key == "UseDisk" && changed) restartRequired = true;
                 } else if (integerKeys.count(key)) {
                     if (!it.value().is_number_integer()) return apiError(res, 400, key + " must be an integer");
                     const int64_t value = it.value().get<int64_t>();
@@ -384,7 +396,7 @@ namespace p2p {
                     else if (key == "PreloadCache") { minimum = 0; maximum = 100; }
                     else if (key == "TorrentDisconnectTimeout") { minimum = 5; maximum = 86400; }
                     else if (key == "ConnectionsLimit") { minimum = 5; maximum = 1000; }
-                    else if (key == "PeersListenPort") { minimum = 0; maximum = 65535; restartRequired = true; }
+                    else if (key == "PeersListenPort") { minimum = 0; maximum = 65535; if (changed) restartRequired = true; }
                     if (value < minimum || value > maximum) return apiError(res, 400, key + " is outside the supported range");
                     next[key] = value;
                 } else if (stringKeys.count(key)) {
@@ -393,7 +405,7 @@ namespace p2p {
                     const size_t maximum = key == "TorrentsSavePath" ? 1024 : 4096;
                     if (!apiSafeText(value, maximum)) return apiError(res, 400, key + " is too long or contains control characters");
                     next[key] = value;
-                    if (key == "TorrentsSavePath" || key == "P2PDhtBootstrap") restartRequired = true;
+                    if (changed && (key == "TorrentsSavePath" || key == "P2PDhtBootstrap")) restartRequired = true;
                 } else {
                     return apiError(res, 400, "setting is read-only or unknown: " + key);
                 }
@@ -447,21 +459,30 @@ namespace p2p {
                 if (body.is_null()) return apiError(res, 400, "a JSON object is expected");
                 const bool hasTitle = body.contains("title");
                 const bool hasCategory = body.contains("category");
-                if (!hasTitle && !hasCategory) return apiError(res, 400, "title or category is required");
-                if ((hasTitle && !body["title"].is_string()) || (hasCategory && !body["category"].is_string())) {
-                    return apiError(res, 400, "title and category must be strings");
+                const bool hasPoster = body.contains("poster");
+                if (!hasTitle && !hasCategory && !hasPoster) {
+                    return apiError(res, 400, "title, category or poster is required");
+                }
+                if ((hasTitle && !body["title"].is_string()) || (hasCategory && !body["category"].is_string()) ||
+                    (hasPoster && !body["poster"].is_string())) {
+                    return apiError(res, 400, "title, category and poster must be strings");
                 }
                 const std::string title = hasTitle ? apiTrim(body["title"].get<std::string>()) : "";
                 const std::string category = hasCategory ? apiTrim(body["category"].get<std::string>()) : "";
-                if ((hasTitle && !apiSafeText(title, 512)) || (hasCategory && !apiSafeText(category, 128))) {
-                    return apiError(res, 400, "title or category is too long or contains control characters");
+                const std::string poster = hasPoster ? apiTrim(body["poster"].get<std::string>()) : "";
+                if ((hasTitle && !apiSafeText(title, 512)) || (hasCategory && !apiSafeText(category, 128)) ||
+                    (hasPoster && !apiSafeText(poster, 2048))) {
+                    return apiError(res, 400, "title, category or poster is too long or contains control characters");
                 }
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
                     if (hasTitle) torrent->rec.title = title;
                     if (hasCategory) torrent->rec.category = category;
+                    if (hasPoster) torrent->rec.poster = poster;
                 }
                 save(torrent);
+                // an emptied poster frees the torrent for the server's own cover
+                if (hasPoster && poster.empty()) coverRequest(hash);
                 return apiOk(res, 200, {{"torrent", item(torrent)}});
             }
 
@@ -480,14 +501,24 @@ namespace p2p {
             TorrentPtr torrent = find(hash);
             if (!torrent || !owns(torrent, user.id)) return apiError(res, 404, "torrent not found in your library");
 
-            auto ensureMetadata = [&]() {
+            // A caller may cap the metadata wait with ?wait=<seconds> (0..120): a listing
+            // request should answer \"not ready yet\" instead of holding the client for a minute.
+            size_t waitSeconds = 0;
+            const bool hasWait = req.has("wait");
+            if (hasWait && (!apiUnsigned(req.param("wait"), waitSeconds) || waitSeconds > 120)) {
+                return apiError(res, 400, "wait must be between 0 and 120 seconds");
+            }
+            auto ensureMetadata = [&](size_t defaultSeconds) {
                 std::string addError;
                 if (!add(hash, "", "", "", "", "", addError)) {
                     apiError(res, 503, addError.empty() ? "torrent could not be activated" : addError);
                     return false;
                 }
-                if (!waitInfo(torrent, kNativeInfoTimeout)) {
-                    apiError(res, 504, "torrent metadata is not ready yet");
+                const size_t seconds = hasWait ? waitSeconds : defaultSeconds;
+                if (!waitInfo(torrent, std::chrono::seconds(seconds))) {
+                    apiError(res, 504, seconds == 0 ? "torrent metadata is not ready yet"
+                                                    : "torrent metadata is not ready yet (waited " +
+                                                              std::to_string(seconds) + " s)");
                     return false;
                 }
                 return true;
@@ -526,14 +557,16 @@ namespace p2p {
             };
 
             if (count == 5 && at(4) == "files" && get) {
-                if (!ensureMetadata()) return true; // ensureMetadata wrote the error response
+                // a file listing answers quickly by default; a player that wants the metadata
+                // waits with ?wait=
+                if (!ensureMetadata(15)) return true; // ensureMetadata wrote the error response
                 return apiOk(res, 200, {{"hash", hash}, {"files", siloStatus(torrent, user.id).value("file_stats", json::array())},
                                         {"file_progress", siloStatus(torrent, user.id).value("file_progress", json::array())},
                                         {"viewed_files", siloStatus(torrent, user.id).value("viewed_files", json::array())}});
             }
 
             if (count == 5 && at(4) == "wake" && method == "POST") {
-                if (!ensureMetadata()) return true;
+                if (!ensureMetadata(kNativeInfoTimeout.count())) return true;
                 return apiOk(res, 200, {{"status", "active"}, {"torrent", item(torrent)}});
             }
 
@@ -544,7 +577,7 @@ namespace p2p {
                 }
                 std::vector<FileInfo> files;
                 { std::lock_guard<std::mutex> lock(m_mutex); files = torrent->rec.files; }
-                if (files.empty() && !ensureMetadata()) return true;
+                if (files.empty() && !ensureMetadata(15)) return true;
                 { std::lock_guard<std::mutex> lock(m_mutex); files = torrent->rec.files; }
                 const bool viewed = body["viewed"].get<bool>();
                 const int64_t now = static_cast<int64_t>(time(nullptr));
@@ -563,7 +596,7 @@ namespace p2p {
             }
 
             if (count == 6 && at(4) == "folders" && at(5) == "viewed" && method == "PUT") {
-                if (!ensureMetadata()) return true;
+                if (!ensureMetadata(15)) return true;
                 const json body = apiBody(req);
                 std::string folder;
                 if (!body.contains("path") || !body["path"].is_string() ||
@@ -603,6 +636,44 @@ namespace p2p {
                 if (matches.empty()) return apiError(res, 404, "folder contains no torrent files");
                 for (int id : matches) m_store.removeViewed(user.id, hash, id);
                 return apiOk(res, 200, {{"status", "reset"}, {"files", matches.size()}});
+            }
+
+            // GET/DELETE /api/v1/torrents/{hash}/cover — the server's own picture of the torrent
+            // (an image file inside it, or a frame of its video). Served to the same cookie/Bearer
+            // session as the rest of the library: no public poster URL, no external fetch.
+            if (count == 5 && at(4) == "cover") {
+                // DELETE drops the cached picture (the next cover is extracted again on request);
+                // POST extracts it now, a form of refresh for the web interface
+                if (method == "DELETE") {
+                    coverForget(hash);
+                    return apiOk(res, 200, {{"status", "dropped"}, {"hash", hash}});
+                }
+                if (method == "POST") {
+                    std::string poster;
+                    {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        poster = torrent->rec.poster;
+                    }
+                    if (!poster.empty()) return apiError(res, 409, "this torrent has a poster of its own");
+                    coverForget(hash);
+                    coverRequest(hash);
+                    return apiOk(res, 202, {{"status", "extracting"}, {"hash", hash}});
+                }
+                if (!get) return apiError(res, 405, "method not allowed");
+                std::string bytes, type, source;
+                if (!coverRead(hash, bytes, type, source)) {
+                    return res.send(404, "application/json; charset=utf-8",
+                                    json{{"error", "no cover for this torrent"}}.dump(),
+                                    {{"X-P2Play-Cover", "none"}, {"Cache-Control", "no-store"}});
+                }
+                std::string etag = "\"" + hash + "-" + std::to_string(bytes.size()) + "\"";
+                if (req.header("if-none-match") == etag) {
+                    return res.send(304, type, "", {{"ETag", etag},
+                                        {"Cache-Control", "private, max-age=86400"}});
+                }
+                return res.send(200, type, bytes,
+                                {{"ETag", etag}, {"Cache-Control", "private, max-age=86400"},
+                                 {"X-P2Play-Cover", source}});
             }
 
             if (count == 5 && at(4) == "cache" && get) {
@@ -658,7 +729,7 @@ namespace p2p {
             if (count == 7 && at(4) == "files" && at(6) == "stream" && get) {
                 int index = -1;
                 if (!parseFileIndex(at(5), index)) return apiError(res, 400, "file index is invalid");
-                if (!ensureMetadata()) return true;
+                if (!ensureMetadata(kNativeInfoTimeout.count())) return true;
                 FileInfo selected;
                 if (!fileAt(index, selected)) return apiError(res, 404, "file not found");
                 stream(torrent, selected.id, req, res);

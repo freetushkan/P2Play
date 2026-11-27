@@ -535,7 +535,16 @@ namespace p2p {
             log("[Mesh] directory swarm disabled by settings");
         }
         meshTick(true);
+        coverInit();
         m_idleThread = std::thread(&Core::idleLoop, this);
+        m_coverThread = std::thread(&Core::coverLoop, this);
+        // a library filled before covers existed, or one whose torrents were closed: the
+        // worker fills only those without a picture, and skips the cached misses
+        for (const auto &entry : m_torrents) {
+            const bool saved = entry.second->saved;
+            const std::string poster = entry.second->rec.poster;
+            if (saved && poster.empty()) coverRequest(entry.first);
+        }
 
         if (!m_http.start(m_config.httpPort, [this](const HttpRequest &req, HttpResponse &res) { handle(req, res); })) {
             log("[Web] cannot listen on port %d", m_config.httpPort);
@@ -561,6 +570,10 @@ namespace p2p {
         if (m_idleThread.joinable()) {
             m_idleThread.join();
         }
+        m_coverChanged.notify_all();
+        if (m_coverThread.joinable()) {
+            m_coverThread.join();
+        }
         m_session.reset();
         log("[Core] stopped");
     }
@@ -579,6 +592,7 @@ namespace p2p {
         b("UseDisk", m_settings.useDisk);
         b("DiskCacheEnabled", m_settings.diskCacheEnabled);
         b("CacheListsInMemory", m_settings.cacheListsInMemory);
+        b("CoverProbe", m_settings.coverProbe);
         if (s.contains("DiskCacheSize") && s["DiskCacheSize"].is_number_integer())
             m_settings.diskCacheSize = s["DiskCacheSize"].get<int64_t>();
         if (m_settings.useDisk) m_settings.diskCacheEnabled = false;
@@ -681,6 +695,7 @@ namespace p2p {
                 {"DiskCacheEnabled", m_settings.diskCacheEnabled},
                 {"DiskCacheSize", m_settings.diskCacheSize},
                 {"CacheListsInMemory", m_settings.cacheListsInMemory},
+                {"CoverProbe", m_settings.coverProbe},
                 {"TorrentsSavePath", m_settings.savePath},
                 {"RemoveCacheOnDrop", false},
                 {"ForceEncrypt", false},
@@ -959,6 +974,15 @@ namespace p2p {
         }
         if (save || filled) {
             this->save(t);
+        }
+        if (save) {
+            // a poster the client sent wins; otherwise the worker looks inside the torrent
+            bool wanted;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                wanted = t->rec.poster.empty();
+            }
+            if (wanted) coverRequest(hash);
         }
         return t;
     }
@@ -1259,6 +1283,7 @@ namespace p2p {
         std::remove(m_store.metadataPath(t->rec.hash).c_str());
         std::remove(m_store.resumePath(t->rec.hash).c_str());
         if (!m_settings.useDisk) removeDirectoryTree(m_store.dir() + "/torrent-cache/" + t->rec.hash);
+        coverForget(t->rec.hash);
     }
 
     json Core::filesData(const TorrentPtr &t) {
