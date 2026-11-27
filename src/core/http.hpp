@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -91,6 +93,7 @@ namespace p2p {
         void acceptLoop();
 
         void serve(int fd, std::string peer);
+        void closeClient(int fd);
 
         int m_fd = -1;
         uint16_t m_port = 0;
@@ -98,6 +101,8 @@ namespace p2p {
         std::thread m_thread;
         std::atomic<bool> m_running{false};
         std::atomic<int> m_connections{0};
+        std::mutex m_clientsMutex;
+        std::set<int> m_clients;
     };
 
     const char *httpReason(int status);

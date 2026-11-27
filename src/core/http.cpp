@@ -11,7 +11,9 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -199,6 +201,12 @@ namespace p2p {
             m_fd = -1;
             return false;
         }
+        const int flags = fcntl(m_fd, F_GETFL, 0);
+        if (m_fd >= FD_SETSIZE || flags < 0 || fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(m_fd);
+            m_fd = -1;
+            return false;
+        }
         socklen_t len = sizeof(addr);
         if (getsockname(m_fd, reinterpret_cast<sockaddr *>(&addr), &len) == 0) {
             m_port = ntohs(addr.sin_port);
@@ -209,22 +217,27 @@ namespace p2p {
     }
 
     void HttpServer::stopAccepting() {
-        if (m_running.exchange(false)) {
-            if (m_fd >= 0) {
-                shutdown(m_fd, SHUT_RDWR);
-                close(m_fd);
-                m_fd = -1;
-            }
-        }
-        // Join the accept loop before reporting the connection count: a successful accept
-        // is counted and its worker is started before this join can complete.
+        m_running = false;
+        // Do not rely on close/shutdown from another thread waking a blocking
+        // accept (not portable to all console socket implementations). The accept
+        // loop uses a bounded select; keep its fd alive until it has returned.
         if (m_thread.joinable()) {
             m_thread.join();
+        }
+        if (m_fd >= 0) {
+            close(m_fd);
+            m_fd = -1;
         }
     }
 
     void HttpServer::stop() {
         stopAccepting();
+        {
+            std::lock_guard<std::mutex> lock(m_clientsMutex);
+            // Cancel recv/send without closing a descriptor owned by a worker.
+            // closeClient serializes removal/close to avoid fd-reuse races.
+            for (int fd: m_clients) shutdown(fd, SHUT_RDWR);
+        }
         // Connection workers are detached, but each decrements this counter as its last
         // access to HttpServer. Never destroy the handler/core while one is still running.
         while (m_connections.load() > 0) {
@@ -236,6 +249,13 @@ namespace p2p {
 
     void HttpServer::acceptLoop() {
         while (m_running) {
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET(m_fd, &readable);
+            timeval timeout{0, 100000};
+            const int ready = select(m_fd + 1, &readable, nullptr, nullptr, &timeout);
+            if (!m_running) break;
+            if (ready <= 0) continue;
             sockaddr_in addr{};
             socklen_t len = sizeof(addr);
             int client = accept(m_fd, reinterpret_cast<sockaddr *>(&addr), &len);
@@ -245,9 +265,19 @@ namespace p2p {
                 }
                 continue;
             }
+            // Accepted sockets may inherit O_NONBLOCK on some platforms.
+            const int clientFlags = fcntl(client, F_GETFL, 0);
+            if (clientFlags < 0 || fcntl(client, F_SETFL, clientFlags & ~O_NONBLOCK) < 0) {
+                close(client);
+                continue;
+            }
             char ip[INET_ADDRSTRLEN] = "";
             inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
-            m_connections++;
+            {
+                std::lock_guard<std::mutex> lock(m_clientsMutex);
+                m_clients.insert(client);
+                m_connections++;
+            }
             std::thread(&HttpServer::serve, this, client, std::string(ip)).detach();
         }
     }
@@ -262,8 +292,7 @@ namespace p2p {
         while ((headEnd = data.find("\r\n\r\n")) == std::string::npos && data.size() < kMaxHead) {
             ssize_t n = recv(fd, buf, sizeof(buf), 0);
             if (n <= 0) {
-                close(fd);
-                m_connections--;
+                closeClient(fd);
                 return;
             }
             data.append(buf, static_cast<size_t>(n));
@@ -283,7 +312,8 @@ namespace p2p {
                 while (request.body.size() < length) {
                     ssize_t n = recv(fd, buf, sizeof(buf), 0);
                     if (n <= 0) {
-                        break;
+                        closeClient(fd);
+                        return;
                     }
                     request.body.append(buf, static_cast<size_t>(n));
                 }
@@ -302,8 +332,17 @@ namespace p2p {
                 }
             }
         }
-        shutdown(fd, SHUT_RDWR);
-        close(fd);
+        closeClient(fd);
+    }
+
+    void HttpServer::closeClient(int fd) {
+        {
+            std::lock_guard<std::mutex> lock(m_clientsMutex);
+            m_clients.erase(fd);
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+        }
+        // Last access to this: stop() may destroy the object once it sees zero.
         m_connections--;
     }
 
