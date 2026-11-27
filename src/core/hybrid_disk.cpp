@@ -6,6 +6,7 @@
 
 #include <map>
 #include <mutex>
+#include <atomic>
 
 #include <libtorrent/disk_interface.hpp>
 #include <libtorrent/posix_disk_io.hpp>
@@ -17,11 +18,16 @@ namespace p2p {
         class HybridDiskIo final : public lt::disk_interface {
         public:
             HybridDiskIo(std::unique_ptr<lt::disk_interface> ram, std::unique_ptr<lt::disk_interface> disk,
-                         std::string diskPrefix)
-                    : m_ram(std::move(ram)), m_disk(std::move(disk)), m_prefix(std::move(diskPrefix)) {}
+                         std::string diskPrefix, std::shared_ptr<std::atomic<bool>> diskTorrents)
+                    : m_ram(std::move(ram)), m_disk(std::move(disk)), m_prefix(std::move(diskPrefix)),
+                      m_diskTorrents(std::move(diskTorrents)) {}
 
             lt::storage_holder new_torrent(lt::storage_params const &p, std::shared_ptr<void> const &torrent) override {
-                const bool disk = !m_prefix.empty() && p.path.compare(0, m_prefix.size(), m_prefix) == 0;
+                const bool listStorage = !m_prefix.empty() && p.path.compare(0, m_prefix.size(), m_prefix) == 0;
+                // The selected backend is captured per torrent storage. Changing the setting
+                // affects newly opened torrents; live readers keep their current storage until
+                // their stream closes and the torrent is reopened.
+                const bool disk = listStorage || (m_diskTorrents && m_diskTorrents->load());
                 lt::disk_interface &target = disk ? *m_disk : *m_ram;
                 lt::storage_holder inner = target.new_torrent(p, torrent);
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -158,16 +164,19 @@ namespace p2p {
 
             std::unique_ptr<lt::disk_interface> m_ram, m_disk;
             std::string m_prefix;
+            std::shared_ptr<std::atomic<bool>> m_diskTorrents;
             std::mutex m_mutex;
             std::map<std::uint32_t, Slot> m_slots;
             std::uint32_t m_next = 0;
         };
     }
 
-    lt::disk_io_constructor_type hybridDisk(lt::disk_io_constructor_type ram, std::string diskPrefix) {
-        return [ram, diskPrefix](lt::io_context &ioc, lt::settings_interface const &sett, lt::counters &cnt) {
+    lt::disk_io_constructor_type hybridDisk(lt::disk_io_constructor_type ram, std::string diskPrefix,
+                                            std::shared_ptr<std::atomic<bool>> diskTorrents) {
+        return [ram, diskPrefix, diskTorrents](lt::io_context &ioc, lt::settings_interface const &sett, lt::counters &cnt) {
             return std::unique_ptr<lt::disk_interface>(
-                    new HybridDiskIo(ram(ioc, sett, cnt), lt::posix_disk_io_constructor(ioc, sett, cnt), diskPrefix));
+                    new HybridDiskIo(ram(ioc, sett, cnt), lt::posix_disk_io_constructor(ioc, sett, cnt),
+                                     diskPrefix, diskTorrents));
         };
     }
 

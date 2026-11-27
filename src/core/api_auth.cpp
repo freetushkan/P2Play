@@ -5,6 +5,8 @@
 #include "core_torrent.hpp"
 #include "ui_files.hpp"
 
+#include <cctype>
+
 namespace p2p {
 
     using nlohmann::json;
@@ -13,6 +15,23 @@ namespace p2p {
         bool error(HttpResponse &res, int status, const std::string &message,
                    const std::map<std::string, std::string> &headers = {}) {
             return res.send(status, "application/json; charset=utf-8", json{{"error", message}}.dump(), headers);
+        }
+
+        // /api/v1/torrents/<hash>/files/<index>/stream and nothing else
+        bool internalStreamPath(const std::string &path) {
+            if (path.rfind("/api/v1/torrents/", 0) != 0) return false;
+            const size_t files = path.find("/files/");
+            if (files == std::string::npos || files <= 17) return false;
+            const size_t index = files + 7;
+            const size_t stream = path.find("/stream", index);
+            if (stream == std::string::npos || stream != path.size() - 7 || stream == index) return false;
+            for (size_t i = index; i < stream; i++) {
+                if (path[i] < '0' || path[i] > '9') return false;
+            }
+            for (size_t i = 17; i < files; i++) {
+                if (!isxdigit(static_cast<unsigned char>(path[i]))) return false;
+            }
+            return true;
         }
 
         std::string tokenCookie(const std::string &token, int maxAge) {
@@ -68,7 +87,7 @@ namespace p2p {
             // the plugin's policy in Silo, the same here
             res.send(200, f->type, std::string(reinterpret_cast<const char *>(f->data), f->size),
                      {{"Cache-Control", "no-cache"}, {"X-Content-Type-Options", "nosniff"}, {"Referrer-Policy", "no-referrer"},
-                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; "
                                                   "connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"}});
             return;
         }
@@ -115,11 +134,22 @@ namespace p2p {
         // the native API: Silo's tokens
         if (p.rfind("/api/", 0) == 0) {
             const User user = m_auth.byToken(req);
-            if (!user.valid()) {
-                error(res, 401, "unauthorized");
+            if (user.valid()) {
+                routeSilo(req, res, user);
                 return;
             }
-            routeSilo(req, res, user);
+            // The core's own ffmpeg (covers.cpp) reads one stream over loopback for the cover
+            // probe. It presents a random per-run token, is accepted from 127.0.0.1 only, and
+            // reaches nothing but the stream route: no other /api route knows this header.
+            if (req.method == "GET" && req.peer == "127.0.0.1" && m_internalToken.size() == 64 &&
+                req.header("x-p2play-internal") == m_internalToken && internalStreamPath(p)) {
+                const User owner = m_auth.find(Auth::kOwner);
+                if (owner.valid()) {
+                    routeSilo(req, res, owner);
+                    return;
+                }
+            }
+            error(res, 401, "unauthorized");
             return;
         }
 

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -62,6 +63,15 @@ namespace p2p {
         int listenPort = 0;          // BitTorrent, 0: any (restart)
         std::string dhtBootstrap;    // P2PDhtBootstrap: "host:port,...", a DHT of our own
         bool catalogOnly = false;    // P2PCatalogOnly: lists and search, no streamer (restart)
+        // a bounded cache on disk for the torrents whose pieces are kept whole; exclusive with
+        // UseDisk, which is the old unlimited mode. Chosen when a torrent is activated.
+        bool diskCacheEnabled = false;
+        int64_t diskCacheSize = 8LL << 30;
+        bool cacheListsInMemory = true; // MediaMesh records indexed in RAM (off: read from disk)
+        // A torrent added without a poster (a magnet, a .torrent file, a torrs:// card without
+        // one) gets the image found inside it; with none there, a frame of its video through
+        // ffmpeg when that binary is present. Off: only posters given by the client.
+        bool coverProbe = true;
     };
 
     class Core {
@@ -239,6 +249,22 @@ namespace p2p {
         nlohmann::json status(const TorrentPtr &t);
         nlohmann::json filesData(const TorrentPtr &t);
 
+        // covers.cpp: a poster for the torrents added without one, cached on disk by infohash
+        // (<data>/covers/<infohash>.img and .json). Never runs on an HTTP or libtorrent thread.
+        void coverLoop();
+        void coverInit();
+        void coverRequest(const std::string &hash);
+        // the picture of a torrent: an image file inside it, or a frame of its video
+        bool coverExtract(const TorrentPtr &t, std::string &bytes, std::string &type,
+                          std::string &source, std::string &error);
+        // the cached cover of a torrent: its bytes, image type and where it came from
+        bool coverRead(const std::string &hash, std::string &bytes, std::string &type, std::string &source);
+        // the same without the bytes: for a listing, one small file read per torrent
+        bool coverInfo(const std::string &hash, std::string &source);
+        void coverForget(const std::string &hash);
+        // a byte range of a file of a torrent, read through the streaming pieces
+        bool fileBytes(const TorrentPtr &t, int fileId, int64_t offset, size_t length, std::string &out);
+
         // streaming
         void stream(const TorrentPtr &t, int index, const HttpRequest &req, HttpResponse &res);
         void preload(const TorrentPtr &t, int index);
@@ -251,6 +277,7 @@ namespace p2p {
         void loadSettings();
         void applySettings();
         nlohmann::json settingsJson();
+        int64_t diskCacheUsage() const;
 
         void alertLoop();
         void alertStep();
@@ -280,6 +307,8 @@ namespace p2p {
         Auth m_auth;
         Settings m_settings;
         std::unique_ptr<RamCache> m_cache;   // null with useDisk
+        // read by the hybrid disk storage: are the streaming torrents kept on disk?
+        std::shared_ptr<std::atomic<bool>> m_diskTorrents = std::make_shared<std::atomic<bool>>(false);
         std::unique_ptr<lt::session> m_session;
         HttpServer m_http;
 
@@ -298,6 +327,15 @@ namespace p2p {
         std::atomic<int> m_nextReader{1};
         std::thread m_alertThread;
         std::thread m_idleThread;
+
+        // covers.cpp: the jobs (the hashes), one at a time; the core's own ffmpeg reads a
+        // stream over loopback with this per-run random token
+        std::thread m_coverThread;
+        std::mutex m_coverMutex;
+        std::condition_variable m_coverChanged;
+        std::deque<std::string> m_coverQueue;
+        std::set<std::string> m_coverQueued;
+        std::string m_internalToken;
         std::mutex m_logMutex;
     };
 

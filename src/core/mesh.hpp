@@ -83,7 +83,11 @@ namespace p2p {
         static constexpr size_t kMaxMetaItems = 256;
         static constexpr size_t kMaxMetaAnnotationBytes = 2048;
 
-        void load(const std::string &dataDir, std::function<void(const std::string &)> log);
+        void load(const std::string &dataDir, std::function<void(const std::string &)> log,
+                  bool cacheRecordsInMemory = true);
+        // Keep only list cards and signed file descriptors in memory. Records remain on disk
+        // and are read when searched or requested; changing this at runtime is supported.
+        void setRecordCache(bool enabled);
         std::vector<MeshList> lists() const;
         bool list(const std::string &pubkey, MeshList &out) const;
         std::vector<MeshRecord> search(const std::string &query, const std::string &tag, size_t limit,
@@ -136,6 +140,7 @@ namespace p2p {
         mutable std::mutex m_writeMutex; // serialize disk transactions, never held by network code
         std::map<std::string, Loaded> m_lists;
         std::map<std::string, MeshRecord> m_index;
+        bool m_cacheRecordsInMemory = true;
     };
     std::string meshFold(const std::string &s);
 }
