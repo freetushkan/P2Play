@@ -25,6 +25,11 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstdint>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include "core_torrent.hpp"
 
@@ -236,6 +241,178 @@ namespace p2p {
         if (!readWhole(base + ".img", bytes) || bytes.empty()) return false;
         type = j.value("type", std::string("application/octet-stream"));
         source = j.value("source", std::string());
+        return true;
+    }
+
+
+    bool Core::coverValidate(const std::string &bytes, std::string &type) const {
+        type = imageType(bytes);
+        return !type.empty() && !bytes.empty() && bytes.size() <= kMaxCoverBytes;
+    }
+
+    // Only public IPv4 HTTP endpoints are fetched: poster URLs must not turn this route into
+    // an SSRF primitive against loopback, LAN services, link-local or reserved networks.
+    bool Core::coverFetchUrl(const std::string &input, std::string &bytes, std::string &type, std::string &error) {
+        if (input.size() > 2048 || input.find_first_of("\r\n\t ") != std::string::npos) {
+            error = "poster URL is invalid or too long";
+            return false;
+        }
+        std::string url = input;
+        for (int hop = 0; hop < 4; ++hop) {
+            if (url.rfind("http://", 0) != 0) {
+                error = "poster URL must use public http:// (HTTPS is not available in this build)";
+                return false;
+            }
+            const std::string rest = url.substr(7);
+            const size_t slash = rest.find_first_of("/?#");
+            const std::string hostPort = rest.substr(0, slash);
+            std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+            if (path[0] == '?' || path[0] == '#') path = "/" + path;
+            if (hostPort.empty() || hostPort.find('@') != std::string::npos ||
+                hostPort.find_first_of("\\\r\n\t ") != std::string::npos ||
+                path.find_first_of("\r\n") != std::string::npos) {
+                error = "poster URL host or path is invalid";
+                return false;
+            }
+            std::string host = hostPort, port = "80";
+            const size_t colon = hostPort.rfind(':');
+            if (colon != std::string::npos) {
+                host = hostPort.substr(0, colon);
+                port = hostPort.substr(colon + 1);
+            }
+            if (host.empty() || port.empty() ||
+                !std::all_of(port.begin(), port.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
+                error = "poster URL host or port is invalid";
+                return false;
+            }
+            const int portNumber = std::atoi(port.c_str());
+            if (portNumber < 1 || portNumber > 65535) {
+                error = "poster URL port is invalid";
+                return false;
+            }
+            addrinfo hints{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            addrinfo *addresses = nullptr;
+            if (getaddrinfo(host.c_str(), port.c_str(), &hints, &addresses) != 0 || !addresses) {
+                error = "cannot resolve poster host " + host;
+                return false;
+            }
+            int fd = -1;
+            for (addrinfo *address = addresses; address; address = address->ai_next) {
+                const auto *ipv4 = reinterpret_cast<const sockaddr_in *>(address->ai_addr);
+                const uint32_t value = ntohl(ipv4->sin_addr.s_addr);
+                const unsigned a = (value >> 24) & 255, b = (value >> 16) & 255, d = (value >> 8) & 255;
+                const bool privateAddress = a == 0 || a == 10 || a == 127 || a >= 224 ||
+                    (a == 169 && b == 254) || (a == 172 && b >= 16 && b <= 31) ||
+                    (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127) ||
+                    (a == 192 && b == 0) || (a == 198 && (b == 18 || b == 19)) ||
+                    (a == 198 && b == 51 && d == 100) || (a == 203 && b == 0 && d == 113);
+                if (privateAddress) continue;
+                fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+                if (fd < 0) continue;
+                timeval timeout{10, 0};
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+                if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) break;
+                ::close(fd);
+                fd = -1;
+            }
+            freeaddrinfo(addresses);
+            if (fd < 0) {
+                error = "poster host is not publicly reachable";
+                return false;
+            }
+            const std::string request = "GET " + path + " HTTP/1.0\r\nHost: " + hostPort +
+                "\r\nUser-Agent: P2Play\r\nAccept: image/jpeg,image/png,image/webp,image/gif\r\nConnection: close\r\n\r\n";
+            size_t sent = 0;
+            while (sent < request.size()) {
+                const ssize_t count = ::send(fd, request.data() + sent, request.size() - sent, 0);
+                if (count <= 0) break;
+                sent += static_cast<size_t>(count);
+            }
+            std::string response;
+            char buffer[8192];
+            ssize_t count = 0;
+            const size_t responseLimit = kMaxCoverBytes + 32768;
+            while (sent == request.size() && (count = recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+                if (response.size() + static_cast<size_t>(count) > responseLimit) {
+                    response.clear();
+                    break;
+                }
+                response.append(buffer, static_cast<size_t>(count));
+            }
+            ::close(fd);
+            const size_t headEnd = response.find("\r\n\r\n");
+            if (response.empty() || headEnd == std::string::npos || headEnd > 32768) {
+                error = "poster server returned an invalid or oversized response";
+                return false;
+            }
+            const std::string head = response.substr(0, headEnd);
+            const size_t statusSpace = head.find(' ');
+            const int status = statusSpace == std::string::npos ? 0 : std::atoi(head.substr(statusSpace + 1, 3).c_str());
+            if (status >= 300 && status < 400) {
+                const std::string lowered = lower(head);
+                const size_t location = lowered.find("\r\nlocation:");
+                if (location == std::string::npos) {
+                    error = "poster redirect has no Location header";
+                    return false;
+                }
+                const size_t end = head.find("\r\n", location + 2);
+                std::string target = head.substr(location + 11,
+                    end == std::string::npos ? std::string::npos : end - location - 11);
+                const size_t first = target.find_first_not_of(" \t");
+                target = first == std::string::npos ? std::string() : target.substr(first);
+                if (target.rfind("http://", 0) == 0) url = target;
+                else if (!target.empty() && target[0] == '/') url = "http://" + hostPort + target;
+                else {
+                    error = "poster redirect target is invalid";
+                    return false;
+                }
+                continue;
+            }
+            if (status != 200) {
+                error = "poster server returned HTTP " + std::to_string(status);
+                return false;
+            }
+            bytes = response.substr(headEnd + 4);
+            if (!coverValidate(bytes, type)) {
+                bytes.clear();
+                error = "poster response is not a supported image or exceeds 2 MiB";
+                return false;
+            }
+            return true;
+        }
+        error = "too many poster redirects";
+        return false;
+    }
+
+    bool Core::coverStore(const std::string &hash, const std::string &bytes,
+                          const std::string &source, std::string &error) {
+        std::string type;
+        if (!coverValidate(bytes, type)) {
+            error = "poster must be a JPEG, PNG, WebP or GIF image no larger than 2 MiB";
+            return false;
+        }
+        const std::string base = coverPath(m_store.dir(), hash);
+        const size_t slash = base.rfind('/');
+        if (slash == std::string::npos) {
+            error = "cannot determine poster storage directory";
+            return false;
+        }
+        makeDirs(base.substr(0, slash));
+        if (!writeWhole(base + ".img", bytes)) {
+            error = "cannot save poster on the P2Play server";
+            return false;
+        }
+        const json metadata = {{"source", source}, {"type", type}, {"bytes", bytes.size()},
+                               {"at", static_cast<int64_t>(time(nullptr))}};
+        if (!writeWhole(base + ".json", metadata.dump())) {
+            std::remove((base + ".img").c_str());
+            error = "cannot save poster metadata on the P2Play server";
+            return false;
+        }
+        std::remove((base + ".none").c_str());
         return true;
     }
 
