@@ -20,6 +20,8 @@ namespace p2p {
     using nlohmann::json;
 
     namespace {
+        constexpr auto kNativeInfoTimeout = std::chrono::seconds(60);
+
         bool apiError(HttpResponse &res, int status, const std::string &message) {
             return res.json(status, json{{"error", message}}.dump());
         }
@@ -478,7 +480,7 @@ namespace p2p {
                     apiError(res, 503, addError.empty() ? "torrent could not be activated" : addError);
                     return false;
                 }
-                if (!waitInfo(torrent, kInfoTimeout)) {
+                if (!waitInfo(torrent, kNativeInfoTimeout)) {
                     apiError(res, 504, "torrent metadata is not ready yet");
                     return false;
                 }
