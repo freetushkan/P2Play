@@ -23,9 +23,24 @@ layer и продолжает работать при сборке с P2P_COMPAT
 | GET /api/v1/library/torrents | Вся библиотека пользователя; параметры q, category, sort=date/title/size, order=asc/desc, offset, limit |
 | GET /api/v1/library/categories | Категории, встречающиеся в библиотеке пользователя |
 | POST /api/v1/torrents | Добавление magnet / поддерживаемой ссылки (JSON) или .torrent (multipart field file) |
-| GET /api/v1/torrents/{hash} | Запись из собственной библиотеки |
+| GET /api/v1/torrents/{hash} | Карточка и подробный status/file_stats/viewed/progress |
 | PUT /api/v1/torrents/{hash} | Изменение title и/или category |
 | DELETE /api/v1/torrents/{hash} | Удаление из библиотеки текущего пользователя |
+| GET /api/v1/torrents/{hash}/files | Список файлов, watched и playback progress |
+| PUT /api/v1/torrents/{hash}/viewed | Отметить все файлы раздачи watched/unwatched |
+| DELETE /api/v1/torrents/{hash}/progress | Сбросить весь watched/progress state раздачи |
+| PUT /api/v1/torrents/{hash}/files/{index}/viewed | Watched mark отдельного файла |
+| PUT/DELETE /api/v1/torrents/{hash}/files/{index}/progress | Сохранить позицию или сбросить watched/позицию файла |
+| PUT /api/v1/torrents/{hash}/folders/viewed | Watched mark всех файлов внутри torrent-relative folder (path в JSON) |
+| DELETE /api/v1/torrents/{hash}/folders/progress?path=... | Сброс watched/progress файлов папки |
+| GET /api/v1/torrents/{hash}/files/{index}/stream | Range-capable stream с cookie/Bearer auth |
+| POST /api/v1/torrents/{hash}/wake | Активировать раздачу для streaming/metadata |
+| GET /api/v1/torrents/{hash}/cache, /peers | Диагностика RAM cache, readers и peer connections |
+| GET /api/v1/progress | Per-user Continue Watching |
+| GET/PUT /api/v1/settings | Настройки движка; PUT только owner |
+| GET/POST /api/v1/users и /api/v1/users/{id} | Управление пользователями с Silo rank checks |
+| GET /api/v1/system/stats | Uptime, sessions, readers и глобальная cache статистика |
+| GET /api/v1/library/export, POST /api/v1/library/import | Перенос пользовательской библиотеки .torrs |
 
 POST добавляет запись в библиотеку по умолчанию. JSON-поля: link, title,
 category. Для multipart используются поля file, title, category; файл и ссылка
@@ -64,22 +79,33 @@ Silo не проксирует маршруты /api/v1 и не получает
 - Добавление magnet/link или binary .torrent, optional title/category.
 - Поиск по title/hash/category, category selector с «все» / «без категории» /
   реальными значениями, сортировка date/title/size в обе стороны.
-- Изменение display title и категории, а также подтверждаемое удаление с ясной
-  пометкой про общие torrent metadata и per-user library membership.
-- Ошибка не очищает форму; повторный submit блокируется на время операции.
-- Недоверенные строки выводятся через textContent, внешние постеры/HTML не
-  вставляются, CSP остаётся ограничивающей.
+- Изменение display title и категории, подтверждаемое удаление и импорт/экспорт
+  .torrs; общие torrent metadata отделены от per-user library membership.
+- Детали раздачи: список файлов, проигрывание через защищённый Range stream,
+  watched/unwatched, reset позиции и watched для файла, папки или всей раздачи.
+- Continue Watching, server stats, owner engine settings и rank-aware user
+  management (создание, смена роли, ban, password reset, token regeneration,
+  удаление).
+- Peer list и RAM cache diagnostics (включая активные reader windows).
+- Runtime settings применяются немедленно; storage backend, save path, listen
+  port и DHT bootstrap помечаются как требующие restart.
+- Ошибка не очищает форму; операции блокируются на время запроса.
+- Недоверенные строки выводятся через textContent; CSP разрешает media-src
+  только same-origin для защищённого stream; внешние постеры/HTML не вставляются.
 
 ## Проверки и дальнейший паритет
 
 tools/ui-test.py проверяет защищённый API, добавление magnet и multipart
-torrent, поиск/категории/сортировку, удаление и изоляцию двух пользовательских
-библиотек. Browser режим проверяет login, вкладку Library, добавление magnet и редактирование
-названия/категории через Playwright.
+torrent, поиск/категории/сортировку, удаление и изоляцию пользовательских
+библиотек; file list, watched/progress/reset, Continue Watching, stream index
+validation, peers/cache diagnostics, owner settings и users API. Browser режим
+проверяет login, добавление/редактирование torrent, details/files, settings,
+users и Continue Watching через Playwright.
 
-Это не означает полный TorrServer parity. Остальные сценарии MatriX/Silo,
-файлы/папки, stream/player, viewed/reset/progress, сведения/peers/cache,
-настройки и управление users проверяются отдельными шагами. Browser CI на Linux
-не заменяет приёмку Android WebView, embedded LAN и целевых устройств.
+Этот этап закрывает основные web-ui операции управления библиотекой и
+воспроизведением, но не заявляет абсолютный TorrServer parity: остаются
+сравнительные проверки редких BTSets, выбор приоритетов отдельных pieces,
+совместимость внешних MatriX/Silo клиентов и приёмка Android WebView/embedded
+LAN/целевых устройств. Browser CI на Linux не заменяет эти проверки.
 
 Публичные compatibility API и wire-format MediaMesh этим шагом не меняются.

@@ -1,277 +1,77 @@
 (function () {
-    "use strict";
-    // One page for two hosts: Silo serves it as this plugin (/plugins/mediamesh/, service.js
-    // passes the calls on to a P2Play node) and the P2Play core serves the same files at /ui/
-    // (cmake/embed-ui.cmake), calling its own /api. The host is told by the address.
-    var SILO = location.pathname.indexOf("/plugins/") === 0;
-    var HOST = SILO ? "Silo" : "P2Play";
-    var base = "/plugins/mediamesh", session, busy = false;
-    var $ = function (id) { return document.getElementById(id); };
-    function status(message, bad) { $("status").textContent = message; $("status").className = bad ? "error" : ""; }
-    async function request(url, body, headers) {
-        var opts = { credentials: "same-origin", headers: { Accept: "application/json" }, cache: "no-store" };
-        if (body !== undefined) {
-            opts.method = "POST";
-            opts.headers["Content-Type"] = "application/json";
-            Object.keys(headers || {}).forEach(function (k) { opts.headers[k] = headers[k]; });
-            opts.body = JSON.stringify(body);
-        }
-        var res = await fetch(url, opts), data;
-        try { data = await res.json(); } catch (_) { throw new Error(HOST + " returned an unreadable response. Sign in and reload this page."); }
-        if (res.status === 401 && !SILO) { showLogin(); throw new Error("Log in to this P2Play node."); }
-        if (!res.ok) throw new Error(data.error || "Request failed.");
-        return data;
-    }
-    // the plugin's routes (service.js)
-    function api(path, body) { return request(base + path, body, session ? { "X-MediaMesh-CSRF": session.csrf } : {}); }
-    // the core's own API, in the shapes of the plugin's routes
-    function core(path, body) { return request("/api" + path, body); }
-
-    async function nativeRequest(path, method, body) {
-        var opts = { method: method, credentials: "same-origin", cache: "no-store",
-            headers: { Accept: "application/json" } };
-        if (body !== undefined) {
-            if (body instanceof FormData) opts.body = body;
-            else { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-        }
-        var response = await fetch("/api/v1" + path, opts), data;
-        try { data = await response.json(); } catch (_) { throw new Error("Unreadable library response."); }
-        if (response.status === 401) { showLogin(); throw new Error("Log in to this P2Play node."); }
-        if (!response.ok) throw new Error(data.error || "Library request failed.");
-        return data;
-    }
-    function card(r) {
-        return { hash: r.hash, title: r.title || "", size: r.size || 0, files: r.files || 0, tags: r.tags || [],
-            lists: r.lists || [], torrs: r.torrs || "", supported: true };
-    }
-    var host = SILO ? {
-        session: function () { return api("/api/session"); },
-        search: function (q, tag) { return api("/api/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag)); },
-        lists: function () { return api("/api/lists"); },
-        discover: function () { return api("/api/discover"); },
-        subscribe: function (pubkey) { return api("/api/subscribe", { pubkey: pubkey }); },
-        add: function (r) { return api("/api/add", { hash: r.hash }); },
-        settings: function (body) { return api("/api/settings", body); }
-    } : {
-        session: async function () {
-            var me = await core("/auth/me");
-            return { rank: me.rank, csrf: "", can_admin: me.rank >= 50, user: me.username };
-        },
-        search: async function (q, tag) {
-            var data = await core("/catalog/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag) + "&limit=50");
-            return { results: (data.results || []).map(card) };
-        },
-        lists: function () { return core("/lists"); },
-        discover: function () { return core("/lists/discover"); },
-        subscribe: function (pubkey) { return core("/lists/" + encodeURIComponent(pubkey.toLowerCase()), {}); },
-        add: function (r) {
-            // a v1 record has its torrs:// card (title, poster, trackers); a v2 one goes by its hash
-            var link = r.torrs || (r.hash.length === 64 ? "magnet:?xt=urn:btmh:1220" + r.hash : "magnet:?xt=urn:btih:" + r.hash);
-            return core("/torrents", { link: link, title: r.title, save_to_db: true });
-        }
-    };
-    if (!SILO) {
-        host.library = function (q, category, sort, order) {
-            return nativeRequest("/library/torrents?q=" + encodeURIComponent(q || "") +
-                "&category=" + encodeURIComponent(category || "") + "&sort=" + encodeURIComponent(sort || "date") +
-                "&order=" + encodeURIComponent(order || "desc"), "GET");
-        };
-        host.addLibrary = function (data) { return nativeRequest("/torrents", "POST", data); };
-        host.updateLibrary = function (hash, category) {
-            return nativeRequest("/torrents/" + encodeURIComponent(hash), "PUT", { category: category });
-        };
-        host.removeLibrary = function (hash) { return nativeRequest("/torrents/" + encodeURIComponent(hash), "DELETE"); };
-    }
-    function showLogin() {
-        $("login-view").hidden = false;
-        ["search", "lists", "settings", "library"].forEach(function (id) { $(id + "-view").hidden = true; });
-    }
-    async function run(action) {
-        if (busy) return;
-        busy = true; document.body.setAttribute("aria-busy", "true");
-        try { await action(); } catch (err) { status(err.message || "Request failed.", true); }
-        finally { busy = false; document.body.removeAttribute("aria-busy"); }
-    }
-    function el(tag, value, className) {
-        var node = document.createElement(tag);
-        if (value !== undefined) node.textContent = value;
-        if (className) node.className = className;
-        return node;
-    }
-    function button(label, action) {
-        var b = el("button", label); b.type = "button";
-        b.addEventListener("click", function () { run(function () { return action(b); }); });
-        return b;
-    }
-    function bytes(n) {
-        if (!Number.isFinite(Number(n)) || n <= 0) return "Size unknown";
-        var units = ["B", "KiB", "MiB", "GiB", "TiB"], i = 0;
-        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-        return n.toFixed(i ? 1 : 0) + " " + units[i];
-    }
-    function renderResults(results) {
-        var target = $("results"); target.replaceChildren();
-        if (!results.length) target.append(el("p", "No releases found. Try another title or subscribe to a list.", "empty"));
-        results.forEach(function (r) {
-            var row = el("article", undefined, "row"), copy = el("div", undefined, "row-copy");
-            copy.append(el("h3", r.title || r.hash), el("p", bytes(r.size) + (r.files ? " / " + r.files + " files" : "")), el("p", r.tags.join(", "), "hint"));
-            var hash = el("code", r.hash); copy.append(hash); row.append(copy);
-            var add = button("Add to " + HOST, async function (b) {
-                b.disabled = true; status("Adding to your " + HOST + " library…");
-                try { await host.add(r); b.textContent = "Added"; status("Added to your " + HOST + " library."); }
-                catch (err) { b.disabled = false; throw err; }
-            });
-            if (!r.supported) { add.disabled = true; add.textContent = "v2 not supported"; }
-            row.append(add); target.append(row);
-        });
-    }
-    function renderLists(target, lists, discovery) {
-        target.replaceChildren();
-        if (!lists.length) target.append(el("p", discovery ? "No lists advertised yet. Check the daemon's network connection or enter a public key below." : "No subscribed lists. Discover a list below.", "empty"));
-        lists.forEach(function (l) {
-            var row = el("article", undefined, "row"), copy = el("div", undefined, "row-copy");
-            copy.append(el("h3", l.name || "Unnamed list"), el("p", l.description || "No description"),
-                el("p", "Version " + l.seq + (l.records ? " / " + l.records + " releases" : ""), "hint"),
-                el("p", l.type === "meta" ? "Meta-list · enabled entries are subscribed automatically" : "Catalog list", "hint"),
-                el("code", l.pubkey));
-            if (l.type === "meta" && Array.isArray(l.items)) {
-                l.items.forEach(function (item) {
-                    var label = item.enabled ? "Included" : "Disabled";
-                    copy.append(el("p", label + " · " + (item.annotation || "No annotation") + " · " + item.pubkey, "hint"));
-                });
-            }
-            row.append(copy);
-            if (session.can_admin) row.append(button(discovery ? "Subscribe" : "Request refresh", async function () {
-                await host.subscribe(l.pubkey); status("Subscription requested. Reload lists after the daemon downloads the signed catalog.");
-            }));
-            target.append(row);
-        });
-    }
-    async function loadLists() {
-        status("Loading lists…");
-        var own = await host.lists(); renderLists($("lists"), own.lists, false);
-        // Keep subscribed lists visible if discovery is temporarily unavailable.
-        var discovered = await host.discover(); renderLists($("discover"), discovered.lists, true);
-        status("Lists loaded.");
-    }
-    async function loadSettings() {
-        var cfg = await host.settings(); $("daemon-url").value = cfg.url;
-        $("daemon-token").value = ""; $("clear-token").checked = false;
-        $("token-state").textContent = cfg.token_configured ? "A token is stored on the Silo server. It is never returned to this page." : "No daemon token is stored.";
-    }
-    document.querySelectorAll("[data-view]").forEach(function (b) {
-        b.addEventListener("click", function () { run(async function () {
-            if (!session) return;
-            var view = b.getAttribute("data-view");
-            document.querySelectorAll("[data-view]").forEach(function (tab) { tab.setAttribute("aria-pressed", String(tab === b)); });
-            ["search", "lists", "settings", "library"].forEach(function (id) { $(id + "-view").hidden = id !== view; });
-            if (view === "lists") await loadLists();
-            else if (view === "settings") { await loadSettings(); status("Connection settings loaded."); }
-            else if (view === "library" && !SILO) await loadLibrary();
-            else status("Search the catalogs subscribed on your daemon.");
-        }); });
-    });
-
-    function refreshLibraryCategories(categories) {
-        var select = $("library-category"), old = select.value;
-        select.replaceChildren();
-        [["", "All categories"], ["none", "Uncategorized"]].forEach(function (entry) {
-            var option = el("option", entry[1]); option.value = entry[0]; select.append(option);
-        });
-        (categories || []).forEach(function (category) {
-            var option = el("option", category); option.value = category; select.append(option);
-        });
-        if (Array.from(select.options).some(function (option) { return option.value === old; })) select.value = old;
-    }
-    function renderLibrary(items) {
-        var target = $("library-rows"); target.replaceChildren();
-        if (!items.length) { target.append(el("p", "Your library is empty. Add a magnet or .torrent file above.", "empty")); return; }
-        items.forEach(function (item) {
-            var row = el("article", undefined, "row library-row"), copy = el("div", undefined, "row-copy");
-            copy.append(el("h3", item.title || item.hash),
-                el("p", bytes(item.size) + " · " + (item.file_count || 0) + " files", "hint"),
-                el("p", item.state_text || "Torrent", "hint"), el("code", item.hash));
-            var label = el("label", "Category"), input = el("input");
-            input.type = "text"; input.maxLength = 128; input.value = item.category || "";
-            input.setAttribute("aria-label", "Category for " + (item.title || item.hash)); label.append(input); copy.append(label);
-            var actions = el("div", undefined, "library-actions");
-            actions.append(button("Save changes", async function (b) {
-                b.disabled = true;
-                try {
-                    await host.updateLibrary(item.hash, input.value);
-                    status("Category updated. Category metadata is shared by this infohash across users.");
-                    await loadLibrary();
-                } finally { b.disabled = false; }
-            }));
-            actions.append(button("Remove", async function (b) {
-                if (!window.confirm("Remove this torrent from your library? Other users are not affected.")) return;
-                b.disabled = true;
-                try { await host.removeLibrary(item.hash); status("Removed from your library."); await loadLibrary(); }
-                finally { b.disabled = false; }
-            }));
-            row.append(copy, actions); target.append(row);
-        });
-    }
-    async function loadLibrary() {
-        status("Loading your library…");
-        var data = await host.library($("library-query").value, $("library-category").value,
-            $("library-sort").value, $("library-order").value);
-        refreshLibraryCategories(data.categories || []);
-        renderLibrary(data.items || []);
-        status((data.total || 0) + " torrent(s) in your filtered library.");
-    }
-    $("library-reload").addEventListener("click", function () { run(loadLibrary); });
-    $("library-filter-form").addEventListener("submit", function (event) { event.preventDefault(); run(loadLibrary); });
-    $("library-add-form").addEventListener("submit", function (event) {
-        event.preventDefault(); run(async function () {
-            var link = $("library-link").value.trim(), file = $("library-file").files[0];
-            if (!!link === !!file) throw new Error("Choose exactly one magnet/link or one .torrent file.");
-            if (file && !file.size) throw new Error("The selected torrent file is empty.");
-            var form = new FormData();
-            if (file) form.append("file", file, file.name); else form.append("link", link);
-            form.append("title", $("library-title").value.trim());
-            form.append("category", $("library-new-category").value.trim());
-            status("Adding torrent to your library…");
-            var result = await host.addLibrary(form);
-            $("library-add-form").reset();
-            status("Torrent added: " + ((result.torrent && result.torrent.title) || (result.torrent && result.torrent.hash) || "complete"));
-            await loadLibrary();
-        });
-    });
-
-    $("search-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
-        status("Searching…");
-        var data = await host.search($("query").value, $("tag").value);
-        renderResults(data.results); status(data.results.length + " releases found. Showing up to 50 results.");
-    }); });
-    $("reload-lists").addEventListener("click", function () { run(loadLists); });
-    $("subscribe-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
-        await host.subscribe($("pubkey").value.trim());
-        status("Subscription requested. Reload lists after the catalog downloads.");
-    }); });
-    $("settings-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
-        var token = $("daemon-token").value;
-        $("daemon-token").value = "";
-        await host.settings({ url: $("daemon-url").value.trim(), token: token, clear_token: $("clear-token").checked });
-        await loadSettings(); status("Connection saved. Use Search or Lists to check the daemon.");
-    }); });
-    $("login-form").addEventListener("submit", function (e) { e.preventDefault(); run(async function () {
-        // the core's login: its token comes back as a cookie (the first login as owner sets the password)
-        await request("/api/auth/login", { username: $("username").value.trim(), password: $("password").value });
-        $("password").value = ""; $("login-view").hidden = true;
-        await start();
-    }); });
-    async function start() {
-        session = await host.session();
-        document.querySelectorAll(".silo-only").forEach(function (n) { n.hidden = !SILO; });
-        $("search-view").hidden = false;
-        $("library-tab").hidden = SILO;
-        $("library-view").hidden = true;
-        $("settings-tab").hidden = !SILO || !session.can_admin;
-        $("subscribe-form").hidden = !session.can_admin;
-        status(SILO ? "Search the catalogs subscribed on your daemon." :
-            "Search MediaMesh catalogs or manage your personal torrent library.");
-    }
-    document.title = "MediaMesh · " + HOST;
-    run(start);
+"use strict";
+var SILO=location.pathname.indexOf("/plugins/")===0, HOST=SILO?"Silo":"P2Play", base="/plugins/mediamesh",session,busy=false,currentHash="",pageOffset=0,pageLimit=30;
+var $=function(id){return document.getElementById(id);};
+function status(message,bad){$("status").textContent=message;$("status").className=bad?"error":"";}
+async function request(url,body,headers,method){
+ var opts={method:method||(body===undefined?"GET":"POST"),credentials:"same-origin",headers:{Accept:"application/json"},cache:"no-store"};
+ if(body!==undefined){if(body instanceof FormData)opts.body=body;else{opts.headers["Content-Type"]="application/json";opts.body=JSON.stringify(body);}}
+ Object.keys(headers||{}).forEach(function(k){opts.headers[k]=headers[k];});
+ var res=await fetch(url,opts),data;
+ if(res.status===204)return {};
+ try{data=await res.json();}catch(_){throw new Error(HOST+" returned an unreadable response.");}
+ if(res.status===401&&!SILO){showLogin();throw new Error("Log in to this P2Play node.");}
+ if(!res.ok)throw new Error(data.error||"Request failed ("+res.status+").");
+ return data;
+}
+function api(path,body,method){return request(base+path,body,session?{"X-MediaMesh-CSRF":session.csrf}:{},method);}
+function core(path,body,method){return request("/api"+path,body,{},method);}
+function native(path,body,method){return request("/api/v1"+path,body,{},method);}
+var host=SILO?{
+ session:function(){return api("/api/session");},
+ search:function(q,tag){return api("/api/search?q="+encodeURIComponent(q)+"&tag="+encodeURIComponent(tag));},
+ lists:function(){return api("/api/lists");},discover:function(){return api("/api/discover");},
+ subscribe:function(pubkey){return api("/api/subscribe",{pubkey:pubkey});},
+ add:function(r){return api("/api/add",{hash:r.hash});},
+ settings:function(body){return api("/api/settings",body);}
+}:{
+ session:async function(){var me=await core("/auth/me");return{rank:me.rank,csrf:"",can_admin:me.rank>=50,user:me.username};},
+ search:async function(q,tag){var d=await core("/catalog/search?q="+encodeURIComponent(q)+"&tag="+encodeURIComponent(tag)+"&limit=50");return{results:(d.results||[]).map(function(r){return Object.assign({},r,{supported:true,tags:r.tags||[]});})};},
+ lists:function(){return core("/lists");},discover:function(){return core("/lists/discover");},
+ subscribe:function(pubkey){return core("/lists/"+encodeURIComponent(pubkey.toLowerCase()),{});},
+ add:function(r){var link=r.torrs||(r.hash.length===64?"magnet:?xt=urn:btmh:1220"+r.hash:"magnet:?xt=urn:btih:"+r.hash);return core("/torrents",{link:link,title:r.title,save_to_db:true});}
+};
+function showLogin(){$("login-view").hidden=false;["search","lists","library","continue","server","users","settings"].forEach(function(x){$(x+"-view").hidden=true;});}
+async function run(fn){if(busy)return;busy=true;document.body.setAttribute("aria-busy","true");try{await fn();}catch(e){status(e.message||"Request failed.",true);}finally{busy=false;document.body.removeAttribute("aria-busy");}}
+function el(tag,value,cls){var n=document.createElement(tag);if(value!==undefined)n.textContent=value;if(cls)n.className=cls;return n;}
+function button(label,fn,cls){var b=el("button",label,cls);b.type="button";b.addEventListener("click",function(){run(function(){return fn(b);});});return b;}
+function bytes(n){n=Number(n);if(!Number.isFinite(n)||n<=0)return"Size unknown";var u=["B","KiB","MiB","GiB","TiB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(i?1:0)+" "+u[i];}
+function renderResults(results){var t=$("results");t.replaceChildren();if(!results.length)t.append(el("p","No releases found.","empty"));results.forEach(function(r){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",r.title||r.hash),el("p",bytes(r.size)+" · "+(r.files||0)+" files"),el("p",(r.tags||[]).join(", "),"hint"),el("code",r.hash));row.append(copy,button("Add to "+HOST,async function(b){b.disabled=true;await host.add(r);b.textContent="Added";status("Added to "+HOST+".");}));t.append(row);});}
+function renderLists(target,lists,discovery){target.replaceChildren();if(!lists.length)target.append(el("p",discovery?"No lists advertised yet.":"No subscribed lists.","empty"));(lists||[]).forEach(function(l){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",l.name||"Unnamed list"),el("p",l.description||"No description"),el("p","Version "+l.seq,"hint"),el("code",l.pubkey));row.append(copy);if(session.can_admin)row.append(button(discovery?"Subscribe":"Request refresh",async function(){await host.subscribe(l.pubkey);status("Subscription requested.");}));target.append(row);});}
+async function loadLists(){var a=await host.lists();renderLists($("lists"),a.lists,false);var b=await host.discover();renderLists($("discover"),b.lists,true);status("Lists loaded.");}
+function showView(view){["search","lists","library","continue","server","users","settings","login"].forEach(function(x){var n=$(x+"-view");if(n)n.hidden=x!==view;});document.querySelectorAll("[data-view]").forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.view===view));});}
+document.querySelectorAll("[data-view]").forEach(function(b){b.addEventListener("click",function(){run(async function(){if(!session)return;var v=b.dataset.view;showView(v);if(v==="lists")await loadLists();else if(v==="library")await loadLibrary();else if(v==="continue")await loadContinue();else if(v==="server")await loadServer();else if(v==="users")await loadUsers();else if(v==="settings")await loadConnection();else status("Search subscribed catalogs.");});});});
+async function loadConnection(){var cfg=await host.settings();$("daemon-url").value=cfg.url;$("daemon-token").value="";$("clear-token").checked=false;$("token-state").textContent=cfg.token_configured?"A token is stored on the Silo server.":"No daemon token is stored.";}
+function categoryOptions(values){var s=$("library-category"),old=s.value;s.replaceChildren();[["","All categories"],["none","Uncategorized"]].concat((values||[]).map(function(x){return[x,x];})).forEach(function(x){var o=el("option",x[1]);o.value=x[0];s.append(o);});if(Array.from(s.options).some(function(o){return o.value===old;}))s.value=old;}
+function renderLibrary(items){var t=$("library-rows");t.replaceChildren();if(!items.length){t.append(el("p","Your library is empty. Add a magnet or .torrent file above.","empty"));return;}items.forEach(function(item){var row=el("article",undefined,"row library-row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",item.title||item.hash),el("p",bytes(item.size)+" · "+(item.file_count||0)+" files","hint"),el("p",item.state_text||"Torrent","hint"),el("code",item.hash));
+var title=el("label","Display title"),ti=el("input");ti.value=item.title||"";ti.maxLength=512;ti.setAttribute("aria-label","Title for "+item.hash);title.append(ti);
+var cat=el("label","Category"),ci=el("input");ci.value=item.category||"";ci.maxLength=128;ci.setAttribute("aria-label","Category for "+item.hash);cat.append(ci);copy.append(title,cat);
+var actions=el("div",undefined,"library-actions");actions.append(button("Save changes",async function(){await native("/torrents/"+encodeURIComponent(item.hash),{title:ti.value.trim(),category:ci.value.trim()},"PUT");status("Title and category saved.");await loadLibrary();}),button("Details / files",function(){return openDetails(item.hash);}),button("Remove",async function(){if(!confirm("Remove this torrent from your library? Other users are not affected."))return;await native("/torrents/"+encodeURIComponent(item.hash),undefined,"DELETE");status("Removed from your library.");await loadLibrary();},"danger"));row.append(copy,actions);t.append(row);});}
+async function loadLibrary(){status("Loading library…");var d=await native("/library/torrents?q="+encodeURIComponent($("library-query").value)+"&category="+encodeURIComponent($("library-category").value)+"&sort="+$("library-sort").value+"&order="+$("library-order").value+"&offset="+pageOffset+"&limit="+pageLimit);categoryOptions(d.categories);renderLibrary(d.items||[]);$("library-page").textContent="Page "+(Math.floor(pageOffset/pageLimit)+1)+" · "+d.total+" items";$("library-prev").disabled=pageOffset===0;$("library-next").disabled=pageOffset+pageLimit>=d.total;status(d.total+" torrent(s) in your library.");}
+async function openDetails(hash){currentHash=hash;showView("library");$("torrent-detail").hidden=false;$("detail-heading").textContent="Torrent "+hash;$("detail-summary").replaceChildren();$("torrent-files").replaceChildren(el("p","Loading file list…","hint"));$("torrent-player").hidden=true;var d=await native("/torrents/"+encodeURIComponent(hash));var detail=d.details||{};["state_text","download_speed","upload_speed","total_wanted","total_wanted_done"].forEach(function(k){if(detail[k]!==undefined)$("detail-summary").append(el("p",k.replace(/_/g," ")+": "+detail[k]));});var actions=$("torrent-actions");actions.replaceChildren(button("Mark all watched",async function(){await native("/torrents/"+encodeURIComponent(hash)+"/viewed",{viewed:true},"PUT");await loadFiles();status("All files marked watched.");}),button("Mark all unviewed",async function(){await native("/torrents/"+encodeURIComponent(hash)+"/viewed",{viewed:false},"PUT");await loadFiles();status("All files marked unviewed.");}),button("Reset all progress",async function(){if(!confirm("Reset all watched marks and playback positions for this torrent?"))return;await native("/torrents/"+encodeURIComponent(hash)+"/progress",undefined,"DELETE");await loadFiles();status("Progress reset.");},"danger"),button("Wake torrent",async function(){await native("/torrents/"+encodeURIComponent(hash)+"/wake",{},"POST");status("Torrent activated.");}));
+await loadFiles();await loadDiagnostics();}
+function folderButtons(hash,path){var box=el("div",undefined,"file-actions");box.append(button("Mark folder watched",async function(){await native("/torrents/"+encodeURIComponent(hash)+"/folders/viewed",{path:path,viewed:true},"PUT");await loadFiles();}),button("Reset folder",async function(){if(!confirm("Reset playback progress for "+path+"?"))return;await native("/torrents/"+encodeURIComponent(hash)+"/folders/progress?path="+encodeURIComponent(path),undefined,"DELETE");await loadFiles();},"danger"));return box;}
+async function loadFiles(){if(!currentHash)return;var d=await native("/torrents/"+encodeURIComponent(currentHash)+"/files"),t=$("torrent-files");t.replaceChildren();var files=d.files||[],progress=d.file_progress||[],viewed=d.viewed_files||[];if(!files.length){t.append(el("p","No file metadata available yet. Wake the torrent and refresh.","empty"));return;}
+var folders={};files.forEach(function(f){var parts=f.path.split("/");if(parts.length>1){var p="";for(var i=0;i<parts.length-1;i++){p=p?(p+"/"+parts[i]):parts[i];folders[p]=true;}}});
+Object.keys(folders).sort().forEach(function(path){var row=el("article",undefined,"row file-row"),copy=el("div",undefined,"row-copy");copy.append(el("strong",path),el("p","Folder · "+files.filter(function(f){return f.path.indexOf(path+"/")===0;}).length+" files","hint"));row.append(copy,folderButtons(currentHash,path));t.append(row);});
+files.forEach(function(f){var p=progress.find(function(x){return x.id===f.id;})||{},isViewed=viewed.indexOf(f.id)>=0||p.viewed,row=el("article",undefined,"row file-row"),copy=el("div",undefined,"row-copy");copy.append(el("strong",f.path),el("p",bytes(f.length)+" · "+(isViewed?"Watched":"Not watched")+(p.duration>0?" · "+Math.floor(p.position||0)+"/"+Math.floor(p.duration)+" s":""),"hint"));var actions=el("div",undefined,"file-actions");actions.append(button("Play",function(){var v=$("torrent-player");v.src="/api/v1/torrents/"+encodeURIComponent(currentHash)+"/files/"+f.id+"/stream";v.hidden=false;v.play().catch(function(){status("Press Play to start the stream.");});}),button(isViewed?"Mark unviewed":"Mark watched",async function(){await native("/torrents/"+encodeURIComponent(currentHash)+"/files/"+f.id+"/viewed",{viewed:!isViewed},"PUT");await loadFiles();}),button("Reset progress",async function(){await native("/torrents/"+encodeURIComponent(currentHash)+"/files/"+f.id+"/progress",undefined,"DELETE");await loadFiles();},"danger"));row.append(copy,actions);t.append(row);});}
+async function loadDiagnostics(){var results=await Promise.allSettled([native("/torrents/"+encodeURIComponent(currentHash)+"/cache"),native("/torrents/"+encodeURIComponent(currentHash)+"/peers")]);$("torrent-cache").textContent=results[0].status==="fulfilled"?JSON.stringify(results[0].value,null,2):results[0].reason.message;var p=$("torrent-peers");p.replaceChildren();if(results[1].status!=="fulfilled"){p.append(el("p",results[1].reason.message,"hint"));return;}var peers=results[1].value.peers||[];if(!peers.length)p.append(el("p","No connected peers.","empty"));peers.forEach(function(peer){p.append(el("p",peer.address+" · "+(peer.client||"Unknown client")+" · "+Math.round(peer.progress*100)+"% · ↓ "+bytes(peer.download_speed)+"/s · ↑ "+bytes(peer.upload_speed)+"/s"));});}
+async function loadContinue(){var d=await native("/progress"),t=$("continue-rows");t.replaceChildren();var list=d.progress||[];if(!list.length)t.append(el("p","Nothing to resume yet.","empty"));list.forEach(function(x){var row=el("article",undefined,"row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",x.title||x.hash),el("p",x.file_name+" · "+Math.floor(x.position||0)+" / "+Math.floor(x.duration||0)+" s","hint"));row.append(copy,button("Open",function(){showView("library");return openDetails(x.hash);}));t.append(row);});status(list.length+" playback records.");}
+const settingFields={CacheSize:"setting-cache",ReaderReadAHead:"setting-readahead",PreloadCache:"setting-preload",TorrentDisconnectTimeout:"setting-disconnect",ConnectionsLimit:"setting-connections",DownloadRateLimit:"setting-download",UploadRateLimit:"setting-upload",PeersListenPort:"setting-port",TorrentsSavePath:"setting-savepath",P2PDhtBootstrap:"setting-bootstrap",UseDisk:"setting-disk",DisableUpload:"setting-no-upload",DisableTCP:"setting-no-tcp",DisableUTP:"setting-no-utp",DisableDHT:"setting-no-dht",DisableMeshDirectory:"setting-no-mesh",DisableUPNP:"setting-no-upnp"};
+async function loadServer(){var d=await native("/settings"),s=d.settings;Object.keys(settingFields).forEach(function(k){var n=$(settingFields[k]);if(n.type==="checkbox")n.checked=!!s[k];else if(k==="CacheSize")n.value=Math.round(s[k]/1048576);else n.value=s[k]===undefined?"":s[k];});var stats=await native("/system/stats");$("server-stats").replaceChildren();[["Version",stats.version],["Uptime",stats.uptime_sec+" s"],["Active sessions",stats.stats.active_sessions],["Active readers",stats.stats.active_readers],["RAM cache",bytes(stats.stats.cache_bytes)+" / "+bytes(stats.stats.cache_capacity)],["Cached pieces",stats.stats.cache_pieces]].forEach(function(x){var c=el("div",undefined,"stat");c.append(el("strong",String(x[1])),el("span",x[0]));$("server-stats").append(c);});}
+$("server-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var v={};Object.keys(settingFields).forEach(function(k){var n=$(settingFields[k]);if(n.type==="checkbox")v[k]=n.checked;else if(n.type==="number")v[k]=Number(n.value);else v[k]=n.value;});v.CacheSize*=1048576;var d=await native("/settings",{settings:v},"PUT");$("server-restart-note").hidden=!d.restart_required;status(d.restart_required?"Settings saved. Restart required for some changes.":"Server settings saved and applied.");});});
+async function loadUsers(){var d=await native("/users"),t=$("users-rows");t.replaceChildren();(d.users||[]).forEach(function(u){var row=el("article",undefined,"row user-row"),copy=el("div",undefined,"row-copy");copy.append(el("h3",u.username+(u.id==="owner"?" · Owner":"")),el("p","Rank "+u.rank+" · "+(u.is_banned?"Banned":"Active"),"hint"),el("code",u.id));var actions=el("div",undefined,"user-actions");if(u.id!=="owner"&&session.rank>u.rank){var role=document.createElement("select");[[10,"User"],[50,"Administrator"]].forEach(function(x){var o=el("option",x[1]);o.value=x[0];role.append(o);});role.value=u.rank;actions.append(role,button("Set role",async function(){await native("/users/"+encodeURIComponent(u.id)+"/rank",{rank:Number(role.value)},"POST");await loadUsers();}),button(u.is_banned?"Unban":"Ban",async function(){await native("/users/"+encodeURIComponent(u.id),{banned:!u.is_banned},"PUT");await loadUsers();}),button("Reset password",async function(){var p=prompt("New password for "+u.username);if(p===null)return;if(!p)throw new Error("Password cannot be empty.");await native("/users/"+encodeURIComponent(u.id),{password:p},"PUT");status("Password changed.");}),button("Regenerate token",async function(){var x=await native("/users/"+encodeURIComponent(u.id)+"/regenerate-token",{},"POST");alert("New API token (shown once):\n"+x.token);}),button("Delete",async function(){if(!confirm("Delete user "+u.username+" and their private library/progress?"))return;await native("/users/"+encodeURIComponent(u.id),undefined,"DELETE");await loadUsers();},"danger"));}row.append(copy,actions);t.append(row);});}
+$("user-add-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var d=await native("/users",{username:$("new-user-name").value.trim(),password:$("new-user-password").value,rank:Number($("new-user-rank").value)},"POST");$("user-add-form").reset();status("Created user "+d.username+".");await loadUsers();});});
+$("library-add-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var link=$("library-link").value.trim(),file=$("library-file").files[0];if(!!link===!!file)throw new Error("Choose exactly one magnet/link or one .torrent file.");if(file&&!file.size)throw new Error("The selected file is empty.");var form=new FormData();if(file)form.append("file",file,file.name);else form.append("link",link);form.append("title",$("library-title").value.trim());form.append("category",$("library-new-category").value.trim());await native("/torrents",form,"POST");$("library-add-form").reset();await loadLibrary();status("Torrent added to your library.");});});
+$("library-import-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var f=$("library-import-file").files[0];if(!f)throw new Error("Choose a .torrs file.");var form=new FormData();form.append("file",f,f.name);var d=await native("/library/import",form,"POST");$("library-import-form").reset();await loadLibrary();status("Import complete: "+d.added+" added, "+d.skipped+" already present, "+d.rejected+" rejected.");});});
+$("library-filter-form").addEventListener("submit",function(e){e.preventDefault();pageOffset=0;run(loadLibrary);});$("library-reload").addEventListener("click",function(){run(loadLibrary);});$("library-prev").addEventListener("click",function(){pageOffset=Math.max(0,pageOffset-pageLimit);run(loadLibrary);});$("library-next").addEventListener("click",function(){pageOffset+=pageLimit;run(loadLibrary);});
+$("detail-close").addEventListener("click",function(){$("torrent-detail").hidden=true;$("torrent-player").pause();$("torrent-player").removeAttribute("src");});$("files-refresh").addEventListener("click",function(){run(loadFiles);});$("cache-refresh").addEventListener("click",function(){run(loadDiagnostics);});$("peers-refresh").addEventListener("click",function(){run(loadDiagnostics);});
+["continue-refresh","server-refresh","users-refresh","library-reload"].forEach(function(id){$(id).addEventListener("click",function(){run(id==="continue-refresh"?loadContinue:id==="server-refresh"?loadServer:id==="users-refresh"?loadUsers:loadLibrary);});});
+$("search-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var d=await host.search($("query").value,$("tag").value);renderResults(d.results||[]);status((d.results||[]).length+" releases found.");});});
+$("reload-lists").addEventListener("click",function(){run(loadLists);});$("subscribe-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){await host.subscribe($("pubkey").value.trim());status("Subscription requested.");});});
+$("settings-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){var token=$("daemon-token").value;$("daemon-token").value="";await host.settings({url:$("daemon-url").value.trim(),token:token,clear_token:$("clear-token").checked});await loadConnection();status("Connection saved.");});});
+$("login-form").addEventListener("submit",function(e){e.preventDefault();run(async function(){await request("/api/auth/login",{username:$("username").value.trim(),password:$("password").value});$("password").value="";await start();});});
+$("logout").addEventListener("click",function(){run(async function(){await request("/api/auth/logout",{});showLogin();session=null;});});
+async function start(){session=await host.session();document.querySelectorAll(".silo-only").forEach(function(n){n.hidden=!SILO;});document.querySelectorAll(".core-only").forEach(function(n){n.hidden=SILO;});$("identity").hidden=false;$("identity").textContent=(session.user||"User")+(session.rank>=100?" · Owner":session.rank>=50?" · Administrator":"");$("logout").hidden=SILO;$("users-tab").hidden=SILO||session.rank<50;$("server-tab").hidden=SILO||session.rank<100;$("subscribe-form").hidden=!session.can_admin;$("search-view").hidden=false;showView("search");status(SILO?"Search catalogs on your daemon.":"P2Play is ready. Search catalogs or manage your torrent library.");}
+document.title="MediaMesh · "+HOST;run(start);
 }());

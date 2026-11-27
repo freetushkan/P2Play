@@ -174,6 +174,55 @@ def native_library():
     check(status == 200 and changed["torrent"]["title"] == "Updated Alpha" and
           changed["torrent"]["category"] == "Series",
           "library title and category can be updated via the native REST route")
+    status, detail = api_v1("GET", "/api/v1/torrents/" + file_hash)
+    check(status == 200 and "file_stats" in detail["details"],
+          "native detailed torrent route exposes file metadata and per-user playback state")
+    status, file_list = api_v1("GET", "/api/v1/torrents/" + file_hash + "/files")
+    check(status == 200 and len(file_list["files"]) == 1 and file_list["files"][0]["path"] == "one.bin",
+          "native file-list route returns torrent-relative file paths")
+    file_id = file_list["files"][0]["id"]
+    status, marked = api_v1("PUT", "/api/v1/torrents/" + file_hash + "/files/" + str(file_id) + "/viewed",
+                            {"viewed": True})
+    check(status == 200 and marked["viewed"],
+          "native API can mark an individual file as watched")
+    status, progress = api_v1("PUT", "/api/v1/torrents/" + file_hash + "/files/" + str(file_id) + "/progress",
+                              {"position": 5.0, "duration": 120.0})
+    check(status == 200 and progress["position"] == 5.0,
+          "native API stores per-user file playback progress")
+    status, continued = api_v1("GET", "/api/v1/progress")
+    check(status == 200 and any(x["hash"] == file_hash and x["file_id"] == file_id
+                                for x in continued["progress"]),
+          "native Continue Watching endpoint returns the current user's playback")
+    status, cache = api_v1("GET", "/api/v1/torrents/" + file_hash + "/cache")
+    check(status == 200 and cache["hash"] == file_hash and "global_cache" in cache,
+          "native cache diagnostics expose per-torrent and global cache information")
+    status, peers = api_v1("GET", "/api/v1/torrents/" + file_hash + "/peers")
+    check(status == 200 and isinstance(peers["peers"], list),
+          "native peer diagnostics return a list")
+    status, reset = api_v1("DELETE", "/api/v1/torrents/" + file_hash + "/files/" + str(file_id) + "/progress")
+    check(status == 200 and reset["status"] == "reset",
+          "native API resets per-file viewed state and playback position")
+    status, bad_stream = api_v1("GET", "/api/v1/torrents/" + file_hash + "/files/999/stream")
+    check(status == 404, "native stream route validates file indexes and library ownership")
+
+    status, before_settings = api_v1("GET", "/api/v1/settings")
+    original_readahead = before_settings["settings"]["ReaderReadAHead"]
+    updated_readahead = 90 if original_readahead != 90 else 89
+    status, saved_settings = api_v1("PUT", "/api/v1/settings",
+                                   {"settings": {"ReaderReadAHead": updated_readahead}})
+    check(status == 200 and saved_settings["settings"]["ReaderReadAHead"] == updated_readahead,
+          "owner can update engine settings through the native API")
+    status, _ = api_v1("PUT", "/api/v1/settings", {"settings": {"ReaderReadAHead": original_readahead}})
+    check(status == 200, "engine settings test restores the original value")
+
+    status, native_user = api_v1("POST", "/api/v1/users",
+                                 {"username": "native-user", "password": "native-password", "rank": 10})
+    check(status == 201 and native_user["username"] == "native-user",
+          "native versioned user-management route creates a user")
+    status, native_users = api_v1("GET", "/api/v1/users")
+    check(status == 200 and any(x["id"] == native_user["id"] for x in native_users["users"]),
+          "native user-management route lists accounts for an administrator")
+
     status, categories = api_v1("GET", "/api/v1/library/categories")
     check(status == 200 and set(categories["categories"]) == {"Animation", "Files", "Series"},
           "library category endpoint returns the current user's distinct categories")
@@ -247,6 +296,24 @@ def browser():
         page.wait_for_function("document.querySelector('#library-rows').textContent.includes('Edited Browser Entry')")
         check("Edited Category" in page.locator("#library-rows").inner_text(),
               "browser Library tab edits torrent title and category")
+        page.locator("#library-rows .library-row").filter(has_text="Edited Browser Entry").locator("button").filter(has_text="Details / files").click()
+        page.wait_for_selector("#torrent-detail:not([hidden])")
+        page.wait_for_selector("#torrent-files")
+        check("files" in page.inner_text("#torrent-detail").lower(),
+              "browser displays torrent detail and file-management panel")
+        page.click("[data-view=server]")
+        page.wait_for_selector("#server-view:not([hidden])")
+        page.fill("#setting-readahead", "88")
+        page.click("#server-form button")
+        page.wait_for_function("document.querySelector('#status').textContent.includes('Server settings saved')")
+        page.click("[data-view=users]")
+        page.wait_for_selector("#users-view:not([hidden])")
+        page.fill("#new-user-name", "browser-user")
+        page.fill("#new-user-password", "browser-password")
+        page.click("#user-add-form button")
+        page.wait_for_function("document.querySelector('#users-rows').textContent.includes('browser-user')")
+        page.click("[data-view=continue]")
+        page.wait_for_selector("#continue-view:not([hidden])")
         page.click("[data-view=lists]")
         page.wait_for_selector("#lists .row")
         check("UI list" in page.inner_text("#lists"), "the lists view")

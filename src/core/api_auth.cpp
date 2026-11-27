@@ -68,7 +68,7 @@ namespace p2p {
             // the plugin's policy in Silo, the same here
             res.send(200, f->type, std::string(reinterpret_cast<const char *>(f->data), f->size),
                      {{"Cache-Control", "no-cache"}, {"X-Content-Type-Options", "nosniff"}, {"Referrer-Policy", "no-referrer"},
-                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; "
                                                   "connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"}});
             return;
         }
