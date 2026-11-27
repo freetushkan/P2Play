@@ -71,7 +71,7 @@
           <label>Category (optional)<input id="library-new-category" type="text" maxlength="128"></label>
           <button type="submit">Add to library</button>
         </form>
-        <p class="hint">Choose exactly one source: magnet/link or .torrent file. Upload limit: 16 MiB including multipart overhead.</p>
+        <p class="hint">Choose exactly one source: magnet/link or .torrent file. Upload limit: 16 MiB including multipart overhead. Leave the poster empty and the server looks for the cover inside the torrent (poster.*, cover.*, then a frame of the video).</p>
       </div>
       <div class="panel">
         <h3>Import library</h3>
@@ -95,6 +95,10 @@
 
       <section id="torrent-detail" class="detail panel" hidden aria-labelledby="detail-heading">
         <div class="section-heading"><h3 id="detail-heading">Torrent details</h3><button id="detail-close" type="button" class="secondary">Close</button></div>
+        <div class="detail-cover">
+          <img id="detail-cover-image" alt="" hidden>
+          <div><p id="detail-cover-source" class="hint">No cover yet.</p><button id="detail-cover-refresh" type="button" class="secondary">Refresh cover</button></div>
+        </div>
         <div id="detail-summary"></div>
         <div id="torrent-actions" class="detail-actions"></div>
         <video id="torrent-player" controls playsinline preload="none" hidden></video>
@@ -128,6 +132,12 @@
         <label>Upload limit (KiB/s, 0 = unlimited)<input id="setting-upload" type="number" min="0" max="1000000000" step="1" required></label>
         <label>BitTorrent listen port (0 = automatic)<input id="setting-port" type="number" min="0" max="65535" step="1" required></label>
         <label class="wide">Download directory<input id="setting-savepath" type="text" maxlength="1024" placeholder="Empty = default data directory"></label>
+        <label>Disk cache size (GiB)<input id="setting-disk-cache-size" type="range" min="1" max="2048" step="1"><output id="setting-disk-cache-size-value"></output></label>
+        <fieldset class="wide">
+          <legend>Storage and catalog cache</legend>
+          <label class="checkbox"><input id="setting-disk-cache-enabled" type="checkbox">Bounded disk cache for torrents (restart required)</label>
+          <label class="checkbox"><input id="setting-cache-lists" type="checkbox">Keep catalog records indexed in RAM (off: read them from disk)</label>
+        </fieldset>
         <label class="wide">Private DHT bootstrap nodes<input id="setting-bootstrap" type="text" maxlength="4096" placeholder="host:port,host:port"></label>
         <fieldset class="wide">
           <legend>Transfer and discovery</legend>
