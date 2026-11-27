@@ -233,11 +233,6 @@
 
 ### Этап 5: наполнение каталога
 
-- [ ] Inventory: report-only из SQLite без повторного импорта, stderr progress с
-      source/stage/примерными percent+ETA; сравнение Rutor-base/with-extra размеров
-      NDJSON/zlib для всех источников и групп, скрытие нулевого Other. Реализовано
-      локально с тестами, ожидает CI; production timing не измерен. `docs/grabber.md`.
-
 - [ ] Уточнение inventory: единая Category-сводка и размер NDJSON/zlib estimate
       для всех источников; отключённые/пустые скрыты в HTML и матрице, JSON хранит
       диагностику. Anime сохраняется отдельно в Rutor/RuTracker и добавлен первым
