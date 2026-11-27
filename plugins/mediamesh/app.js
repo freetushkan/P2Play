@@ -175,7 +175,7 @@ async function setLanguage(next){
    else if(view==="settings")await loadConnection();
   }
  }
- if(currentHash&&$("torrent-detail")&&!$("torrent-detail").hidden)await loadDetailCover(currentHash);
+ if(currentHash&&$("torrent-detail")&&!$("torrent-detail").hidden&&typeof loadDetailCover==="function")await loadDetailCover(currentHash);
  status("Language saved.");
 }
 async function toggleTheme(){
