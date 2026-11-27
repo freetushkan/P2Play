@@ -1,6 +1,6 @@
 # P2Play / MediaMesh — рабочий план
 
-Обновлено: 2026-11-26. Это компактный сопровождаемый план для ветки разработки.
+Обновлено: 2026-11-27. Это компактный сопровождаемый план для ветки разработки.
 Платформенная матрица и границы Android/Silo описаны отдельно в
 `docs/platform-matrix.md`; исходный DOCX в ветке `docs` остаётся справочным.
 Исходный большой документ `P2Play_MediaMesh.docx` и его текстовая версия `P2Play_MediaMesh.md`
@@ -94,11 +94,39 @@
 
 ### Этап 4: клиент и мета-списки
 
-- [ ] Веб-интерфейс автономного P2Play: библиотека, magnet/файл, удаление,
-      категории, поиск и сортировка. План и границы паритета TorrServer:
-      `docs/web-ui.md`. Общий экран MediaMesh сам по себе не закрывает этот пункт.
+- [x] Веб-интерфейс автономного P2Play: вкладка Library, добавление magnet/link и
+      multipart `.torrent`, поиск, категории, сортировка, изменение метаданных и
+      удаление с подтверждением. Реализованы собственные версионированные маршруты
+      `/api/v1/library/torrents`, `/api/v1/library/categories` и
+      `/api/v1/torrents/{hash}`. PR #39 влит в master 2026-11-27. Linux API tests,
+      Linux build с `P2P_COMPAT_MATRIX=OFF`, Android, Switch, PS4, PS5, PS5 package и
+      Silo plugin CI прошли. Граница данных: membership per-user, название/категория —
+      общие torrent metadata infohash. Реальные Android/WebView/device checks остаются
+      отдельной эксплуатационной приёмкой. Контракты: `docs/web-ui.md`.
 
 
+- [ ] Сделать MatriX compatibility opt-in: `P2P_COMPAT_MATRIX=OFF` —
+      default в обычных CMake/CI/package builds; `ON` используется только в отдельной
+      проверке legacy MatriX/HTTP Basic. Проверить, что native `/api/v1`, Silo auth
+      и streaming не зависят от MatriX.
+- [ ] pPlay/dev: мигрировать операции library/add/delete на P2Play native API:
+      `GET /api/v1/library/torrents`, `GET /api/v1/library/categories`,
+      `POST /api/v1/torrents`, `GET/PUT/DELETE /api/v1/torrents/{hash}`.
+      Использовать ответ и ограничения нового API, не трактовать список library
+      как подробный file/stream status. Login и уже существующие Catalog/MediaMesh
+      endpoints мигрировать отдельно только после добавления их versioned contract.
+- [ ] Сократить сетевые типы pPlay: один `TorrServer` с автоопределением MatriX
+      по `/echo` и Silo по `/api/system/ping`; один тип `P2Play` с дополнительным
+      режимом instance: external или built-in. External показывает URL/user/password
+      и сохраняет существующую схему; built-in скрывает URL/user, оставляет пароль
+      для фиксированного `owner` и использует embedded lifecycle. Сохранить миграцию
+      старых `TorrServer.MatriX`, `TorrServer.Silo`, `P2Play_embedded` settings.
+- [ ] Диагностика прерывания TorrServer playback при открытом embedded P2Play в filer:
+      добавить timestamps/operation IDs для TorrServer list/viewed sync, P2Play
+      embedded start/update и player stalls; воспроизвести на загруженном torrent
+      при параллельной работе filer. Проверить contention CPU/network, fetch mutex,
+      curl/NetworkLock (особенно Switch) и embedded session activity. Добавить
+      regression stress test; не менять sync cadence/locks без измеренного источника.
 - [ ] Подготовлен code-review pPlay/dev `402ee80` относительно P2Play/master
       `052d569`: матрица паритета, реальные пробелы, расхождение core pins и план
       кэширования. `docs/pplay-audit.md`; это не runtime/device acceptance.
@@ -230,11 +258,13 @@
       в PR #28 (2026-11-24). GUI, scheduler/threshold release, compaction и редактор
       policy остаются отдельными операторскими задачами. См. `docs/publisher.md`.
 
-- [ ] Ближе к завершению разработки: вывести собственный версионированный HTTP API
-      P2Play (например, `/api/v1/...`) и мигрировать pPlay, web UI, embedded и внешние
-      интеграции. После этого удалить MatriX и TorrServer.Silo compatibility routes и
-      shim; до полной миграции совместимость сохраняется. Это заключительный этап,
-      не блокирующий текущую реализацию.
+- [x] Собственный версионированный P2Play REST API начат в PR #39: библиотека и
+      torrent CRUD расположены под `/api/v1`, отделены от MatriX compatibility router
+      и проходят сборку с `P2P_COMPAT_MATRIX=OFF`. Это ещё не миграция всего API.
+- [ ] Последовательно версионировать Catalog, progress, users и streaming contracts,
+      мигрировать pPlay/web/embedded и внешних клиентов; только после фактической
+      миграции удалить MatriX и TorrServer.Silo compatibility routes/shims. До этого
+      совместимость остаётся доступной как opt-in.
 
 ### Этап 5: наполнение каталога
 
