@@ -338,6 +338,17 @@ namespace p2p {
             return apiOk(res, 201, {{"torrent", item(torrent)}});
         }
 
+        // GET/PUT /api/v1/preferences — persistent UI preferences per account.
+        if (count == 3 && at(2) == "preferences") {
+            if (get) return apiOk(res, 200, {{"preferences", m_auth.preferences(user.id)}});
+            if (method != "PUT" && method != "PATCH") return apiError(res, 405, "method not allowed");
+            const json body = apiBody(req);
+            const json values = body.is_object() && body.contains("preferences") ? body["preferences"] : body;
+            const std::string error = m_auth.setPreferences(user.id, values);
+            if (!error.empty()) return apiError(res, 400, error);
+            return apiOk(res, 200, {{"preferences", m_auth.preferences(user.id)}});
+        }
+
         // GET /api/v1/progress — per-user Continue Watching.
         if (get && count == 3 && at(2) == "progress") {
             size_t since = 0;

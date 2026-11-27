@@ -32,6 +32,7 @@ namespace p2p {
         std::string token;
         bool banned = false;
         int64_t created = 0;
+        nlohmann::json preferences = nlohmann::json::object();
 
         bool valid() const { return !id.empty(); }
 
@@ -66,6 +67,8 @@ namespace p2p {
         User login(const std::string &name, const std::string &password) const;
 
         std::vector<User> list() const;
+        nlohmann::json preferences(const std::string &id) const;
+        std::string setPreferences(const std::string &id, const nlohmann::json &values);
 
         // the user management of Silo; an empty string: done, else the error
         std::string create(const User &actor, const std::string &name, const std::string &password, int rank, User &out);
