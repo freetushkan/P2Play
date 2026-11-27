@@ -193,6 +193,51 @@ per-action capability matrix. The current UI already offers Administrator/User/G
 see [users-and-roles.md](users-and-roles.md). A later milestone must define a full
 per-action capability matrix; do not confuse rank presets with such a matrix.
 
+## 4a. Data location of the embedded module
+
+Everything the embedded core keeps belongs to pPlay and must live inside pPlay's own data
+directory. The host passes that directory as `p2play_config.data_dir`; pPlay uses
+`<pPlay data>/p2play_embedded/`, so the library, settings, metadata, disk storage, the
+MediaMesh lists and the cover cache are all nested in pPlay's tree:
+
+```
+<pPlay data>/p2play_embedded/library, settings.json, metadata/, torrent-cache/, lists/,
+             covers/<infohash>.img, covers/<infohash>.json
+```
+
+- The embedded core MUST NOT write outside that directory, must not use an absolute or
+  system-wide path of its own, and must not share the directory of an external P2Play
+  daemon or of any TorrServer data.
+- Removing or resetting the pPlay data directory removes the embedded server's data with
+  it; a backup of pPlay's data directory is a complete backup of the embedded server.
+- The same rule applies to caches: they are caches of that instance, not of the device.
+  A second pPlay instance (another user, another OS profile) gets its own directory and
+  its own caches; nothing is shared through `/tmp`, a global cache directory or XDG paths.
+
+## 4b. Cover images and the double-cache rule
+
+The server extracts a cover for a torrent added without a poster (an image file inside the
+torrent, then a frame of its video through ffmpeg) and caches it by infohash. Contract in
+[`covers.md`](covers.md); what pPlay must do:
+
+- A poster the client sends (`poster` in `POST`/`PUT /api/v1/torrents`) wins. The server
+  never replaces it and reports `cover: false`. pPlay must keep passing its own poster when
+  it has one (catalog details, user choice) instead of relying on extraction.
+- `GET /api/v1/torrents/{hash}/cover` answers `200` with the bytes, `ETag` and
+  `Cache-Control: private, max-age=86400`, or `304` for a client that already has them.
+  The listing carries only `cover`/`cover_source`, never the bytes.
+- **Embedded network:** the cache already lives in
+  `<pPlay data>/p2play_embedded/covers/<infohash>.img`, inside pPlay's directory. pPlay
+  MUST NOT copy those bytes into `data/cache/posters`; it reads the file (or asks the
+  server for a path) and uses it directly. One file, one owner.
+- **External server:** pPlay keeps its own `PosterCache`, keyed `p2play-cover:<host>:<infohash>`,
+  which already stores one file per picture by md5. It must revalidate with the stored
+  `ETag` instead of re-downloading, and it must not keep a second copy of a picture it also
+  has locally.
+- Do not attach the cover cache to the download directory, the saved/offline storage or the
+  MediaMesh media packs: covers are per-torrent metadata and disappear with the last
+  library entry.
+
 ## 5. Acceptance checks
 
 The implementation is complete only when tests prove all of the following:
@@ -226,8 +271,16 @@ The implementation is complete only when tests prove all of the following:
     owner's stable ID, username, API token and all additional user records.
 12. The owner can create additional server users through the pPlay management UI;
     their accounts persist across restarts and the owner cannot be deleted.
-13. The current numeric `rank` hierarchy is documented as such. A separate
+13. A torrent added without a poster gets a cover from its own files within the metadata
+    limits, or an ffmpeg frame where that binary exists; a poster sent by the client is
+    never replaced. The cache is `<data_dir>/covers/<infohash>.img`, i.e. inside pPlay's
+    data directory for the embedded module.
+14. The current numeric `rank` hierarchy is documented as such. A separate
     follow-up defines named roles and an explicit capability/permission matrix.
+
+Covers are implemented on the server side (`GET/POST/DELETE /api/v1/torrents/{hash}/cover`,
+`cover`/`cover_source` in the library cards, the `CoverProbe` setting) and are covered by
+`tools/ui-test.py`; the pPlay side of 4b is a requirement, not implemented there yet.
 
 The native identity, external adapter, Continue Watching, embedded lifecycle,
 owner provisioning and embedded reuse of user management are implemented in code.

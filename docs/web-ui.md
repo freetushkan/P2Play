@@ -26,7 +26,10 @@ layer и продолжает работать при сборке с P2P_COMPAT
 | GET /api/v1/torrents/{hash} | Карточка и подробный status/file_stats/viewed/progress |
 | PUT /api/v1/torrents/{hash} | Изменение title и/или category |
 | DELETE /api/v1/torrents/{hash} | Удаление из библиотеки текущего пользователя |
-| GET /api/v1/torrents/{hash}/files | Список файлов, watched и playback progress |
+| GET /api/v1/torrents/{hash}/files | Список файлов, watched и playback progress; `?wait=<0..120>` ограничивает ожидание метаданных (по умолчанию 15 с) |
+| GET /api/v1/torrents/{hash}/cover | Обложка торрента (картинка из раздачи или кадр видео); `ETag`, `304`, `X-P2Play-Cover` |
+| POST /api/v1/torrents/{hash}/cover | Извлечь/обновить обложку сейчас; `409`, если постер задан клиентом |
+| DELETE /api/v1/torrents/{hash}/cover | Убрать закэшированную обложку и отметку об отсутствии |
 | PUT /api/v1/torrents/{hash}/viewed | Отметить все файлы раздачи watched/unwatched |
 | DELETE /api/v1/torrents/{hash}/progress | Сбросить весь watched/progress state раздачи |
 | PUT /api/v1/torrents/{hash}/files/{index}/viewed | Watched mark отдельного файла |
@@ -43,8 +46,11 @@ layer и продолжает работать при сборке с P2P_COMPAT
 | GET /api/v1/library/export, POST /api/v1/library/import | Перенос пользовательской библиотеки .torrs |
 
 POST добавляет запись в библиотеку по умолчанию. JSON-поля: link, title,
-category. Для multipart используются поля file, title, category; файл и ссылка
-одновременно недопустимы, пустой файл отклоняется. Upload limit нативного
+category, poster. Для multipart используются поля file, title, category, poster; файл и
+ссылка одновременно недопустимы, пустой файл отклоняется. `poster` — постер клиента:
+он сохраняется как есть и исключает серверное извлечение обложки (см. `docs/covers.md`).
+PUT /api/v1/torrents/{hash} принимает title, category и poster; пустой poster
+освобождает торрент для серверной обложки. Upload limit нативного
 маршрута ограничен HTTP body limit core: 16 MiB вместе с multipart framing;
 файл должен быть немного меньше из-за multipart boundary и полей.
 
@@ -54,6 +60,10 @@ infohash или category и использует общую Unicode-fold фун�
 (category=none) или точное значение без учёта регистра. Фильтрация и сортировка
 производятся по всей библиотеке до offset/limit. Сортировка детерминирована
 infohash как tie-breaker.
+
+Карточка библиотеки содержит `poster` (постер клиента, если был), `cover` (есть ли
+серверная обложка в кэше) и `cover_source` (`torrent:<файл>` или `probe`). Байты
+обложки в список не попадают — их отдаёт отдельный маршрут `…/cover`.
 
 Удаление снимает только привязку данного пользователя. Если другой пользователь
 сохранил тот же infohash, его библиотека остаётся нетронутой. Категория и название
@@ -81,13 +91,22 @@ Silo не проксирует маршруты /api/v1 и не получает
   реальными значениями, сортировка date/title/size в обе стороны.
 - Изменение display title и категории, подтверждаемое удаление и импорт/экспорт
   .torrs; общие torrent metadata отделены от per-user library membership.
+- Обложка в строке библиотеки (`<img>` на `…/cover`) и в деталях раздачи, с кнопкой
+  «Refresh cover» (`POST …/cover`) и подписью источника. Без обложки рисуется
+  placeholder, а не битая картинка; внешние постеры не вставляются (CSP `img-src`).
 - Детали раздачи: список файлов, проигрывание через защищённый Range stream,
   watched/unwatched, reset позиции и watched для файла, папки или всей раздачи.
 - Continue Watching, server stats, owner engine settings и rank-aware user
   management (создание, смена роли, ban, password reset, token regeneration,
   удаление).
 - Peer list и RAM/disk cache diagnostics (включая активные reader windows).
+- Список файлов и диагностика в деталях раздачи загружаются вне общего флага
+  занятости страницы и с `?wait=5`: торрент без метаданных показывает понятное
+  сообщение, а не блокирует вкладки на минуту.
 - Настройки cache представлены переключателями, числовыми полями и ползунками.
+  Ограниченный дисковый кэш (`DiskCacheEnabled`, `DiskCacheSize` в ГиБ) и
+  `CacheListsInMemory` выведены в отдельный блок формы сервера; извлечение обложки
+  через ffmpeg отключается переключателем `CoverProbe`.
   Изменения применяются на лету; уже открытый torrent сохраняет свой storage
   backend до закрытия, новые активации используют выбранный режим.
 - DiskCacheEnabled включает отдельный ограниченный кэш в data/torrent-cache,
@@ -111,9 +130,14 @@ tools/ui-test.py проверяет защищённый API, добавлени
 torrent, поиск/категории/сортировку, удаление и изоляцию пользовательских
 библиотек; file list, watched/progress/reset, Continue Watching, stream index
 validation, peers/cache diagnostics, owner settings, disk-cache/catalog cache
-modes и users API. Browser режим
-проверяет login, добавление/редактирование torrent, details/files, settings,
-users и Continue Watching через Playwright.
+modes, обложки (`docs/covers.md`) и users API. Browser режим
+проверяет login, добавление/редактирование torrent, обложку и её refresh,
+details/files, блоки storage/catalog cache в настройках сервера, users и Continue
+Watching через Playwright. В режиме `--browser` страница ждётся опросом DOM:
+CSP страницы (`script-src 'self'`, без `unsafe-eval`) запрещает
+`wait_for_function`, поэтому проверки ждут появления текста и снятия флага
+`aria-busy` из Python. Linux CI запускает ui-test.py без `--browser`; браузерный
+режим — отдельная ручная проверка.
 
 Этот этап закрывает основные web-ui операции управления библиотекой и
 воспроизведением, но не заявляет абсолютный TorrServer parity: остаются

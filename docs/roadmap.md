@@ -94,6 +94,23 @@
 
 ### Этап 4: клиент и мета-списки
 
+- [x] Обложки торрентов: сервер сам ищет картинку в раздаче (`poster.*`, `cover.*`,
+      `folder.*`, …), иначе снимает кадр видео через ffmpeg (`CoverProbe`), кэширует по
+      infohash в `<data>/covers/` и отдаёт `GET/POST/DELETE /api/v1/torrents/{hash}/cover`
+      с `ETag`/`304`; карточки библиотеки несут `cover`/`cover_source`; постер клиента
+      (`poster` в POST/PUT) не заменяется. Извлечение идёт в отдельном потоке, не на
+      HTTP/libtorrent. Проверки — `tools/ui-test.py` с локальным сидером и ffmpeg.
+      Контракт и границы: `docs/covers.md`. Граница: pPlay-сторона правила «без двойного
+      кэша» (`docs/pplay-integration.md` §4b) ещё не реализована; Switch/PS4/PS5 —
+      только картинки из торрента, без ffmpeg.
+- [x] Ветка `fix/library-title-editing` снова собирается и проходит `tools/ui-test.py`:
+      в `Settings` возвращены поля ограниченного дискового кэша и каталожного индекса
+      (`diskCacheEnabled`, `diskCacheSize`, `cacheListsInMemory`) и член `m_diskTorrents`,
+      которых требовал коммит 2a26240; исправлен битый bencode-фикстура ui-теста
+      (`4:name7:one.bin`), браузерный режим переведён с `wait_for_function` (запрещён CSP
+      страницы) на опрос DOM. Побочно: `GET …/files` больше не держит запрос 60 с
+      (`?wait=`, по умолчанию 15 с), а `restart_required` в настройках выставляется только
+      при фактическом изменении значения.
 - [x] Веб-интерфейс автономного P2Play: вкладка Library, добавление magnet/link и
       multipart `.torrent`, поиск, категории, сортировка, изменение метаданных и
       удаление с подтверждением. Реализованы собственные версионированные маршруты
@@ -139,6 +156,10 @@
 - [ ] Паритет TorrServer: server watched/reset, file/folder marks, нейтральный
       artwork path, library list/delete; отдельно согласовать P2Play offline storage
       и stream-link ownership. Не переиспользовать TorrServer Saved/adapter files.
+      Для обложек: pPlay принимает `cover`/`cover_source` и `GET …/cover` вместо прямого
+      похода в `TorrServe` за картинкой; во встроенном режиме читает
+      `<pPlay data>/p2play_embedded/covers/<infohash>.img` и не копирует файл в
+      `data/cache/posters` (`docs/pplay-integration.md` §4b).
 - [ ] Embedded acceptance: busy port, rapid activation, bounded graceful shutdown,
       LAN stream во время drain, owner/users persistence и host shutdown contract.
 
@@ -319,6 +340,9 @@
       Direct RSS реализован отдельным режимом того же bounded XML/RSS parser.
       Jackett остаётся внешней необязательной службой, не vendored dependency.
       Детали: `docs/grabber.md`.
+- [ ] Обложки, остаток: лимит и очистка каталога `covers/`, срок жизни отметки `.none`,
+      ручной выбор файла-обложки и загрузка своей картинки в API, кадр для MP4 без
+      `faststart`, ffmpeg на консолях. См. `docs/covers.md` («Что не сделано»).
 - [ ] Репрезентативный большой набор данных и измерения размера сегментов, индекса,
       паков и времени поиска; на их основе уточнить лимиты клиентов.
 
