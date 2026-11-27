@@ -373,7 +373,7 @@ class SiloServer:
     def upload_plugin(self):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
-            for name in ("info.yaml", "service.js", "index.html", "app.js", "style.css"):
+            for name in ("info.yaml", "service.js", "index.html", "app.js", "style.css", "lang/en.json", "lang/ru.json"):
                 bundle.write(PLUGIN_DIR / name, name)
         boundary = "----P2PlaySiloLiveBoundary"
         body = (

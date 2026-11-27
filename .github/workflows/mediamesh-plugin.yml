@@ -33,7 +33,7 @@ jobs:
         run: python3 -I tools/silo-plugin-test.py --race
       - name: Package plugin
         run: |
-          python3 -I -c "from pathlib import Path; from zipfile import ZipFile; p=Path('plugins/mediamesh'); z=ZipFile('mediamesh.zip','w'); [z.write(p/n,n) for n in ['info.yaml','service.js','index.html','app.js','style.css']]; z.close()"
+          python3 -I -c "from pathlib import Path; from zipfile import ZipFile; p=Path('plugins/mediamesh'); z=ZipFile('mediamesh.zip','w'); [z.write(p/n,n) for n in ['info.yaml','service.js','index.html','app.js','style.css','lang/en.json','lang/ru.json']]; z.close()"
       - uses: actions/upload-artifact@v4
         with:
           name: MediaMesh-Silo-plugin

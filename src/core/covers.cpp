@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <random>
@@ -23,7 +24,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>

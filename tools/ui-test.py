@@ -245,6 +245,21 @@ def native_library():
     check(status == 200 and any(x["id"] == native_user["id"] for x in native_users["users"]),
           "native user-management route lists accounts for an administrator")
 
+    status, prefs = api_v1("GET", "/api/v1/preferences")
+    check(status == 200 and prefs["preferences"] == {"language": "en", "theme": "light"},
+          "native UI preferences default to English and light theme")
+    status, prefs = api_v1("PUT", "/api/v1/preferences", {"language": "ru", "theme": "dark"})
+    check(status == 200 and prefs["preferences"] == {"language": "ru", "theme": "dark"},
+          "native UI preferences accept Russian and dark theme")
+    status, other_prefs = api_v1("GET", "/api/v1/preferences", token=native_user["api_token"])
+    check(status == 200 and other_prefs["preferences"] == {"language": "en", "theme": "light"},
+          "UI preferences are isolated per user")
+    status, invalid_prefs = api_v1("PUT", "/api/v1/preferences", {"language": "xx"})
+    check(status == 400, "native UI preferences reject unsupported locales")
+    status, restored_prefs = api_v1("PUT", "/api/v1/preferences", {"language": "en", "theme": "light"})
+    check(status == 200 and restored_prefs["preferences"] == {"language": "en", "theme": "light"},
+          "native UI preferences can be restored to defaults")
+
     status, categories = api_v1("GET", "/api/v1/library/categories")
     check(status == 200 and set(categories["categories"]) == {"Animation", "Files", "Series"},
           "library category endpoint returns the current user's distinct categories")
@@ -351,6 +366,66 @@ def wait_cover(cover_hash, seconds=180):
             raise RuntimeError("the cover route answered " + str(status) + " without its marker")
         time.sleep(1)
     raise RuntimeError("no cover for " + cover_hash)
+
+
+def multipart_parts(fields, files):
+    boundary = "p2play-poster-test-boundary"
+    chunks = []
+    for name, value in fields.items():
+        chunks.extend([
+            ("--" + boundary + "\r\n").encode(),
+            ('Content-Disposition: form-data; name="' + name + '"\r\n\r\n').encode(),
+            value.encode(), b"\r\n"
+        ])
+    for name, file_name, data, mime in files:
+        chunks.extend([
+            ("--" + boundary + "\r\n").encode(),
+            ('Content-Disposition: form-data; name="' + name + '"; filename="' + file_name + '"\r\n').encode(),
+            ("Content-Type: " + mime + "\r\n\r\n").encode(), data, b"\r\n"
+        ])
+    chunks.append(("--" + boundary + "--\r\n").encode())
+    return b"".join(chunks), "multipart/form-data; boundary=" + boundary
+
+
+def poster_bytes(path, token=OWNER_TOKEN):
+    req = urllib.request.Request(BASE + path, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, dict(error.headers), error.read()
+
+
+def posters():
+    """User-uploaded posters are stored on the node and served by its own authenticated URL."""
+    torrent_hash = "c" * 40
+    picture = png_bytes(12, 8)
+    body, content_type = multipart_parts(
+        {"link": "magnet:?xt=urn:btih:" + torrent_hash, "title": "Custom poster test"},
+        [("poster_file", "custom.png", picture, "image/png")]
+    )
+    status, added = api_v1("POST", "/api/v1/torrents", body, content_type=content_type)
+    poster_url = "/api/v1/torrents/" + torrent_hash + "/poster"
+    check(status == 201 and added["torrent"]["poster"] == poster_url and
+          added["torrent"]["cover"] is False,
+          "multipart add stores the custom poster URL in the torrent JSON")
+    status, headers, image = poster_bytes(poster_url)
+    check(status == 200 and headers.get("Content-Type") == "image/png" and
+          headers.get("X-P2Play-Poster") == "client" and image == picture,
+          "the P2Play poster route returns the exact uploaded bytes")
+    status, detail = api_v1("GET", "/api/v1/torrents/" + torrent_hash)
+    check(status == 200 and detail["torrent"]["poster"] == poster_url and
+          detail["torrent"]["cover"] is False,
+          "a user poster takes priority over automatic cover extraction")
+    status, denied = api_v1("POST", poster_url, {"url": "http://127.0.0.1/private.png"})
+    check(status == 400, "poster URL fetching refuses loopback and private targets")
+    status, removed = api_v1("DELETE", poster_url)
+    check(status == 200 and removed["status"] == "removed",
+          "a custom poster can be removed from the torrent")
+    status, _, _ = poster_bytes(poster_url)
+    check(status == 404, "the custom poster bytes are removed with the poster")
+    status, _ = api_v1("DELETE", "/api/v1/torrents/" + torrent_hash)
+    check(status == 200, "the custom-poster test torrent can be removed")
 
 
 def covers(workdir):
@@ -484,9 +559,24 @@ def browser():
         page.wait_for_selector("#login-view:not([hidden])")
         page.fill("#password", OWNER_PASSWORD)
         page.click("#login-form button")
-        page.wait_for_selector("#search-view:not([hidden])")
+        page.wait_for_selector("#library-view:not([hidden])")
         check(not page.locator("#library-tab").is_hidden(), "core-host exposes the Library tab")
         check(page.title() == "MediaMesh · P2Play", "logged in on the page")
+        check("Your library" in page.inner_text("#library-view"), "native UI opens the library by default")
+        page.select_option("#language-select", "ru")
+        check(wait_text(page, "#library-heading", "Моя библиотека"), "Russian UI locale is applied")
+        wait_idle(page)
+        page.select_option("#language-select", "en")
+        check(wait_text(page, "#library-heading", "Your library"), "English UI locale can be restored")
+        wait_idle(page)
+        page.click("#theme-toggle")
+        wait_idle(page)
+        check(page.locator("html").get_attribute("data-theme") == "dark", "dark theme can be enabled")
+        page.click("#theme-toggle")
+        wait_idle(page)
+        check(page.locator("html").get_attribute("data-theme") == "light", "light theme can be restored")
+        page.click("#search-tab")
+        page.wait_for_selector("#search-view:not([hidden])")
         page.fill("#query", "ежик")
         page.click("#search-form button")
         page.wait_for_selector("#results .row")
@@ -497,17 +587,32 @@ def browser():
         wait_idle(page)
         page.click("[data-view=library]")
         page.wait_for_selector("#library-view:not([hidden])")
+        page.click("#add-open")
+        page.wait_for_selector("#add-modal:not([hidden])")
+        page.click("#add-search-open")
+        page.fill("#add-query", "ежик")
+        page.click("#add-search-form button[type=submit]")
+        check(wait_text(page, "#add-search-results", "Ёжик"), "catalog search is available inside the add dialog")
+        page.click("#add-search-results .row button")
+        check(page.locator("#add-modal").is_visible() and page.locator("#add-form-panel").is_visible(),
+              "selecting a catalog result returns to the parent add dialog")
         page.fill("#library-link", "magnet:?xt=urn:btih:" + "e" * 40)
         page.fill("#library-title", "Browser Library Entry")
         page.fill("#library-new-category", "Browser")
+        page.set_input_files("#library-poster-file", {
+            "name": "browser-poster.png", "mimeType": "image/png", "buffer": png_bytes(24, 16)
+        })
         wait_idle(page)
-        page.click("#library-add-form button")
+        page.click("#library-add-form button[type=submit]")
+        page.wait_for_selector("#add-modal", state="hidden")
         check(wait_text(page, "#library-rows", "Browser Library Entry"),
               "the new library entry appears in the list")
         check("Browser Library Entry" in page.inner_text("#library-rows"),
               "browser Library tab adds a magnet to the user library")
-        check(page.locator("#library-rows .cover-placeholder").count() >= 1,
-              "a torrent without a cover shows a placeholder, not a broken picture")
+        custom_row = page.locator("#library-rows .library-row").filter(has_text="Browser Library Entry")
+        check(custom_row.locator("img.cover-thumb").count() == 1 and
+              custom_row.locator("img.cover-thumb").get_attribute("src").endswith("/poster"),
+              "a user-selected poster is the library card image")
         page.locator("#library-rows .library-row").filter(has_text="Browser Library Entry").locator("button").filter(has_text="Details / files").click()
         page.wait_for_selector("#torrent-detail:not([hidden])")
         check(page.locator("#detail-cover-refresh").is_visible(), "the torrent detail offers a cover refresh")
@@ -530,7 +635,9 @@ def browser():
         check("files" in page.inner_text("#torrent-detail").lower(),
               "browser displays torrent detail and file-management panel")
         wait_idle(page)
-        page.click("[data-view=server]")
+        page.click("#settings-open")
+        page.wait_for_selector("#settings-modal:not([hidden])")
+        page.click("[data-settings-view=server]")
         page.wait_for_selector("#server-view:not([hidden])")
         # the storage and catalog cache controls loadServer() fills in; a missing input broke the
         # whole tab with a script error before
@@ -546,7 +653,7 @@ def browser():
         check(wait_text(page, "#status", "Settings saved"),
               "the server tab reports the saved settings")
         wait_idle(page)
-        page.click("[data-view=users]")
+        page.click("[data-settings-view=users]")
         page.wait_for_selector("#users-view:not([hidden])")
         page.fill("#new-user-name", "browser-user")
         page.fill("#new-user-password", "browser-password")
@@ -554,10 +661,11 @@ def browser():
         page.click("#user-add-form button")
         check(wait_text(page, "#users-rows", "browser-user"), "the new user appears in the list")
         wait_idle(page)
-        page.click("[data-view=continue]")
+        page.click("[data-settings-view=continue]")
         page.wait_for_selector("#continue-view:not([hidden])")
         wait_idle(page)
-        page.click("[data-view=lists]")
+        page.click("[data-settings-view=lists]")
+        page.wait_for_selector("#lists-view:not([hidden])")
         page.wait_for_selector("#lists .row")
         check("UI list" in page.inner_text("#lists"), "the lists view")
         check(not errors, "no script errors: " + "; ".join(errors))
@@ -574,7 +682,9 @@ def main():
         status, _, body = get("/")
         check(status == 200 and json.loads(body)["name"] == "P2Play", "a client at / gets the node's card")
         check(get("/ui")[0] == 301, "/ui to /ui/")
-        for path, name in (("/ui/", "index.html"), ("/ui/index.html", "index.html"), ("/ui/app.js", "app.js"), ("/ui/style.css", "style.css")):
+        for path, name in (("/ui/", "index.html"), ("/ui/index.html", "index.html"), ("/ui/app.js", "app.js"),
+                           ("/ui/style.css", "style.css"), ("/ui/lang/en.json", "lang/en.json"),
+                           ("/ui/lang/ru.json", "lang/ru.json")):
             status, headers, body = get(path)
             with open(os.path.join(PLUGIN, name), "rb") as f:
                 same = f.read() == body
@@ -590,6 +700,7 @@ def main():
         check(get("/echo")[0] == 404, "MatriX discovery route is absent in the standard build")
         check(get("/api/auth/me")[0] == 401, "the API behind the page asks a login")
         native_library()
+        posters()
         covers(root)
         if "--browser" in sys.argv:
             browser()

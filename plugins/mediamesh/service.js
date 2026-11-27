@@ -120,7 +120,7 @@
     ts.web.staticFile("/lang/en.json", "lang/en.json");
     ts.web.staticFile("/lang/ru.json", "lang/ru.json");
     route("get", "/api/session", 10, function (req, res) {
-        res.json({ rank: req.user.rank, csrf: csrf(req.user), can_admin: req.user.rank >= 50,
+        res.json({ rank: req.user.rank, csrf: csrf(req.user), can_admin: req.user.rank >= 50, user: req.user.id,
             capabilities: { subscribe: true, remove: false, refresh: "resubscribe", v1_only: true } });
     });
     route("get", "/api/settings", 50, function (req, res) {

@@ -319,6 +319,11 @@ namespace p2p {
 
             if (hasCustomPoster) {
                 const std::string hash = torrent->rec.hash;
+                const std::string posterPath = "/api/v1/torrents/" + hash + "/poster";
+                // Mark the user poster before touching the cover cache. If this infohash
+                // already has an extraction job in flight, its final write will now skip it.
+                { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
+                save(torrent);
                 coverForget(hash);
                 if (!coverStore(hash, posterBytes, "client", error)) {
                     { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster.clear(); }
@@ -326,11 +331,6 @@ namespace p2p {
                     coverRequest(hash);
                     return apiError(res, 400, error);
                 }
-                {
-                    std::lock_guard<std::mutex> lock(m_mutex);
-                    torrent->rec.poster = "/api/v1/torrents/" + hash + "/poster";
-                }
-                save(torrent);
             }
 
             log("[Web] native library add by %s: %s (%s)", user.name.c_str(), torrent->rec.hash.c_str(),
@@ -519,7 +519,7 @@ namespace p2p {
                                                        {"X-P2Play-Poster", "client"}});
                 }
                 if (method == "POST") {
-                    std::string bytes, type, url;
+                    std::string bytes, type, url, error;
                     bool hasImage = false;
                     if (req.header("content-type").rfind("multipart/form-data", 0) == 0) {
                         const auto fields = parseMultipart(req);

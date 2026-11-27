@@ -162,3 +162,18 @@ Android, Switch, PS4, PS5 и PS5 package.
 а не универсальную device acceptance.
 
 Публичные compatibility API и wire-format MediaMesh этим шагом не меняются.
+
+
+## Параметры UI и пользовательские постеры
+
+`GET/PUT /api/v1/preferences` возвращает и обновляет языковой параметр
+(`en` или `ru`) и тему (`light` или `dark`) текущей учётной записи.
+Предпочтения хранятся в записи пользователя.
+
+При добавлении торрента `POST /api/v1/torrents` принимает `poster_url` в JSON
+или multipart и `poster_file` в multipart. Для уже добавленного элемента
+`GET/POST/DELETE /api/v1/torrents/{hash}/poster` получает, заменяет и удаляет
+пользовательский постер. В JSON торрента по-прежнему используется строковое
+поле `poster`, содержащее URL P2Play. На текущем этапе URL-загрузка принимает
+общедоступные HTTP-адреса; HTTPS-картинки загружаются файлом. Подробности и
+ограничения безопасности — в [`covers.md`](covers.md).

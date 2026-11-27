@@ -59,11 +59,11 @@ Verified upstream contracts (paths relative to that commit):
    open mode every visitor becomes owner, regardless of the plugin's rank checks.
    Keep Silo behind authenticated HTTPS access; its current cookie is not marked
    Secure. Do not expose a password-free Silo instance to a network.
-2. From the P2Play repository root, package the five plugin files with `info.yaml`
+2. From the P2Play repository root, package the UI plugin files with `info.yaml`
    at ZIP root (Python standard library, no dependencies):
 
    ```sh
-   python3 -I -c "from pathlib import Path; from zipfile import ZipFile; p=Path('plugins/mediamesh'); z=ZipFile('mediamesh.zip','w'); [z.write(p/n,n) for n in ['info.yaml','service.js','index.html','app.js','style.css']]; z.close()"
+   python3 -I -c "from pathlib import Path; from zipfile import ZipFile; p=Path('plugins/mediamesh'); z=ZipFile('mediamesh.zip','w'); [z.write(p/n,n) for n in ['info.yaml','service.js','index.html','app.js','style.css','lang/en.json','lang/ru.json']]; z.close()"
    ```
 
    On Windows, use `python` instead of `python3` if necessary. The archive contains
@@ -273,3 +273,6 @@ modules are required). The runner intentionally uses the normal Python site
 configuration: CI installs `libtorrent` with `pip3`, and Python's isolated
 `-I` mode excludes user-site packages. Browser files also pass `node --check`;
 a browser layout/screenshot test has not been run.
+
+
+The shared page includes `lang/en.json` and `lang/ru.json` as separately served assets. The Silo session endpoint also returns the authenticated user ID so language/theme preferences can be scoped to that user in browser storage.
