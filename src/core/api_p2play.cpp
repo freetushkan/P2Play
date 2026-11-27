@@ -261,8 +261,8 @@ namespace p2p {
             if (hasFile && !link.empty()) return apiError(res, 400, "provide either a torrent file or a link, not both");
             if (hasFile && torrentFile.empty()) return apiError(res, 400, "torrent file is empty");
             if (!hasFile && link.empty()) return apiError(res, 400, "a magnet/link or a .torrent file is required");
-            if (hasFile && torrentFile.size() > (128u * 1024u * 1024u)) {
-                return apiError(res, 413, "torrent file exceeds the 128 MiB upload limit");
+            if (hasFile && torrentFile.size() > (16u * 1024u * 1024u)) {
+                return apiError(res, 413, "torrent file exceeds the 16 MiB upload limit");
             }
             if (!hasFile && (!apiSafeText(link, 16384) || link.find_first_of("\r\n") != std::string::npos)) {
                 return apiError(res, 400, "link is invalid or too long");

@@ -217,6 +217,10 @@ namespace p2p {
 
         // Keep the native P2Play API in its own versioned router; it is not part of MatriX.
         if (at(1) == "v1") {
+            if (m_settings.catalogOnly) {
+                error(res, 404, "a catalog node: no streamer");
+                return;
+            }
             routeP2PlayV1(req, res, user, parts);
             return;
         }

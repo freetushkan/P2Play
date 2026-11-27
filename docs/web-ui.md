@@ -30,7 +30,8 @@ layer и продолжает работать при сборке с P2P_COMPAT
 POST добавляет запись в библиотеку по умолчанию. JSON-поля: link, title,
 category. Для multipart используются поля file, title, category; файл и ссылка
 одновременно недопустимы, пустой файл отклоняется. Upload limit нативного
-маршрута — 128 MiB.
+маршрута ограничен HTTP body limit core: 16 MiB вместе с multipart framing;
+файл должен быть немного меньше из-за multipart boundary и полей.
 
 Поиск разбивает запрос на слова, требует совпадения каждого слова в title,
 infohash или category и использует общую Unicode-fold функцию MediaMesh
