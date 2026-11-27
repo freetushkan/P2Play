@@ -195,7 +195,7 @@
             input.type = "text"; input.maxLength = 128; input.value = item.category || "";
             input.setAttribute("aria-label", "Category for " + (item.title || item.hash)); label.append(input); copy.append(label);
             var actions = el("div", undefined, "library-actions");
-            actions.append(button("Save category", async function (b) {
+            actions.append(button("Save changes", async function (b) {
                 b.disabled = true;
                 try {
                     await host.updateLibrary(item.hash, input.value);

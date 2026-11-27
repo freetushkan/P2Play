@@ -64,8 +64,8 @@ Silo не проксирует маршруты /api/v1 и не получает
 - Добавление magnet/link или binary .torrent, optional title/category.
 - Поиск по title/hash/category, category selector с «все» / «без категории» /
   реальными значениями, сортировка date/title/size в обе стороны.
-- Изменение категории и подтверждаемое удаление с ясной пометкой про общие
-  torrent metadata и per-user library membership.
+- Изменение display title и категории, а также подтверждаемое удаление с ясной
+  пометкой про общие torrent metadata и per-user library membership.
 - Ошибка не очищает форму; повторный submit блокируется на время операции.
 - Недоверенные строки выводятся через textContent, внешние постеры/HTML не
   вставляются, CSP остаётся ограничивающей.
@@ -74,8 +74,8 @@ Silo не проксирует маршруты /api/v1 и не получает
 
 tools/ui-test.py проверяет защищённый API, добавление magnet и multipart
 torrent, поиск/категории/сортировку, удаление и изоляцию двух пользовательских
-библиотек. Browser режим проверяет login, вкладку Library и основные действия
-через Playwright.
+библиотек. Browser режим проверяет login, вкладку Library, добавление magnet и редактирование
+названия/категории через Playwright.
 
 Это не означает полный TorrServer parity. Остальные сценарии MatriX/Silo,
 файлы/папки, stream/player, viewed/reset/progress, сведения/peers/cache,

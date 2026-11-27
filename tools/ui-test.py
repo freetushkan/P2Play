@@ -169,9 +169,11 @@ def native_library():
     check(status == 200 and len(page["items"]) == 1 and page["total"] == 3,
           "library pagination is applied after sorting and reports the full total")
 
-    status, changed = api_v1("PUT", "/api/v1/torrents/" + second_hash, {"category": "Series"})
-    check(status == 200 and changed["torrent"]["category"] == "Series",
-          "library metadata can be updated via the native REST route")
+    status, changed = api_v1("PUT", "/api/v1/torrents/" + second_hash,
+                             {"title": "Updated Alpha", "category": "Series"})
+    check(status == 200 and changed["torrent"]["title"] == "Updated Alpha" and
+          changed["torrent"]["category"] == "Series",
+          "library title and category can be updated via the native REST route")
     status, categories = api_v1("GET", "/api/v1/library/categories")
     check(status == 200 and set(categories["categories"]) == {"Animation", "Files", "Series"},
           "library category endpoint returns the current user's distinct categories")
@@ -238,6 +240,13 @@ def browser():
         page.wait_for_selector("#library-rows .library-row")
         check("Browser Library Entry" in page.inner_text("#library-rows"),
               "browser Library tab adds a magnet to the user library")
+        library_row = page.locator("#library-rows .library-row").filter(has_text="Browser Library Entry")
+        library_row.locator("input[aria-label^='Title for']").fill("Edited Browser Entry")
+        library_row.locator("input[aria-label^='Category for']").fill("Edited Category")
+        library_row.locator("button").filter(has_text="Save changes").click()
+        page.wait_for_function("document.querySelector('#library-rows').textContent.includes('Edited Browser Entry')")
+        check("Edited Category" in page.locator("#library-rows").inner_text(),
+              "browser Library tab edits torrent title and category")
         page.click("[data-view=lists]")
         page.wait_for_selector("#lists .row")
         check("UI list" in page.inner_text("#lists"), "the lists view")
