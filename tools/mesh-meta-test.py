@@ -68,7 +68,7 @@ class Node:
             if self.proc.poll() is not None:
                 raise RuntimeError("daemon exited: " + (self.data / "stdout.log").read_text()[-4000:])
             try:
-                if self.call("/echo")[0] == 200:
+                if self.call("/api/system/ping")[0] == 200:
                     return
             except (OSError, urllib.error.URLError):
                 pass

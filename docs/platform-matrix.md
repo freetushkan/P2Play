@@ -1,6 +1,6 @@
 # Platform and runtime matrix
 
-Updated: 2026-11-26. This matrix distinguishes code/build evidence from device-level
+Updated: 2026-11-27. This matrix distinguishes code/build evidence from device-level
 acceptance. "Built" does not imply that the integrated lifecycle has been tested.
 
 ## Intended product layout
@@ -12,6 +12,16 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
 | Switch | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
 | PS4 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
 | PS5 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
+
+## Compatibility build policy
+
+Standard CMake, package, Android, Switch, PS4 and PS5 builds use
+`P2P_COMPAT_MATRIX=OFF`. This disables only the optional TorrServer MatriX
+routes and their HTTP Basic authentication. The Silo-compatible token API,
+native P2Play identity/API, MediaMesh catalog and authenticated streaming remain
+in the standard build. Linux CI separately configures `P2P_COMPAT_MATRIX=ON`
+and runs the MatriX/Basic compatibility suite against that binary; the default
+OFF binary runs the native API and MediaMesh acceptance tests.
 
 ## Current evidence
 

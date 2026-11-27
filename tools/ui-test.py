@@ -41,7 +41,7 @@ def start_daemon(daemon, data):
     log.close()
     for _ in range(100):
         try:
-            if get("/echo")[0] == 200:
+            if get("/api/system/ping")[0] == 200:
                 return proc
         except (OSError, urllib.error.URLError):
             pass
@@ -262,6 +262,13 @@ def main():
             check(status == 200 and same and "frame-ancestors" in headers.get("Content-Security-Policy", "")
                   and headers.get("X-Content-Type-Options") == "nosniff", path + ": the plugin's " + name)
         check(get("/ui/service.js")[0] == 404 and get("/ui/info.yaml")[0] == 404, "the plugin's server side not served")
+        check(get("/api/p2play/version")[0] == 200 and
+              json.loads(get("/api/p2play/version")[2])["name"] == "P2Play",
+              "native public P2Play identity is available without MatriX")
+        matrix_status, matrix_headers, _ = get("/torrents", {"Authorization": "Basic dGVzdDp0ZXN0"})
+        check(matrix_status == 404 and "WWW-Authenticate" not in matrix_headers,
+              "MatriX routes and Basic challenge are disabled in the standard build")
+        check(get("/echo")[0] == 404, "MatriX discovery route is absent in the standard build")
         check(get("/api/auth/me")[0] == 401, "the API behind the page asks a login")
         native_library()
         if "--browser" in sys.argv:

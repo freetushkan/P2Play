@@ -280,7 +280,11 @@ namespace p2p {
     }
 
     const char *Core::version() {
+#if P2P_COMPAT_MATRIX
         return "MatriX.141 P2Play/0.1";
+#else
+        return "P2Play/" P2P_NATIVE_VERSION;
+#endif
     }
 
     const char *Core::productVersion() {

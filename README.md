@@ -4,9 +4,9 @@ All-in-one torrent streamer with a decentralized catalog (MediaMesh), for Linux,
 
 Stage 4 development: the external pPlay client, account management and per-user playback progress
 are integrated with the signed MediaMesh catalog, selective replication, media packs, shards and
-publisher transport. The server remains compatible with TorrServer's MatriX and Silo APIs, while
-exposing a separate native P2Play identity endpoint. This does not claim completion of every
-roadmap condition; see the implementation boundaries below.
+publisher transport. The native P2Play and Silo-compatible APIs are enabled by default. TorrServer
+MatriX is an optional compatibility layer and is disabled in standard builds. This does not claim
+completion of every roadmap condition; see the implementation boundaries below.
 
 ## Running
 
@@ -26,12 +26,13 @@ A crash: `crash.log` there (every platform, see Layout); an uncaught exception a
 
 ## API
 
-Two APIs over the same core, the same users and the same progress:
-
-- the native one, under `/api`: the REST scheme of TorrServer's silo branch (Silo), with the viewing
-  progress added; a token;
-- TorrServer MatriX, as pPlay and Lampa use it; Basic. A compatibility layer
-  (`P2P_COMPAT_MATRIX`, CMake, ON): the core and `/api` build without it.
+The native API under `/api` follows TorrServer's Silo REST scheme, with viewing progress added
+and token authentication. An optional TorrServer MatriX compatibility API can be built for
+legacy pPlay and Lampa clients; it uses HTTP Basic.
+  The CMake option `P2P_COMPAT_MATRIX` defaults to `OFF`. Enable it explicitly with
+  `-DP2P_COMPAT_MATRIX=ON` to build the legacy routes and Basic authentication.
+  Native `/api`, Silo-compatible token auth, streaming and the product-owned
+  `/api/v1` routes remain available when MatriX is disabled.
 
 Files are numbered as the originals number them, so ids kept by a client (marks, progress) stay right when it
 moves between TorrServer and P2Play: MatriX ids from 1 over every file of the torrent sorted by path
@@ -128,11 +129,13 @@ restarts and a local SOCKS5 fixture; platform SDK/runtime validation remains out
 | `POST /api/publish` | `{"name","description"}`: a new list, its key in `keys/` (admins) |
 | `POST /api/publish/:pubkey/records`, `.../release`, `GET .../status` | NDJSON records (`ih`, `title`, `size`, `files`, `date`, `tags`, `trackers`, `poster`; `{"del": ih}`), the next version |
 
-### MatriX
+### MatriX (optional)
+
+This entire route set, including `/echo`, is compiled only when `P2P_COMPAT_MATRIX=ON`.
 
 | Route | |
 | --- | --- |
-| `GET /echo` | public: the version and the platform (`MatriX.141 P2Play/0.1 ps5`) |
+| `GET /echo` | public MatriX discovery endpoint; present only with `P2P_COMPAT_MATRIX=ON` |
 | `POST /torrents` | `add` (`link`: magnet, infohash, `http://` .torrent link; `title`, `poster`, `category`, `data`, `save_to_db`), `get`, `set`, `rem`, `drop`, `list`, `wipe` |
 | `POST /torrent/upload` | .torrent files (multipart: `file`, `title`, `poster`, `data`, `save`) |
 | `GET /stream[/name]` | `?link=&index=` with `play` (the file, Range), `stat`, `preload`, `save`, `m3u`, `fromlast`, `title`, `poster` |
@@ -149,9 +152,10 @@ restarts and a local SOCKS5 fixture; platform SDK/runtime validation remains out
 
 ### Users
 
-One set of users, `auth.json` in the data directory, required on both APIs; each asks as its original does:
-`/api` (Silo) a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie), the MatriX routes Basic
-(`WWW-Authenticate`). The MatriX routes TorrServer leaves open (`/stream` with `play` or `m3u`, `/play`,
+One set of users, `auth.json` in the data directory, shared by both APIs:
+`/api` (Silo) uses a token (`?token=`, `Authorization: Bearer`, the `silo_token` cookie).
+MatriX routes use Basic (`WWW-Authenticate`) only when `P2P_COMPAT_MATRIX=ON`; with the
+standard `OFF` build those legacy routes and their Basic challenge are not registered. The MatriX routes TorrServer leaves open (`/stream` with `play` or `m3u`, `/play`,
 `/playlist`) play a torrent already known without a login, as there: players open those links without
 credentials. The library, the progress and everything else are one store; the file numbers of each API are
 kept apart (MatriX's id, Silo's index).
@@ -167,8 +171,10 @@ guests 1-9). Each user has their own library and progress; a torrent no library 
 
 A client works with a server through one of the two APIs: their file numbers differ (MatriX's id, Silo's index).
 
-Discovery: pPlay and TorrServe find a TorrServer on port 8090 by `/echo` (public, `MatriX.141 P2Play/...`:
-MatriX's version prefix); Silo's clients by the public `/api/system/ping`.
+Discovery: pPlay identifies native P2Play on port 8090 by `/api/p2play/version`; TorrServer
+MatriX by `/echo` (available only when MatriX compatibility is enabled); TorrServer Silo by
+the public `/api/system/ping`. A standard P2Play build therefore does not masquerade as a
+TorrServer MatriX server.
 
 Not yet: `https://` .torrent links, DLNA, `/ffp` and the remaining roadmap features
 (including Continue Watching UI and the future embedded pPlay mode).
@@ -190,6 +196,9 @@ The same SDKs as pPlay, see `.github/workflows/build.yml`. Boost is header-only:
     ci/boost-headers.sh 1.86.0 /opt/boost-headers
     cmake -S . -B build -DBOOST_INCLUDE_DIR=/opt/boost-headers [-DPLATFORM_SWITCH=ON | -DPLATFORM_PS4=ON | -DPLATFORM_ANDROID=ON -DANDROID_ABI=armeabi-v7a]
     cmake --build build --target p2play_release
+
+MatriX compatibility is off by default. To build the optional legacy TorrServer API:
+`cmake -S . -B build-matrix -DBOOST_INCLUDE_DIR=/opt/boost-headers -DP2P_COMPAT_MATRIX=ON`.
 
 Android: `ci/android-apk.sh <boost headers>` builds p2playd with the NDK (`ANDROID_NDK_HOME`, Android 6+) for
 arm64-v8a and armeabi-v7a and packages it into one APK (`android/`) as `lib/<abi>/libp2playd.so`: the system

@@ -52,26 +52,30 @@ jobs:
         run: |
           exec > >(tee -a job.log) 2>&1
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_INCLUDE_DIR="$BOOST_HEADERS"
+          grep -Fx 'P2P_COMPAT_MATRIX:BOOL=OFF' < <(cmake -LA -N build)
           cmake --build build --target p2play_release -j$(nproc)
 
-      # the TorrServer MatriX API as pPlay and Lampa use it: RAM storage, RAM with a cache smaller
-      # than the file (pieces dropped and downloaded again), disk storage
+      # MatriX compatibility tests run against an explicit P2P_COMPAT_MATRIX=ON build:
+      # RAM storage, RAM with a small cache (pieces dropped/re-downloaded), and disk storage.
       - name: Core test
         run: |
           exec > >(tee -a job.log) 2>&1
-          python3 tools/core-test.py build/src/app/p2playd
-          python3 tools/core-test.py build/src/app/p2playd --cache16
-          python3 tools/core-test.py build/src/app/p2playd --disk
-          python3 tools/auth-test.py build/src/app/p2playd
-          python3 tools/silo-test.py build/src/app/p2playd
+          # Run the legacy MatriX + Basic suite in a separate, explicit compatibility build.
+          cmake -S . -B build-matrix -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_INCLUDE_DIR="$BOOST_HEADERS" -DP2P_COMPAT_MATRIX=ON
+          grep -Fx 'P2P_COMPAT_MATRIX:BOOL=ON' < <(cmake -LA -N build-matrix)
+          cmake --build build-matrix --target p2play_release -j$(nproc)
+          python3 tools/core-test.py build-matrix/src/app/p2playd
+          python3 tools/core-test.py build-matrix/src/app/p2playd --cache16
+          python3 tools/core-test.py build-matrix/src/app/p2playd --disk
+          python3 tools/auth-test.py build-matrix/src/app/p2playd
+          python3 tools/silo-test.py build-matrix/src/app/p2playd
+
+          # Native P2Play/Silo and MediaMesh tests must pass in the default MatriX-OFF build.
           python3 tools/mesh-test.py build/src/app/p2playd
           python3 -I tools/mesh-meta-test.py build/src/app/p2playd
           python3 tools/meshnet-test.py build/src/app/p2playd
           python3 -I tools/ui-test.py build/src/app/p2playd
-          # The product API must build even when the optional MatriX compatibility layer is off.
-          cmake -S . -B build-native-api -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBOOST_INCLUDE_DIR="$BOOST_HEADERS" -DP2P_COMPAT_MATRIX=OFF
-          cmake --build build-native-api --target p2play_core -j$(nproc)
           python3 -I tools/grabber-test.py
 
       - name: MediaMesh stage 3 integration
