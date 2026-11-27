@@ -62,6 +62,11 @@ namespace p2p {
         int listenPort = 0;          // BitTorrent, 0: any (restart)
         std::string dhtBootstrap;    // P2PDhtBootstrap: "host:port,...", a DHT of our own
         bool catalogOnly = false;    // P2PCatalogOnly: lists and search, no streamer (restart)
+        // a bounded cache on disk for the torrents whose pieces are kept whole; exclusive with
+        // UseDisk, which is the old unlimited mode. Chosen when a torrent is activated.
+        bool diskCacheEnabled = false;
+        int64_t diskCacheSize = 8LL << 30;
+        bool cacheListsInMemory = true; // MediaMesh records indexed in RAM (off: read from disk)
     };
 
     class Core {
@@ -281,6 +286,8 @@ namespace p2p {
         Auth m_auth;
         Settings m_settings;
         std::unique_ptr<RamCache> m_cache;   // null with useDisk
+        // read by the hybrid disk storage: are the streaming torrents kept on disk?
+        std::shared_ptr<std::atomic<bool>> m_diskTorrents = std::make_shared<std::atomic<bool>>(false);
         std::unique_ptr<lt::session> m_session;
         HttpServer m_http;
 
