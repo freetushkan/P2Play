@@ -68,6 +68,10 @@ jobs:
           python3 -I tools/mesh-meta-test.py build/src/app/p2playd
           python3 tools/meshnet-test.py build/src/app/p2playd
           python3 -I tools/ui-test.py build/src/app/p2playd
+          # The product API must build even when the optional MatriX compatibility layer is off.
+          cmake -S . -B build-native-api -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_INCLUDE_DIR="$BOOST_HEADERS" -DP2P_COMPAT_MATRIX=OFF
+          cmake --build build-native-api --target p2play_core -j$(nproc)
           python3 -I tools/grabber-test.py
 
       - name: MediaMesh stage 3 integration
