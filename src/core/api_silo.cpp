@@ -215,6 +215,12 @@ namespace p2p {
         const size_t n = parts.size();
         auto at = [&](size_t i) { return i < n ? parts[i] : std::string(); };
 
+        // Keep the native P2Play API in its own versioned router; it is not part of MatriX.
+        if (at(1) == "v1") {
+            routeP2PlayV1(req, res, user, parts);
+            return;
+        }
+
         if (get && n == 3 && at(1) == "auth" && at(2) == "me") {
             ok(res, 200, user.json(true));
             return;

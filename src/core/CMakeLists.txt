@@ -12,7 +12,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ui_files.cpp
 
 add_library(p2play_core STATIC
         ${CMAKE_CURRENT_BINARY_DIR}/ui_files.cpp
-        api_auth.cpp api_silo.cpp api_catalog.cpp mesh.cpp mesh_net.cpp mesh_ext.cpp hybrid_disk.cpp
+        api_auth.cpp api_silo.cpp api_p2play.cpp api_catalog.cpp mesh.cpp mesh_net.cpp mesh_ext.cpp hybrid_disk.cpp
         api_matrix.cpp torrs.cpp
         auth.cpp
         capi.cpp

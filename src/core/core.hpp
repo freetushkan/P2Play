@@ -111,6 +111,10 @@ namespace p2p {
 
         // api_silo.cpp: the native API, Silo's scheme under /api (file indexes from 0)
         void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
+        // api_p2play.cpp: P2Play's versioned native API (independent of MatriX).
+        void routeP2PlayV1(const HttpRequest &req, HttpResponse &res, const User &user,
+                            const std::vector<std::string> &parts);
+
         // mesh_net.cpp: list versions as torrents, their pointers in the DHT (stage 3)
         struct MeshNet {
             lt::torrent_handle seeding;      // the current version's torrent
