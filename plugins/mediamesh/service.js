@@ -117,6 +117,8 @@
     });
     ts.web.staticFile("/app.js", "app.js");
     ts.web.staticFile("/style.css", "style.css");
+    ts.web.staticFile("/lang/en.json", "lang/en.json");
+    ts.web.staticFile("/lang/ru.json", "lang/ru.json");
     route("get", "/api/session", 10, function (req, res) {
         res.json({ rank: req.user.rank, csrf: csrf(req.user), can_admin: req.user.rank >= 50,
             capabilities: { subscribe: true, remove: false, refresh: "resubscribe", v1_only: true } });

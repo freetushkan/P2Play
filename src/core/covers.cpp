@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
@@ -611,6 +612,12 @@ namespace p2p {
                 std::string bytes, type, source;
                 if (error.empty()) coverExtract(t, bytes, type, source, error);
                 if (!bytes.empty()) {
+                    // Serialize the final write against API poster changes; user posters win.
+                    std::lock_guard<std::mutex> posterLock(m_mutex);
+                    if (!t->rec.poster.empty() || t->rec.users.empty()) {
+                        release();
+                        continue;
+                    }
                     makeDirs(coverPath(m_store.dir(), hash).substr(0, coverPath(m_store.dir(), hash).rfind('/')));
                     const json meta = {{"source", source}, {"type", type},
                                        {"bytes", static_cast<int64_t>(bytes.size())},

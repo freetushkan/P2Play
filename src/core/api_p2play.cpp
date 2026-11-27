@@ -246,7 +246,7 @@ namespace p2p {
         // POST /api/v1/torrents — JSON {link,title,category,poster_url} or multipart
         // {file,title,category,poster_url,poster_file}. The chosen image is stored on this node.
         if (count == 3 && at(2) == "torrents" && method == "POST") {
-            std::string link, title, category, poster, posterUrl, torrentFile, posterBytes, posterType;
+            std::string link, title, category, poster, posterUrl, torrentFile, posterBytes, posterType, error;
             bool hasFile = false, hasPosterFile = false;
             const std::string contentType = req.header("content-type");
             if (contentType.rfind("multipart/form-data", 0) == 0) {
@@ -484,14 +484,12 @@ namespace p2p {
         }
 
         // GET/PUT/DELETE /api/v1/torrents/{infohash}
-        if (count == 4 && at(2) == "torrents") {
+        if (at(2) == "torrents" && (count == 4 || (count == 5 && at(4) == "poster"))) {
             const std::string hash = meshFold(at(3));
             TorrentPtr torrent = find(hash);
             if (!torrent || !owns(torrent, user.id)) {
                 return apiError(res, 404, "torrent not found in your library");
             }
-            if (get) return apiOk(res, 200, {{"torrent", item(torrent)}, {"details", siloStatus(torrent, user.id)}});
-
             // The saved user poster is served by P2Play itself, using the same session.
             // Its file lives in the infohash cover store and is removed with the last library entry.
             if (count == 5 && at(4) == "poster") {
@@ -532,10 +530,17 @@ namespace p2p {
                     if (hasImage && !coverValidate(bytes, type)) return apiError(res, 400, "poster must be a JPEG, PNG, WebP or GIF image");
                     if (!hasImage && url.empty()) return apiError(res, 400, "a poster URL or image file is required");
                     if (!hasImage && !coverFetchUrl(url, bytes, type, error)) return apiError(res, 400, error);
-                    coverForget(hash);
-                    if (!coverStore(hash, bytes, "client", error)) return apiError(res, 400, error);
+                    // Publish ownership first so an already queued automatic extractor can
+                    // never overwrite the selected image while it is being persisted.
                     { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
                     save(torrent);
+                    coverForget(hash);
+                    if (!coverStore(hash, bytes, "client", error)) {
+                        { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster.clear(); }
+                        save(torrent);
+                        coverRequest(hash);
+                        return apiError(res, 400, error);
+                    }
                     return apiOk(res, 200, {{"torrent", item(torrent)}});
                 }
                 if (method == "DELETE") {
@@ -547,6 +552,8 @@ namespace p2p {
                 }
                 return apiError(res, 405, "method not allowed");
             }
+
+            if (get) return apiOk(res, 200, {{"torrent", item(torrent)}, {"details", siloStatus(torrent, user.id)}});
 
             if (method == "PUT") {
                 const json body = apiBody(req);
