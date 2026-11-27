@@ -178,8 +178,10 @@ def native_library():
     check(status == 200 and "file_stats" in detail["details"],
           "native detailed torrent route exposes file metadata and per-user playback state")
     status, file_list = api_v1("GET", "/api/v1/torrents/" + file_hash + "/files")
-    check(status == 200 and len(file_list["files"]) == 1 and file_list["files"][0]["path"] == "one.bin",
-          "native file-list route returns torrent-relative file paths")
+    check(status == 200, "native file-list route responds successfully")
+    check(len(file_list.get("files", [])) == 1, "native file-list route returns one file")
+    check(file_list["files"][0].get("name") == "one.bin",
+          "native file-list route returns the correct torrent-relative filename")
     file_id = file_list["files"][0]["id"]
     status, marked = api_v1("PUT", "/api/v1/torrents/" + file_hash + "/files/" + str(file_id) + "/viewed",
                             {"viewed": True})
@@ -207,6 +209,26 @@ def native_library():
 
     status, before_settings = api_v1("GET", "/api/v1/settings")
     original_readahead = before_settings["settings"]["ReaderReadAHead"]
+    original_disk_cache = before_settings["settings"]["DiskCacheEnabled"]
+    original_disk_limit = before_settings["settings"]["DiskCacheSize"]
+    original_list_cache = before_settings["settings"]["CacheListsInMemory"]
+    status, storage_settings = api_v1("PUT", "/api/v1/settings", {"settings": {
+        "DiskCacheEnabled": True, "DiskCacheSize": 3 * 1024 * 1024 * 1024,
+        "CacheListsInMemory": False
+    }})
+    check(status == 200 and not storage_settings["restart_required"] and
+          storage_settings["settings"]["DiskCacheEnabled"] and
+          storage_settings["settings"]["DiskCacheSize"] == 3 * 1024 * 1024 * 1024 and
+          not storage_settings["settings"]["CacheListsInMemory"],
+          "disk cache and disk-backed catalog settings apply without restarting")
+    status, disk_catalog = api_v1("GET", "/api/catalog/search?q=UI")
+    check(status == 200, "catalog search works with the in-memory record cache disabled")
+    status, restored_storage = api_v1("PUT", "/api/v1/settings", {"settings": {
+        "DiskCacheEnabled": original_disk_cache, "DiskCacheSize": original_disk_limit,
+        "CacheListsInMemory": original_list_cache
+    }})
+    check(status == 200 and restored_storage["settings"]["CacheListsInMemory"] == original_list_cache,
+          "storage settings test restores the original cache modes")
     updated_readahead = 90 if original_readahead != 90 else 89
     status, saved_settings = api_v1("PUT", "/api/v1/settings",
                                    {"settings": {"ReaderReadAHead": updated_readahead}})

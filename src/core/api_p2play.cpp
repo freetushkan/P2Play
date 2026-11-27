@@ -360,11 +360,11 @@ namespace p2p {
             json next = settingsJson();
             bool restartRequired = false;
             static const std::set<std::string> booleanKeys = {
-                "UseDisk", "DisableUpload", "DisableTCP", "DisableUTP",
+                "UseDisk", "DiskCacheEnabled", "CacheListsInMemory", "DisableUpload", "DisableTCP", "DisableUTP",
                 "DisableDHT", "DisableMeshDirectory", "DisableUPNP"
             };
             static const std::set<std::string> integerKeys = {
-                "CacheSize", "ReaderReadAHead", "PreloadCache", "TorrentDisconnectTimeout",
+                "CacheSize", "DiskCacheSize", "ReaderReadAHead", "PreloadCache", "TorrentDisconnectTimeout",
                 "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit", "PeersListenPort"
             };
             static const std::set<std::string> stringKeys = {"TorrentsSavePath", "P2PDhtBootstrap"};
@@ -379,6 +379,7 @@ namespace p2p {
                     const int64_t value = it.value().get<int64_t>();
                     int64_t minimum = 0, maximum = 1000000000;
                     if (key == "CacheSize") { minimum = 16LL * 1024 * 1024; maximum = 8LL * 1024 * 1024 * 1024; }
+                    else if (key == "DiskCacheSize") { minimum = 256LL * 1024 * 1024; maximum = 2LL * 1024 * 1024 * 1024 * 1024; }
                     else if (key == "ReaderReadAHead") { minimum = 5; maximum = 100; }
                     else if (key == "PreloadCache") { minimum = 0; maximum = 100; }
                     else if (key == "TorrentDisconnectTimeout") { minimum = 5; maximum = 86400; }
@@ -397,6 +398,8 @@ namespace p2p {
                     return apiError(res, 400, "setting is read-only or unknown: " + key);
                 }
             }
+            if (next.value("UseDisk", false) && next.value("DiskCacheEnabled", false))
+                return apiError(res, 400, "UseDisk and DiskCacheEnabled are mutually exclusive");
             try {
                 m_store.setSettings(next);
                 loadSettings();
@@ -421,7 +424,10 @@ namespace p2p {
             return apiOk(res, 200, {
                 {"stats", {{"active_sessions", active}, {"active_readers", activeStreams()},
                            {"cache_bytes", cache.bytes}, {"cache_capacity", cache.capacity},
-                           {"cache_pieces", cache.pieces}, {"cache_evicted", cache.evicted}}},
+                           {"cache_pieces", cache.pieces}, {"cache_evicted", cache.evicted},
+                           {"disk_cache_enabled", m_settings.diskCacheEnabled},
+                           {"disk_cache_bytes", diskCacheUsage()},
+                           {"disk_cache_capacity", m_settings.diskCacheEnabled ? m_settings.diskCacheSize : 0}}},
                 {"uptime_sec", uptime}, {"version", productVersion()},
                 {"torrent", std::string("libtorrent ") + LIBTORRENT_VERSION}
             });
@@ -600,13 +606,16 @@ namespace p2p {
             }
 
             if (count == 5 && at(4) == "cache" && get) {
-                bool active = false;
+                bool active = false, diskStored = false;
                 int pieceLength = 0, pieceCount = 0;
                 lt::sha1_hash key;
+                lt::torrent_handle handle;
                 json readers = json::array();
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
                     active = torrent->active;
+                    diskStored = torrent->diskStored;
+                    handle = torrent->handle;
                     pieceLength = torrent->pieceLength;
                     pieceCount = torrent->numPieces;
                     key = torrent->cacheKey;
@@ -616,9 +625,13 @@ namespace p2p {
                     }
                 }
                 const auto cache = m_cache ? m_cache->stats() : RamCache::Stats{};
+                int64_t filled = 0;
+                if (active) filled = m_cache && !diskStored ? m_cache->bytesOf(key) : handle.status().total_wanted_done;
                 return apiOk(res, 200, {{"hash", hash}, {"active", active},
-                                        {"capacity", m_cache ? m_settings.cacheSize : 0},
-                                        {"filled", active && m_cache ? m_cache->bytesOf(key) : 0},
+                                        {"capacity", diskStored && m_settings.diskCacheEnabled ? m_settings.diskCacheSize :
+                                                     (m_cache && !diskStored ? m_settings.cacheSize : 0)},
+                                        {"filled", filled},
+                                        {"storage", diskStored ? "disk" : "ram"},
                                         {"piece_length", pieceLength}, {"piece_count", pieceCount},
                                         {"global_cache", {{"bytes", cache.bytes}, {"capacity", cache.capacity},
                                                            {"pieces", cache.pieces}, {"evicted", cache.evicted}}},

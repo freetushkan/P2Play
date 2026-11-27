@@ -120,8 +120,8 @@
       <p class="hint">Owner only. Runtime settings are applied immediately where supported. Storage backend, download directory, listen port and DHT bootstrap changes require a restart.</p>
       <form id="server-form" class="form-grid panel">
         <label>Cache size (MiB)<input id="setting-cache" type="number" min="16" max="8192" step="1" required></label>
-        <label>Reader read-ahead (%)<input id="setting-readahead" type="number" min="5" max="100" step="1" required></label>
-        <label>Preload cache (%)<input id="setting-preload" type="number" min="0" max="100" step="1" required></label>
+        <label>Reader read-ahead (%)<input id="setting-readahead" type="range" min="5" max="100" step="1"><output id="setting-readahead-value"></output></label>
+        <label>Preload cache (%)<input id="setting-preload" type="range" min="0" max="100" step="1"><output id="setting-preload-value"></output></label>
         <label>Idle disconnect (seconds)<input id="setting-disconnect" type="number" min="5" max="86400" step="1" required></label>
         <label>Connection limit<input id="setting-connections" type="number" min="5" max="1000" step="1" required></label>
         <label>Download limit (KiB/s, 0 = unlimited)<input id="setting-download" type="number" min="0" max="1000000000" step="1" required></label>

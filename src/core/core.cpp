@@ -4,7 +4,11 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
+#include <ctime>
+#include <dirent.h>
 #include <fstream>
+#include <utime.h>
 #include <random>
 #include <sstream>
 
@@ -36,6 +40,76 @@ namespace p2p {
 
     namespace {
 
+
+        bool directoryExists(const std::string &path) {
+            struct stat st{};
+            return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        }
+
+        bool makeDirectory(const std::string &path) {
+            if (directoryExists(path)) return true;
+            return ::mkdir(path.c_str(), 0700) == 0 || directoryExists(path);
+        }
+
+        int64_t directoryBytes(const std::string &path) {
+            int64_t total = 0;
+            DIR *dir = opendir(path.c_str());
+            if (!dir) return 0;
+            while (dirent *entry = readdir(dir)) {
+                const std::string name = entry->d_name;
+                if (name == "." || name == "..") continue;
+                const std::string child = path + "/" + name;
+                struct stat st{};
+                if (lstat(child.c_str(), &st) != 0) continue;
+                if (S_ISDIR(st.st_mode)) total += directoryBytes(child);
+                else if (S_ISREG(st.st_mode)) total += st.st_size;
+            }
+            closedir(dir);
+            return total;
+        }
+
+        void removeDirectoryTree(const std::string &path) {
+            DIR *dir = opendir(path.c_str());
+            if (!dir) { std::remove(path.c_str()); return; }
+            while (dirent *entry = readdir(dir)) {
+                const std::string name = entry->d_name;
+                if (name == "." || name == "..") continue;
+                const std::string child = path + "/" + name;
+                struct stat st{};
+                if (lstat(child.c_str(), &st) != 0) continue;
+                if (S_ISDIR(st.st_mode)) removeDirectoryTree(child);
+                else std::remove(child.c_str());
+            }
+            closedir(dir);
+            rmdir(path.c_str());
+        }
+
+        void trimDiskCache(const std::string &root, int64_t capacity, const std::set<std::string> &protectedHashes) {
+            struct Entry { std::string path; int64_t bytes; std::time_t used; };
+            std::vector<Entry> entries;
+            int64_t total = 0;
+            DIR *dir = opendir(root.c_str());
+            if (!dir) return;
+            while (dirent *entry = readdir(dir)) {
+                const std::string hash = entry->d_name;
+                if (hash == "." || hash == ".." || protectedHashes.count(hash)) continue;
+                if (!((hash.size() == 40 || hash.size() == 64) &&
+                      std::all_of(hash.begin(), hash.end(), [](unsigned char c) { return std::isxdigit(c); }))) continue;
+                const std::string path = root + "/" + hash;
+                struct stat st{};
+                if (lstat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                const int64_t bytes = directoryBytes(path);
+                entries.push_back({path, bytes, st.st_mtime});
+                total += bytes;
+            }
+            closedir(dir);
+            std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) { return a.used < b.used; });
+            for (const Entry &entry : entries) {
+                if (total <= capacity) break;
+                removeDirectoryTree(entry.path);
+                total -= entry.bytes;
+            }
+        }
         std::string hexOf(const lt::info_hash_t &ih) {
             std::ostringstream o;
             o << (ih.has_v1() ? ih.v1 : ih.get_best());
@@ -370,7 +444,8 @@ namespace p2p {
             log("[Core] invalid or unreadable settings; refusing network startup");
             return false;
         }
-        m_mesh.load(m_store.dir(), [this](const std::string &line) { log("%s", line.c_str()); });
+        m_mesh.load(m_store.dir(), [this](const std::string &line) { log("%s", line.c_str()); },
+                    m_settings.cacheListsInMemory);
         m_auth.load(m_store.dir());
         if (!m_config.ownerPassword.empty()) {
             const std::string authError = m_auth.setOwnerPassword(m_config.ownerPassword);
@@ -429,7 +504,9 @@ namespace p2p {
         } else {
             m_cache = std::make_unique<RamCache>(m_settings.cacheSize);
             // the MediaMesh list versions on disk, the streams in RAM
-            params.disk_io_constructor = hybridDisk(m_cache->constructor(), m_store.dir() + "/lists");
+            m_diskTorrents->store(m_settings.diskCacheEnabled && !m_settings.useDisk);
+            params.disk_io_constructor = hybridDisk(m_cache->constructor(), m_store.dir() + "/lists",
+                                                     m_diskTorrents);
         }
         try {
             m_session = std::make_unique<lt::session>(std::move(params));
@@ -500,6 +577,11 @@ namespace p2p {
         i("ReaderReadAHead", m_settings.readAhead);
         i("PreloadCache", m_settings.preloadCache);
         b("UseDisk", m_settings.useDisk);
+        b("DiskCacheEnabled", m_settings.diskCacheEnabled);
+        b("CacheListsInMemory", m_settings.cacheListsInMemory);
+        if (s.contains("DiskCacheSize") && s["DiskCacheSize"].is_number_integer())
+            m_settings.diskCacheSize = s["DiskCacheSize"].get<int64_t>();
+        if (m_settings.useDisk) m_settings.diskCacheEnabled = false;
         if (s.contains("TorrentsSavePath") && s["TorrentsSavePath"].is_string()) {
             m_settings.savePath = s["TorrentsSavePath"].get<std::string>();
         }
@@ -518,6 +600,7 @@ namespace p2p {
         if (s.contains("P2PDhtBootstrap") && s["P2PDhtBootstrap"].is_string()) {
             m_settings.dhtBootstrap = s["P2PDhtBootstrap"].get<std::string>();
         }
+        m_settings.diskCacheSize = std::min<int64_t>(2LL << 40, std::max<int64_t>(256LL << 20, m_settings.diskCacheSize));
         m_settings.readAhead = std::min(100, std::max(5, m_settings.readAhead));
         m_settings.preloadCache = std::min(100, std::max(0, m_settings.preloadCache));
         m_settings.disconnectTimeout = std::max(5, m_settings.disconnectTimeout);
@@ -525,8 +608,16 @@ namespace p2p {
     }
 
     void Core::applySettings() {
-        if (m_cache) {
-            m_cache->setCapacity(m_settings.cacheSize);
+        if (m_cache) m_cache->setCapacity(m_settings.cacheSize);
+        m_diskTorrents->store(m_settings.diskCacheEnabled && !m_settings.useDisk);
+        m_mesh.setRecordCache(m_settings.cacheListsInMemory);
+        if (m_settings.diskCacheEnabled && !m_settings.useDisk) {
+            std::set<std::string> active;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                for (const auto &entry : m_torrents) if (entry.second->active) active.insert(entry.first);
+            }
+            trimDiskCache(m_store.dir() + "/torrent-cache", m_settings.diskCacheSize, active);
         }
         if (!m_session) {
             return;
@@ -576,6 +667,10 @@ namespace p2p {
         }
     }
 
+    int64_t Core::diskCacheUsage() const {
+        return directoryBytes(m_store.dir() + "/torrent-cache");
+    }
+
     json Core::settingsJson() {
         // TorrServer's BTSets; the stored ones on top of the defaults
         json s = {
@@ -583,6 +678,9 @@ namespace p2p {
                 {"ReaderReadAHead", m_settings.readAhead},
                 {"PreloadCache", m_settings.preloadCache},
                 {"UseDisk", m_settings.useDisk},
+                {"DiskCacheEnabled", m_settings.diskCacheEnabled},
+                {"DiskCacheSize", m_settings.diskCacheSize},
+                {"CacheListsInMemory", m_settings.cacheListsInMemory},
                 {"TorrentsSavePath", m_settings.savePath},
                 {"RemoveCacheOnDrop", false},
                 {"ForceEncrypt", false},
@@ -611,6 +709,7 @@ namespace p2p {
         // the ones the core uses come from m_settings (checked values), the others as stored
         static const std::set<std::string> used = {
                 "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
+                "DiskCacheEnabled", "DiskCacheSize", "CacheListsInMemory",
                 "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
                 "DisableUpload", "DisableTCP", "DisableUTP", "DisableDHT", "DisableMeshDirectory",
                 "DisableUPNP", "PeersListenPort"};
@@ -952,7 +1051,7 @@ namespace p2p {
                 atp = lt::add_torrent_params();
             } else {
                 // nothing kept in memory between runs; the windows decide what is downloaded
-                if (m_cache) {
+                if (m_cache && !m_settings.diskCacheEnabled && !m_settings.useDisk) {
                     atp.have_pieces.clear();
                     atp.verified_pieces.clear();
                     atp.unfinished_pieces.clear();
@@ -998,7 +1097,18 @@ namespace p2p {
         if (m_store.publisherProxy().enabled && !proxyTorrent(atp, error)) {
             return false;
         }
-        atp.save_path = m_settings.savePath.empty() ? m_store.dir() + "/downloads" : m_settings.savePath;
+        if (m_settings.diskCacheEnabled && !m_settings.useDisk) {
+            const std::string root = m_store.dir() + "/torrent-cache";
+            if (!makeDirectory(root)) { error = "cannot create disk cache directory"; return false; }
+            const std::string torrentDir = root + "/" + t->rec.hash;
+            if (!makeDirectory(torrentDir)) { error = "cannot create torrent disk cache directory"; return false; }
+            struct utimbuf accessed{};
+            accessed.actime = accessed.modtime = std::time(nullptr);
+            ::utime(torrentDir.c_str(), &accessed);
+            atp.save_path = torrentDir;
+        } else {
+            atp.save_path = m_settings.savePath.empty() ? m_store.dir() + "/downloads" : m_settings.savePath;
+        }
         // Never queue automatically. A torrent with metadata starts paused until a reader
         // establishes its piece priorities; a magnet without metadata must connect to fetch it.
         atp.flags &= ~lt::torrent_flags::auto_managed;
@@ -1013,6 +1123,7 @@ namespace p2p {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             t->handle = h;
+            t->diskStored = m_settings.useDisk || m_settings.diskCacheEnabled;
             t->active = true;
             t->lastUse = Clock::now();
         }
@@ -1118,6 +1229,14 @@ namespace p2p {
             m_changed.wait_for(lock, std::chrono::seconds(3), [&] { return m_resumeWrites != before || m_stopping; });
         }
         m_session->remove_torrent(h);
+        if (m_settings.diskCacheEnabled && !m_settings.useDisk) {
+            std::set<std::string> active;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                for (const auto &entry : m_torrents) if (entry.second->active) active.insert(entry.first);
+            }
+            trimDiskCache(m_store.dir() + "/torrent-cache", m_settings.diskCacheSize, active);
+        }
         if (!saved) {
             std::remove(m_store.metadataPath(t->rec.hash).c_str());
             std::remove(m_store.resumePath(t->rec.hash).c_str());
@@ -1139,6 +1258,7 @@ namespace p2p {
         m_store.removeTorrent(t->rec.hash);
         std::remove(m_store.metadataPath(t->rec.hash).c_str());
         std::remove(m_store.resumePath(t->rec.hash).c_str());
+        if (!m_settings.useDisk) removeDirectoryTree(m_store.dir() + "/torrent-cache/" + t->rec.hash);
     }
 
     json Core::filesData(const TorrentPtr &t) {
@@ -1213,7 +1333,7 @@ namespace p2p {
             j["bytes_read_data"] = st.total_payload_download;
             j["bytes_written"] = st.total_payload_upload;
             j["bytes_written_data"] = st.total_payload_upload;
-            j["loaded_size"] = m_cache ? m_cache->bytesOf(key) : st.total_wanted_done;
+            j["loaded_size"] = (m_cache && !t->diskStored) ? m_cache->bytesOf(key) : st.total_wanted_done;
         }
         if (!rec.files.empty()) {
             j["file_stats"] = filesData(t);

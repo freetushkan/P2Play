@@ -42,7 +42,7 @@ namespace p2p {
     // the readers' window: at most half of the RAM cache (the other half keeps what was read)
     int64_t Core::windowBytes() {
         int64_t bytes = m_settings.cacheSize * m_settings.readAhead / 100;
-        if (m_cache) {
+        if (m_cache && !m_settings.diskCacheEnabled && !m_settings.useDisk) {
             bytes = std::min<int64_t>(bytes, m_settings.cacheSize / 2);
         }
         return std::max<int64_t>(bytes, 4LL << 20);
@@ -61,7 +61,7 @@ namespace p2p {
         } else {
             t->windows[reader] = {first, std::min(last, t->numPieces - 1)};
         }
-        if (m_cache) {
+        if (m_cache && !t->diskStored) {
             m_cache->setReader(t->cacheKey, reader, first < 0 ? -1 : first, std::min(last, t->numPieces - 1));
         }
         std::set<int> now = t->pinned;
@@ -168,7 +168,9 @@ namespace p2p {
                                      std::chrono::seconds(1))) {
                 return nullptr;
             }
-            if (m_cache) {
+            bool diskStored = false;
+            { std::lock_guard<std::mutex> lock(m_mutex); diskStored = t->diskStored; }
+            if (m_cache && !diskStored) {
                 lt::sha1_hash key;
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);

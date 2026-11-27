@@ -251,6 +251,7 @@ namespace p2p {
         void loadSettings();
         void applySettings();
         nlohmann::json settingsJson();
+        int64_t diskCacheUsage() const;
 
         void alertLoop();
         void alertStep();

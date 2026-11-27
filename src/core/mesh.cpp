@@ -333,22 +333,67 @@ namespace p2p {
     std::string Mesh::listDir(const std::string &pk) const { return hexString(pk, 64) ? m_dir + "/lists/" + pk : m_dir + "/lists/.invalid"; }
     MeshPolicy Mesh::policy(const std::string &pk) const { return hexString(pk, 64) ? readPolicy(m_dir, pk) : MeshPolicy(); }
 
-    void Mesh::load(const std::string &dir, std::function<void(const std::string &)> log) {
+    void Mesh::load(const std::string &dir, std::function<void(const std::string &)> log, bool cacheRecordsInMemory) {
         std::lock_guard<std::mutex> writer(m_writeMutex);
         m_dir = dir; m_log = log ? std::move(log) : [](const std::string &) {};
         mkdir((dir + "/lists").c_str(), 0777); mkdir((dir + "/keys").c_str(), 0700); mkdir((dir + "/mesh-local").c_str(), 0700);
-        std::lock_guard<std::mutex> lock(m_mutex); m_lists.clear();
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_cacheRecordsInMemory = cacheRecordsInMemory;
+        m_lists.clear();
         if (DIR *d = opendir((dir + "/lists").c_str())) {
             while (auto *e = readdir(d)) {
                 std::string pk = e->d_name; if (!hexString(pk, 64)) continue;
                 Loaded l; auto err = read(listDir(pk), l);
                 if (!err.empty() || l.card.pubkey != pk) { m_log("[Mesh] refused " + pk + ": " + err); continue; }
-                makeDirs(dir, pk); prune(pk, l, policy(pk)); m_lists[pk] = std::move(l);
+                makeDirs(dir, pk); prune(pk, l, policy(pk));
+                if (!m_cacheRecordsInMemory) l.records.clear();
+                m_lists[pk] = std::move(l);
             }
             closedir(d);
         }
         rebuild();
-        m_log("[Mesh] " + std::to_string(m_lists.size()) + " lists, " + std::to_string(m_index.size()) + " records");
+        size_t recordCount = 0;
+        for (const auto &entry : m_lists) recordCount += static_cast<size_t>(entry.second.card.records);
+        m_log("[Mesh] " + std::to_string(m_lists.size()) + " lists, " +
+              std::to_string(recordCount) + " records (" +
+              (m_cacheRecordsInMemory ? "RAM index" : "disk-backed index") + ")");
+    }
+
+    void Mesh::setRecordCache(bool enabled) {
+        std::lock_guard<std::mutex> writer(m_writeMutex);
+        std::vector<std::string> keys;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_cacheRecordsInMemory == enabled) return;
+            if (!enabled) {
+                m_cacheRecordsInMemory = false;
+                for (auto &entry : m_lists) entry.second.records.clear();
+                m_index.clear();
+                m_log("[Mesh] record RAM cache disabled; signed records will be read from disk on demand");
+                return;
+            }
+            // Keep the disk-backed mode active while loading, so concurrent searches
+            // never observe an enabled-but-empty index.
+            for (const auto &entry : m_lists) keys.push_back(entry.first);
+        }
+
+        std::map<std::string, std::vector<MeshRecord>> records;
+        for (const std::string &pk : keys) {
+            Loaded loaded;
+            const std::string err = read(listDir(pk), loaded);
+            if (err.empty()) records.emplace(pk, std::move(loaded.records));
+            else m_log("[Mesh] RAM cache skipped " + pk + ": " + err);
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (auto &entry : records) {
+                auto current = m_lists.find(entry.first);
+                if (current != m_lists.end()) current->second.records = std::move(entry.second);
+            }
+            m_cacheRecordsInMemory = true;
+            rebuild();
+        }
+        m_log("[Mesh] record RAM cache enabled");
     }
 
     std::string Mesh::read(const std::string &dir, Loaded &out, const std::string *manifest, const MeshPolicy *overridePolicy) const {
@@ -468,6 +513,10 @@ namespace p2p {
 
     void Mesh::rebuild() {
         m_index.clear();
+        if (!m_cacheRecordsInMemory) {
+            for (auto &entry : m_lists) entry.second.records.clear();
+            return;
+        }
         for (const auto &l : m_lists) {
             for (const MeshRecord &r : l.second.records) {
                 auto it = m_index.find(r.ih);
@@ -475,20 +524,20 @@ namespace p2p {
                     m_index[r.ih] = r;
                     continue;
                 }
-                // merged: the fields one list lacks from another, the tags of all
-                MeshRecord &m = it->second;
-                m.lists.insert(l.first);
-                if (!m.size) m.size = r.size;
-                if (!m.files) m.files = r.files;
-                if (!m.date || (r.date && r.date < m.date)) m.date = r.date ? r.date : m.date;
-                if (m.poster.empty()) m.poster = r.poster;
-                if (m.descriptionRef.empty()) m.descriptionRef = r.descriptionRef;
-                if (m.posterRef.empty()) m.posterRef = r.posterRef;
-                for (const std::string &t : r.tags) {
-                    if (std::find(m.tags.begin(), m.tags.end(), t) == m.tags.end()) m.tags.push_back(t);
+                MeshRecord &merged = it->second;
+                merged.lists.insert(l.first);
+                if (!merged.size) merged.size = r.size;
+                if (!merged.files) merged.files = r.files;
+                if (!merged.date || (r.date && r.date < merged.date)) merged.date = r.date ? r.date : merged.date;
+                if (merged.poster.empty()) merged.poster = r.poster;
+                if (merged.descriptionRef.empty()) merged.descriptionRef = r.descriptionRef;
+                if (merged.posterRef.empty()) merged.posterRef = r.posterRef;
+                for (const std::string &tag : r.tags) {
+                    if (std::find(merged.tags.begin(), merged.tags.end(), tag) == merged.tags.end()) merged.tags.push_back(tag);
                 }
-                for (const std::string &t : r.trackers) {
-                    if (std::find(m.trackers.begin(), m.trackers.end(), t) == m.trackers.end()) m.trackers.push_back(t);
+                for (const std::string &tracker : r.trackers) {
+                    if (std::find(merged.trackers.begin(), merged.trackers.end(), tracker) == merged.trackers.end())
+                        merged.trackers.push_back(tracker);
                 }
             }
         }
@@ -515,62 +564,124 @@ namespace p2p {
 
     std::vector<MeshRecord> Mesh::search(const std::string &query, const std::string &tag, size_t limit,
                                          const std::set<std::string> &lists) const {
+        if (!limit) return {};
         const std::vector<std::string> want = words(meshFold(query));
         const std::string tagFolded = meshFold(tag);
-        std::vector<std::pair<int, const MeshRecord *>> hits;
-        std::lock_guard<std::mutex> lock(m_mutex);
-        for (const auto &item : m_index) {
-            const MeshRecord &r = item.second;
-            if (!lists.empty() && std::none_of(lists.begin(), lists.end(), [&](const std::string &pk) {
-                    return r.lists.count(pk) != 0;
-                })) {
-                continue;
-            }
-            if (!tagFolded.empty() && std::none_of(r.tags.begin(), r.tags.end(),
-                                                   [&](const std::string &t) { return meshFold(t) == tagFolded; })) {
-                continue;
-            }
-            const std::string title = meshFold(r.title);
-            std::string tags;
-            for (const std::string &t : r.tags) {
-                tags += " " + meshFold(t);
-            }
-            int score = 0;
-            bool all = true;
-            for (const std::string &w : want) {
-                if (title.find(w) != std::string::npos) {
-                    score += 2;
-                } else if (tags.find(w) != std::string::npos) {
-                    score += 1;
-                } else {
-                    all = false;
-                    break;
+        std::map<std::string, MeshRecord> diskRecords;
+        bool cacheEnabled = true;
+        std::vector<std::string> keys;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            cacheEnabled = m_cacheRecordsInMemory;
+            if (!cacheEnabled) {
+                for (const auto &entry : m_lists) {
+                    if (lists.empty() || lists.count(entry.first)) keys.push_back(entry.first);
                 }
             }
-            if (all) {
-                hits.push_back({score, &r});
+        }
+        if (!cacheEnabled) {
+            // Load one signed list at a time. Only records matching the query are retained
+            // in this temporary result map; the full catalog is never installed in RAM.
+            for (const std::string &pk : keys) {
+                Loaded loaded;
+                if (!read(listDir(pk), loaded).empty()) continue;
+                for (const MeshRecord &record : loaded.records) {
+                    if (!lists.empty() && !record.lists.empty() && !record.lists.count(pk)) continue;
+                    auto it = diskRecords.find(record.ih);
+                    if (it == diskRecords.end()) {
+                        diskRecords.emplace(record.ih, record);
+                    } else {
+                        MeshRecord &merged = it->second;
+                        merged.lists.insert(record.lists.begin(), record.lists.end());
+                        if (!merged.size) merged.size = record.size;
+                        if (!merged.files) merged.files = record.files;
+                        if (!merged.date || (record.date && record.date < merged.date))
+                            merged.date = record.date ? record.date : merged.date;
+                        if (merged.poster.empty()) merged.poster = record.poster;
+                        if (merged.descriptionRef.empty()) merged.descriptionRef = record.descriptionRef;
+                        if (merged.posterRef.empty()) merged.posterRef = record.posterRef;
+                        for (const std::string &value : record.tags)
+                            if (std::find(merged.tags.begin(), merged.tags.end(), value) == merged.tags.end()) merged.tags.push_back(value);
+                        for (const std::string &value : record.trackers)
+                            if (std::find(merged.trackers.begin(), merged.trackers.end(), value) == merged.trackers.end()) merged.trackers.push_back(value);
+                    }
+                }
             }
+        }
+
+        std::vector<std::pair<int, MeshRecord>> hits;
+        auto consider = [&](const MeshRecord &record) {
+            if (!lists.empty() && std::none_of(lists.begin(), lists.end(), [&](const std::string &pk) {
+                    return record.lists.count(pk) != 0;
+                })) return;
+            if (!tagFolded.empty() && std::none_of(record.tags.begin(), record.tags.end(),
+                                                   [&](const std::string &value) { return meshFold(value) == tagFolded; }))
+                return;
+            const std::string title = meshFold(record.title);
+            std::string tags;
+            for (const std::string &value : record.tags) tags += " " + meshFold(value);
+            int score = 0;
+            for (const std::string &word : want) {
+                if (title.find(word) != std::string::npos) score += 2;
+                else if (tags.find(word) != std::string::npos) score += 1;
+                else return;
+            }
+            hits.emplace_back(score, record);
+        };
+
+        if (cacheEnabled) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (const auto &entry : m_index) consider(entry.second);
+        } else {
+            for (const auto &entry : diskRecords) consider(entry.second);
         }
         std::sort(hits.begin(), hits.end(), [](const auto &a, const auto &b) {
             if (a.first != b.first) return a.first > b.first;
-            if (a.second->lists.size() != b.second->lists.size()) return a.second->lists.size() > b.second->lists.size();
-            return a.second->date > b.second->date;
+            if (a.second.lists.size() != b.second.lists.size()) return a.second.lists.size() > b.second.lists.size();
+            return a.second.date > b.second.date;
         });
         std::vector<MeshRecord> out;
-        for (size_t i = 0; i < hits.size() && i < limit; i++) {
-            out.push_back(*hits[i].second);
-        }
+        out.reserve(std::min(limit, hits.size()));
+        for (size_t i = 0; i < hits.size() && i < limit; ++i) out.push_back(std::move(hits[i].second));
         return out;
     }
 
     bool Mesh::record(const std::string &ih, MeshRecord &out) const {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_index.find(lowerAscii(ih));
-        if (it == m_index.end()) {
-            return false;
+        const std::string wanted = lowerAscii(ih);
+        std::vector<std::string> keys;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_cacheRecordsInMemory) {
+                auto it = m_index.find(wanted);
+                if (it == m_index.end()) return false;
+                out = it->second;
+                return true;
+            }
+            for (const auto &entry : m_lists) keys.push_back(entry.first);
         }
-        out = it->second;
-        return true;
+        bool found = false;
+        for (const std::string &pk : keys) {
+            Loaded loaded;
+            if (!read(listDir(pk), loaded).empty()) continue;
+            auto it = std::find_if(loaded.records.begin(), loaded.records.end(),
+                                   [&](const MeshRecord &record) { return record.ih == wanted; });
+            if (it == loaded.records.end()) continue;
+            if (!found) { out = *it; found = true; }
+            else {
+                out.lists.insert(it->lists.begin(), it->lists.end());
+                if (!out.size) out.size = it->size;
+                if (!out.files) out.files = it->files;
+                if (!out.date || (it->date && it->date < out.date)) out.date = it->date ? it->date : out.date;
+                if (out.poster.empty()) out.poster = it->poster;
+                if (out.descriptionRef.empty()) out.descriptionRef = it->descriptionRef;
+                if (out.posterRef.empty()) out.posterRef = it->posterRef;
+                for (const std::string &value : it->tags)
+                    if (std::find(out.tags.begin(), out.tags.end(), value) == out.tags.end()) out.tags.push_back(value);
+                for (const std::string &value : it->trackers)
+                    if (std::find(out.trackers.begin(), out.trackers.end(), value) == out.trackers.end()) out.trackers.push_back(value);
+            }
+        }
+        return found;
     }
 
     std::string Mesh::create(const std::string &name, const std::string &desc, std::string &pubkey, bool meta) {
@@ -1012,27 +1123,63 @@ namespace p2p {
     }
 
     std::string Mesh::mediaPath(const std::string &pk, const std::string &ih, const std::string &kind) const {
-        std::lock_guard<std::mutex> lock(m_mutex);
         if (kind != "description" && kind != "poster") return {};
-        auto l = m_lists.find(pk); if (l == m_lists.end()) return {};
-        for (const auto &r : l->second.records) if (r.ih == lowerAscii(ih)) {
-            const auto &ref = kind == "description" ? r.descriptionRef : r.posterRef;
+        bool cacheEnabled = true;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto l = m_lists.find(pk);
+            if (l == m_lists.end()) return {};
+            cacheEnabled = m_cacheRecordsInMemory;
+            if (cacheEnabled) {
+                for (const auto &record : l->second.records) if (record.ih == lowerAscii(ih)) {
+                    const auto &ref = kind == "description" ? record.descriptionRef : record.posterRef;
+                    return ref.empty() ? std::string() : "media/" + ref.pack;
+                }
+                return {};
+            }
+        }
+        Loaded loaded;
+        if (!read(listDir(pk), loaded).empty()) return {};
+        for (const auto &record : loaded.records) if (record.ih == lowerAscii(ih)) {
+            const auto &ref = kind == "description" ? record.descriptionRef : record.posterRef;
             return ref.empty() ? std::string() : "media/" + ref.pack;
         }
         return {};
     }
 
     std::string Mesh::media(const std::string &pk, const std::string &ih, const std::string &kind, std::string &bytes, std::string &type) {
-        std::lock_guard<std::mutex> writer(m_writeMutex); bytes.clear(); type.clear();
-        MeshMediaRef ref; Loaded version;
+        std::lock_guard<std::mutex> writer(m_writeMutex);
+        bytes.clear(); type.clear();
+        MeshMediaRef ref;
+        Loaded version;
+        bool cacheEnabled = true;
         {
-            std::lock_guard<std::mutex> lock(m_mutex); auto l = m_lists.find(pk); if (l == m_lists.end()) return "list not found";
-            auto r = std::find_if(l->second.records.begin(), l->second.records.end(), [&](const MeshRecord &r) { return r.ih == lowerAscii(ih); });
-            if (r == l->second.records.end()) return "record not found";
-            if (kind == "description") ref = r->descriptionRef; else if (kind == "poster") ref = r->posterRef; else return "bad media kind";
-            if (ref.empty()) return "media not found";
-            version.card = l->second.card; version.files = l->second.files;
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto l = m_lists.find(pk);
+            if (l == m_lists.end()) return "list not found";
+            cacheEnabled = m_cacheRecordsInMemory;
+            version.card = l->second.card;
+            version.files = l->second.files;
+            if (cacheEnabled) {
+                auto record = std::find_if(l->second.records.begin(), l->second.records.end(),
+                                           [&](const MeshRecord &r) { return r.ih == lowerAscii(ih); });
+                if (record == l->second.records.end()) return "record not found";
+                if (kind == "description") ref = record->descriptionRef;
+                else if (kind == "poster") ref = record->posterRef;
+                else return "bad media kind";
+            }
         }
+        if (!cacheEnabled) {
+            const std::string err = read(listDir(pk), version);
+            if (!err.empty()) return err;
+            auto record = std::find_if(version.records.begin(), version.records.end(),
+                                       [&](const MeshRecord &r) { return r.ih == lowerAscii(ih); });
+            if (record == version.records.end()) return "record not found";
+            if (kind == "description") ref = record->descriptionRef;
+            else if (kind == "poster") ref = record->posterRef;
+            else return "bad media kind";
+        }
+        if (ref.empty()) return "media not found";
         auto p = policy(pk); makeDirs(m_dir, pk); const auto cache = localDir(m_dir, pk) + "/cache/" + ref.sha256;
         if (readFile(cache, bytes, static_cast<size_t>(ref.length)) && static_cast<int64_t>(bytes.size()) == ref.length && hashHex(bytes) == ref.sha256 && validMedia(kind, ref.type, bytes)) {
             type = ref.type; return "";

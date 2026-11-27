@@ -86,8 +86,20 @@ Silo не проксирует маршруты /api/v1 и не получает
 - Continue Watching, server stats, owner engine settings и rank-aware user
   management (создание, смена роли, ban, password reset, token regeneration,
   удаление).
-- Peer list и RAM cache diagnostics (включая активные reader windows).
-- Runtime settings применяются немедленно; storage backend, save path, listen
+- Peer list и RAM/disk cache diagnostics (включая активные reader windows).
+- Настройки cache представлены переключателями, числовыми полями и ползунками.
+  Изменения применяются на лету; уже открытый torrent сохраняет свой storage
+  backend до закрытия, новые активации используют выбранный режим.
+- DiskCacheEnabled включает отдельный ограниченный кэш в data/torrent-cache,
+  DiskCacheSize задаёт общую квоту (256 MiB–2 TiB). При переполнении удаляются
+  самые давно использовавшиеся закрытые торренты; активные потоки не удаляются.
+  Это кэш, а не пользовательская папка загрузок. UseDisk остаётся legacy
+  unlimited disk mode и взаимоисключается с ограниченным disk cache.
+- CacheListsInMemory отключает постоянно удерживаемый в RAM индекс записей
+  MediaMesh. Подписанные manifests и segments всегда хранятся на диске;
+  поиск/карточки читают их с диска при запросе. В браузере полный список
+  каталогов и раньше не кэшировался локально.
+- Runtime settings применяются немедленно; legacy UseDisk, save path, listen
   port и DHT bootstrap помечаются как требующие restart.
 - Ошибка не очищает форму; операции блокируются на время запроса.
 - Недоверенные строки выводятся через textContent; CSP разрешает media-src
@@ -98,7 +110,8 @@ Silo не проксирует маршруты /api/v1 и не получает
 tools/ui-test.py проверяет защищённый API, добавление magnet и multipart
 torrent, поиск/категории/сортировку, удаление и изоляцию пользовательских
 библиотек; file list, watched/progress/reset, Continue Watching, stream index
-validation, peers/cache diagnostics, owner settings и users API. Browser режим
+validation, peers/cache diagnostics, owner settings, disk-cache/catalog cache
+modes и users API. Browser режим
 проверяет login, добавление/редактирование torrent, details/files, settings,
 users и Continue Watching через Playwright.
 
