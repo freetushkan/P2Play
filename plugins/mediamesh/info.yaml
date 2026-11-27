@@ -12,6 +12,8 @@ routes:
   - /index.html
   - /app.js
   - /style.css
+  - /lang/en.json
+  - /lang/ru.json
   - /api/session
   - /api/settings
   - /api/search

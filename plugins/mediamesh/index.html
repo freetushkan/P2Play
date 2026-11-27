@@ -3,29 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>P2Play</title>
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
 </head>
 <body>
-  <header class="masthead">
-    <a href="/" class="back silo-only" hidden>Silo</a>
-    <div><h1>Media player</h1><p id="host-caption">Your catalogs, library and playback.</p></div>
-    <div class="identity"><span id="identity" hidden></span><button id="logout" class="quiet" type="button" hidden>Log out</button></div>
-  </header>
-  <main>
-    <nav aria-label="Media player sections" id="main-nav">
-      <button type="button" data-view="search" aria-pressed="true">Search</button>
-      <button type="button" data-view="lists" aria-pressed="false">Lists</button>
+  <header class="topbar">
+    <a class="brand" href="/ui/" aria-label="P2Play home"><span class="brand-mark">P</span><span><strong>P2Play</strong><small id="host-caption">Personal media library</small></span></a>
+    <nav id="main-nav" class="main-nav" aria-label="Main navigation">
       <button type="button" data-view="library" id="library-tab" class="core-only" hidden>Library</button>
-      <button type="button" data-view="continue" id="continue-tab" class="core-only" hidden>Continue</button>
-      <button type="button" data-view="server" id="server-tab" class="core-only" hidden>Server</button>
-      <button type="button" data-view="users" id="users-tab" class="core-only" hidden>Users</button>
-      <button type="button" data-view="settings" id="settings-tab" class="silo-only" hidden>Connection</button>
+      <button type="button" data-view="search" id="search-tab" data-view="search">Discover</button>
     </nav>
+    <div class="top-actions">
+      <button id="add-open" type="button" class="primary core-only" hidden><span aria-hidden="true">＋</span> Add torrent</button>
+      <label class="language-switch" aria-label="Interface language">
+        <span class="sr-only">Language</span>
+        <select id="language-select" aria-label="Language"><option value="en">EN</option><option value="ru">RU</option></select>
+      </label>
+      <button id="theme-toggle" type="button" class="icon-button" aria-label="Switch theme" title="Switch theme"><span aria-hidden="true">◐</span></button>
+      <button id="settings-open" type="button" class="icon-button" aria-label="Settings" title="Settings">⚙</button>
+      <span id="identity" class="identity" hidden></span>
+      <button id="logout" class="quiet" type="button" hidden>Log out</button>
+    </div>
+  </header>
+  <main class="app-main">
     <p id="status" role="status" aria-live="polite">Connecting…</p>
-
     <section id="login-view" aria-labelledby="login-heading" hidden>
       <h2 id="login-heading">Log in to P2Play</h2>
       <form id="login-form" class="narrow-form">
@@ -46,40 +49,14 @@
       <div id="results" class="rows"></div>
     </section>
 
-    <section id="lists-view" aria-labelledby="lists-heading" hidden>
-      <div class="section-heading"><h2 id="lists-heading">Your lists</h2><button id="reload-lists" type="button">Reload</button></div>
-      <div id="lists" class="rows"></div>
-      <h2>Discover lists</h2>
-      <p class="hint">Lists advertised by the network. Subscribe to make their catalog available for search.</p>
-      <div id="discover" class="rows"></div>
-      <form id="subscribe-form" class="inline-form" hidden>
-        <label>List public key<input id="pubkey" maxlength="64" minlength="64" pattern="[0-9a-fA-F]{64}" required spellcheck="false"></label>
-        <button type="submit">Subscribe</button>
-      </form>
-      <p class="hint silo-only" hidden>Subscriptions and refresh requests require a Silo administrator.</p>
-    </section>
-
     <section id="library-view" class="core-only" hidden aria-labelledby="library-heading">
-      <div class="section-heading"><h2 id="library-heading">Torrent library</h2><div class="inline-actions"><a class="button-link" href="/api/v1/library/export" download="p2play-library.torrs">Export .torrs</a><button id="library-reload" type="button">Refresh</button></div></div>
-      <p class="hint">Your library is private to your account. Title and category are metadata for the infohash and are shared with other users who have saved the same torrent.</p>
-      <div class="panel">
-        <h3>Add torrent</h3>
-        <form id="library-add-form" class="form-grid">
-          <label class="wide">Magnet or supported link<input id="library-link" type="text" maxlength="16384" placeholder="magnet:?xt=urn:btih:…"></label>
-          <label class="wide">Or choose a .torrent file<input id="library-file" type="file" accept=".torrent,application/x-bittorrent"></label>
-          <label>Display title (optional)<input id="library-title" type="text" maxlength="512"></label>
-          <label>Category (optional)<input id="library-new-category" type="text" maxlength="128"></label>
-          <button type="submit">Add to library</button>
-        </form>
-        <p class="hint">Choose exactly one source: magnet/link or .torrent file. Upload limit: 16 MiB including multipart overhead. Leave the poster empty and the server looks for the cover inside the torrent (poster.*, cover.*, then a frame of the video).</p>
+      <div class="section-heading library-heading">
+        <div><p class="eyebrow">YOUR COLLECTION</p><h2 id="library-heading">Your library</h2><p class="hint">Everything you want to watch, in one place.</p></div>
+        <div class="inline-actions"><button id="library-reload" type="button" class="secondary">Refresh</button></div>
       </div>
-      <div class="panel">
-        <h3>Import library</h3>
-        <form id="library-import-form" class="inline-form">
-          <label>.torrs file<input id="library-import-file" type="file" accept=".torrs,text/plain"></label>
-          <button type="submit">Import</button>
-        </form>
-      </div>
+
+      <details class="filter-disclosure">
+        <summary>Filter and sort</summary>
       <div class="panel">
         <h3>Filter and sort</h3>
         <form id="library-filter-form" class="library-filter">
@@ -90,6 +67,7 @@
           <button type="submit">Apply</button>
         </form>
       </div>
+      </details>
       <div id="library-rows" class="rows" aria-live="polite"></div>
       <div class="pager"><button id="library-prev" type="button" disabled>Previous</button><span id="library-page">Page 1</span><button id="library-next" type="button" disabled>Next</button></div>
 
@@ -110,6 +88,83 @@
           <section><h4>Connected peers</h4><div id="torrent-peers" class="rows compact-rows">Not loaded</div><button id="peers-refresh" type="button" class="secondary">Refresh peers</button></section>
         </div>
       </section>
+    </section>
+
+  <section id="add-modal" class="modal-backdrop" hidden aria-modal="true" role="dialog" aria-labelledby="add-modal-title">
+    <div class="modal-card add-modal-card">
+      <div class="modal-header"><div><p class="eyebrow">LIBRARY</p><h2 id="add-modal-title">Add a torrent</h2></div><button id="add-close" type="button" class="icon-button" aria-label="Close">×</button></div>
+      <div id="add-form-panel">
+        <form id="library-add-form" class="form-grid add-form">
+          <label class="wide">Magnet, infohash or supported link<input id="library-link" name="link" type="text" maxlength="16384" placeholder="magnet:?xt=urn:btih:…"></label>
+          <label class="wide">Or choose a .torrent file<input id="library-file" name="file" type="file" accept=".torrent,application/x-bittorrent"></label>
+          <div class="form-divider wide"><span>Details (optional)</span></div>
+          <label>Display title<input id="library-title" type="text" maxlength="512"></label>
+          <label>Category<input id="library-new-category" type="text" maxlength="128"></label>
+          <div class="form-divider wide"><span>Poster</span></div>
+          <label class="wide">Poster image URL<input id="library-poster-url" type="url" maxlength="2048" placeholder="http://…"></label>
+          <label class="wide">Or upload an image<input id="library-poster-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+          <p class="hint wide">JPEG, PNG, WebP or GIF · up to 2 MiB. The server fetches public HTTP URLs only; upload a file for HTTPS images. Your custom poster takes priority over images inside the torrent.</p>
+          <div class="modal-actions wide">
+            <button type="button" id="add-search-open" class="secondary">Search catalogs</button>
+            <span class="spacer"></span>
+            <button type="button" id="add-cancel" class="quiet">Cancel</button>
+            <button type="submit" class="primary">Add to library</button>
+          </div>
+        </form>
+      </div>
+      <div id="add-search-panel" hidden>
+        <div class="modal-header search-modal-heading"><div><p class="eyebrow">CATALOG SEARCH</p><h3>Find a release</h3></div><button id="add-search-close" type="button" class="secondary">Back to add</button></div>
+        <form id="add-search-form" class="search-form compact-search">
+          <label>Title<input id="add-query" type="search" maxlength="512" placeholder="Film, series or release name"></label>
+          <label>Tag<input id="add-tag" maxlength="128" placeholder="Any tag"></label>
+          <button type="submit" class="primary">Search</button>
+        </form>
+        <div id="add-search-results" class="rows"></div>
+        <div class="modal-actions"><span class="spacer"></span><button type="button" id="add-search-cancel" class="quiet">Cancel search</button></div>
+      </div>
+    </div>
+  </section>
+  <section id="settings-modal" class="modal-backdrop" hidden aria-modal="true" role="dialog" aria-labelledby="settings-modal-title">
+    <div class="modal-card settings-modal-card">
+      <div class="modal-header"><div><p class="eyebrow">PREFERENCES</p><h2 id="settings-modal-title">Settings</h2></div><button id="settings-close" type="button" class="icon-button" aria-label="Close">×</button></div>
+      <nav class="settings-nav" aria-label="Settings sections">
+        <button type="button" data-settings-view="preferences" class="active">Appearance</button>
+        <button type="button" data-settings-view="lists">Lists</button>
+        <button type="button" data-settings-view="continue" class="core-only" hidden>Continue watching</button>
+        <button type="button" data-settings-view="server" id="server-tab" class="core-only" hidden>Server</button>
+        <button type="button" data-settings-view="users" id="users-tab" class="core-only" hidden>Users</button>
+        <button type="button" data-settings-view="settings" class="silo-only" hidden>Connection</button>
+      </nav>
+      <section id="preferences-view" class="settings-pane">
+        <h3>Appearance</h3>
+        <p class="hint">Choose how P2Play looks. Your preferences are saved to your account.</p>
+        <div class="preference-row"><div><strong>Theme</strong><span>Light or dark appearance</span></div><button id="theme-toggle-settings" class="secondary" type="button">Switch theme</button></div>
+        <div class="preference-row"><div><strong>Language</strong><span>Interface language</span></div><select id="language-select-settings"><option value="en">English</option><option value="ru">Русский</option></select></div>
+        <div class="panel settings-data">
+          <h3>Library data</h3>
+          <p class="hint">Back up or restore your torrent list.</p>
+          <a class="button-link core-only" hidden href="/api/v1/library/export" download="p2play-library.torrs">Export .torrs</a>
+                <div class="panel core-only" hidden>
+        <h3>Import library</h3>
+        <form id="library-import-form" class="inline-form">
+          <label>.torrs file<input id="library-import-file" type="file" accept=".torrs,text/plain"></label>
+          <button type="submit">Import</button>
+        </form>
+      </div>
+
+        </div>
+      </section>
+    <section id="lists-view" aria-labelledby="lists-heading" hidden>
+      <div class="section-heading"><h2 id="lists-heading">Your lists</h2><button id="reload-lists" type="button">Reload</button></div>
+      <div id="lists" class="rows"></div>
+      <h2>Discover lists</h2>
+      <p class="hint">Lists advertised by the network. Subscribe to make their catalog available for search.</p>
+      <div id="discover" class="rows"></div>
+      <form id="subscribe-form" class="inline-form" hidden>
+        <label>List public key<input id="pubkey" maxlength="64" minlength="64" pattern="[0-9a-fA-F]{64}" required spellcheck="false"></label>
+        <button type="submit">Subscribe</button>
+      </form>
+      <p class="hint silo-only" hidden>Subscriptions and refresh requests require a Silo administrator.</p>
     </section>
 
     <section id="continue-view" class="core-only" hidden aria-labelledby="continue-heading">
@@ -169,7 +224,7 @@
       <div id="users-rows" class="rows"></div>
     </section>
 
-    <section id="settings-view" aria-labelledby="settings-heading" hidden>
+    <section id="settings-view" class="silo-only" aria-labelledby="settings-heading" hidden>
       <h2 id="settings-heading">Daemon connection</h2>
       <p class="hint">Silo plugin connection settings. The address is reached from the Silo server, not your browser.</p>
       <form id="settings-form" class="narrow-form">
@@ -180,6 +235,9 @@
         <button type="submit">Save connection</button>
       </form>
     </section>
+
+    </div>
+  </section>
   </main>
 </body>
 </html>

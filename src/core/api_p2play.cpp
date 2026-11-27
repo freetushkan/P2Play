@@ -243,11 +243,11 @@ namespace p2p {
             });
         }
 
-        // POST /api/v1/torrents — JSON {link,title,category} or multipart {file,title,category}.
-        // A successful POST always adds the torrent to this user's library.
+        // POST /api/v1/torrents — JSON {link,title,category,poster_url} or multipart
+        // {file,title,category,poster_url,poster_file}. The chosen image is stored on this node.
         if (count == 3 && at(2) == "torrents" && method == "POST") {
-            std::string link, title, category, poster, torrentFile;
-            bool hasFile = false;
+            std::string link, title, category, poster, posterUrl, torrentFile, posterBytes, posterType, error;
+            bool hasFile = false, hasPosterFile = false;
             const std::string contentType = req.header("content-type");
             if (contentType.rfind("multipart/form-data", 0) == 0) {
                 const auto fields = parseMultipart(req);
@@ -259,11 +259,18 @@ namespace p2p {
                 title = apiTrim(field("title"));
                 category = apiTrim(field("category"));
                 poster = apiTrim(field("poster"));
+                posterUrl = apiTrim(field("poster_url"));
                 auto file = fields.find("file");
                 if (file != fields.end()) {
                     if (file->second.first.empty()) return apiError(res, 400, "file part must include a filename");
                     hasFile = true;
                     torrentFile = file->second.second;
+                }
+                auto image = fields.find("poster_file");
+                if (image != fields.end()) {
+                    if (image->second.first.empty()) return apiError(res, 400, "poster_file part must include a filename");
+                    hasPosterFile = true;
+                    posterBytes = image->second.second;
                 }
             } else {
                 const json body = apiBody(req);
@@ -272,6 +279,7 @@ namespace p2p {
                 title = apiTrim(apiString(body, "title"));
                 category = apiTrim(apiString(body, "category"));
                 poster = apiTrim(apiString(body, "poster"));
+                posterUrl = apiTrim(apiString(body, "poster_url"));
             }
 
             if (hasFile && !link.empty()) return apiError(res, 400, "provide either a torrent file or a link, not both");
@@ -280,24 +288,65 @@ namespace p2p {
             if (hasFile && torrentFile.size() > (16u * 1024u * 1024u)) {
                 return apiError(res, 413, "torrent file exceeds the 16 MiB upload limit");
             }
+            if (hasPosterFile && posterBytes.size() > (2u * 1024u * 1024u)) {
+                return apiError(res, 413, "poster image exceeds the 2 MiB upload limit");
+            }
             if (!hasFile && (!apiSafeText(link, 16384) || link.find_first_of("\r\n") != std::string::npos)) {
                 return apiError(res, 400, "link is invalid or too long");
             }
-            if (!apiSafeText(title, 512) || !apiSafeText(category, 128) || !apiSafeText(poster, 2048)) {
+            if (!apiSafeText(title, 512) || !apiSafeText(category, 128) ||
+                !apiSafeText(poster, 2048) || !apiSafeText(posterUrl, 2048)) {
                 return apiError(res, 400, "title, category or poster is too long or contains control characters");
             }
+            if ((!posterUrl.empty() && hasPosterFile) || (!poster.empty() && (!posterUrl.empty() || hasPosterFile))) {
+                return apiError(res, 400, "choose one poster source: legacy poster, URL or uploaded image");
+            }
+            if (hasPosterFile && !coverValidate(posterBytes, posterType)) {
+                return apiError(res, 400, "poster_file must be a JPEG, PNG, WebP or GIF image no larger than 2 MiB");
+            }
+            if (!posterUrl.empty() && !coverFetchUrl(posterUrl, posterBytes, posterType, error)) {
+                return apiError(res, 400, error);
+            }
 
-            std::string error;
-            // A poster given here is the client's own (a pPlay/Silo poster or a catalog one):
-            // the server keeps it and never replaces it with its own cover extraction.
+            const bool hasCustomPoster = hasPosterFile || !posterUrl.empty();
+            const std::string posterSeed = hasCustomPoster ? "p2play-poster-pending" : poster;
+            // The non-empty seed prevents the cover worker from inspecting the torrent while
+            // this request stores the user's image.
             TorrentPtr torrent = hasFile
-                ? addMetadata(torrentFile, title, poster, category, "", user.id, error)
-                : add(link, title, poster, category, "", user.id, error);
+                ? addMetadata(torrentFile, title, posterSeed, category, "", user.id, error)
+                : add(link, title, posterSeed, category, "", user.id, error);
             if (!torrent) return apiError(res, 400, error.empty() ? "torrent could not be added" : error);
+
+            if (hasCustomPoster) {
+                const std::string hash = torrent->rec.hash;
+                const std::string posterPath = "/api/v1/torrents/" + hash + "/poster";
+                // Mark the user poster before touching the cover cache. If this infohash
+                // already has an extraction job in flight, its final write will now skip it.
+                { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
+                save(torrent);
+                coverForget(hash);
+                if (!coverStore(hash, posterBytes, "client", error)) {
+                    { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster.clear(); }
+                    save(torrent);
+                    coverRequest(hash);
+                    return apiError(res, 400, error);
+                }
+            }
 
             log("[Web] native library add by %s: %s (%s)", user.name.c_str(), torrent->rec.hash.c_str(),
                 hasFile ? "torrent file" : "link");
             return apiOk(res, 201, {{"torrent", item(torrent)}});
+        }
+
+        // GET/PUT /api/v1/preferences — persistent UI preferences per account.
+        if (count == 3 && at(2) == "preferences") {
+            if (get) return apiOk(res, 200, {{"preferences", m_auth.preferences(user.id)}});
+            if (method != "PUT" && method != "PATCH") return apiError(res, 405, "method not allowed");
+            const json body = apiBody(req);
+            const json values = body.is_object() && body.contains("preferences") ? body["preferences"] : body;
+            const std::string error = m_auth.setPreferences(user.id, values);
+            if (!error.empty()) return apiError(res, 400, error);
+            return apiOk(res, 200, {{"preferences", m_auth.preferences(user.id)}});
         }
 
         // GET /api/v1/progress — per-user Continue Watching.
@@ -446,12 +495,75 @@ namespace p2p {
         }
 
         // GET/PUT/DELETE /api/v1/torrents/{infohash}
-        if (count == 4 && at(2) == "torrents") {
+        if (at(2) == "torrents" && (count == 4 || (count == 5 && at(4) == "poster"))) {
             const std::string hash = meshFold(at(3));
             TorrentPtr torrent = find(hash);
             if (!torrent || !owns(torrent, user.id)) {
                 return apiError(res, 404, "torrent not found in your library");
             }
+            // The saved user poster is served by P2Play itself, using the same session.
+            // Its file lives in the infohash cover store and is removed with the last library entry.
+            if (count == 5 && at(4) == "poster") {
+                const std::string posterPath = "/api/v1/torrents/" + hash + "/poster";
+                if (get) {
+                    std::string selected, bytes, type, source;
+                    { std::lock_guard<std::mutex> lock(m_mutex); selected = torrent->rec.poster; }
+                    if (selected != posterPath || !coverRead(hash, bytes, type, source)) {
+                        return apiError(res, 404, "no user poster for this torrent");
+                    }
+                    const std::string etag = "\"" + hash + "-poster-" + std::to_string(bytes.size()) + "\"";
+                    if (req.header("if-none-match") == etag) {
+                        return res.send(304, type, "", {{"ETag", etag}, {"Cache-Control", "private, max-age=86400"}});
+                    }
+                    return res.send(200, type, bytes, {{"ETag", etag}, {"Cache-Control", "private, max-age=86400"},
+                                                       {"X-P2Play-Poster", "client"}});
+                }
+                if (method == "POST") {
+                    std::string bytes, type, url, error;
+                    bool hasImage = false;
+                    if (req.header("content-type").rfind("multipart/form-data", 0) == 0) {
+                        const auto fields = parseMultipart(req);
+                        auto image = fields.find("poster_file");
+                        auto link = fields.find("poster_url");
+                        if (image != fields.end()) {
+                            if (image->second.first.empty()) return apiError(res, 400, "poster_file part must include a filename");
+                            bytes = image->second.second;
+                            hasImage = true;
+                        }
+                        if (link != fields.end()) url = apiTrim(link->second.second);
+                    } else {
+                        const json body = apiBody(req);
+                        if (!body.is_object()) return apiError(res, 400, "a JSON object is expected");
+                        url = apiTrim(apiString(body, "url"));
+                    }
+                    if (hasImage && !url.empty()) return apiError(res, 400, "choose either a poster URL or an uploaded image");
+                    if (hasImage && bytes.size() > (2u * 1024u * 1024u)) return apiError(res, 413, "poster image exceeds the 2 MiB upload limit");
+                    if (hasImage && !coverValidate(bytes, type)) return apiError(res, 400, "poster must be a JPEG, PNG, WebP or GIF image");
+                    if (!hasImage && url.empty()) return apiError(res, 400, "a poster URL or image file is required");
+                    if (!hasImage && !coverFetchUrl(url, bytes, type, error)) return apiError(res, 400, error);
+                    // Publish ownership first so an already queued automatic extractor can
+                    // never overwrite the selected image while it is being persisted.
+                    { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
+                    save(torrent);
+                    coverForget(hash);
+                    if (!coverStore(hash, bytes, "client", error)) {
+                        { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster.clear(); }
+                        save(torrent);
+                        coverRequest(hash);
+                        return apiError(res, 400, error);
+                    }
+                    return apiOk(res, 200, {{"torrent", item(torrent)}});
+                }
+                if (method == "DELETE") {
+                    { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster.clear(); }
+                    save(torrent);
+                    coverForget(hash);
+                    coverRequest(hash);
+                    return apiOk(res, 200, {{"status", "removed"}, {"hash", hash}});
+                }
+                return apiError(res, 405, "method not allowed");
+            }
+
             if (get) return apiOk(res, 200, {{"torrent", item(torrent)}, {"details", siloStatus(torrent, user.id)}});
 
             if (method == "PUT") {

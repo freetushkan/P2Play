@@ -1,7 +1,7 @@
 # The web interface (plugins/mediamesh, the Silo plugin's pages) as C++ arrays: cmake -DUI_DIR=... -DOUT=... -P embed-ui.cmake
-set(FILES index.html app.js style.css)
+set(FILES index.html app.js style.css lang/en.json lang/ru.json)
 # (no ";" in an item: CMake splits lists on it; the charset is added below)
-set(TYPES text/html text/javascript text/css)
+set(TYPES text/html text/javascript text/css application/json application/json)
 set(SRC "// made by cmake/embed-ui.cmake from plugins/mediamesh\n#include \"ui_files.hpp\"\n\nnamespace p2p {\n")
 set(TABLE "")
 set(I 0)

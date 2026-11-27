@@ -209,8 +209,25 @@ func TestMediaMeshRealRuntimeAuthAndCSRF(t *testing.T) {
 			t.Errorf("route not whitelisted: %s", route)
 		}
 	}
-	if len(h.reg.handlers) != 11 || len(h.reg.files) != 2 {
+	if len(h.reg.handlers) != 11 || len(h.reg.files) != 4 {
 		t.Fatalf("route inventory: %v %v", h.reg.handlers, h.reg.files)
+	}
+	for _, path := range []string{"/app.js", "/style.css", "/lang/en.json", "/lang/ru.json"} {
+		if _, ok := h.reg.files[path]; !ok {
+			t.Errorf("missing static UI asset route %s", path)
+		}
+	}
+	siloSession := h.request("GET", "/api/session", h.regular, nil, "")
+	var sessionData map[string]any
+	if err := json.Unmarshal(siloSession.Body.Bytes(), &sessionData); err != nil {
+		t.Fatal(err)
+	}
+	siloUser, err := h.users.Authenticate(h.regular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionData["user"] != siloUser.ID {
+		t.Fatalf("session user id: got %v, want %v", sessionData["user"], siloUser.ID)
 	}
 	owner, err := h.users.GetUserByID("owner")
 	if err != nil {
@@ -363,7 +380,7 @@ func TestMediaMeshRealZIPLoader(t *testing.T) {
 	}
 	writer := zip.NewWriter(f)
 	root := os.Getenv("MEDIAMESH_PLUGIN_DIR")
-	for _, name := range []string{"info.yaml", "service.js", "index.html", "app.js", "style.css"} {
+	for _, name := range []string{"info.yaml", "service.js", "index.html", "app.js", "style.css", "lang/en.json", "lang/ru.json"} {
 		data, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)

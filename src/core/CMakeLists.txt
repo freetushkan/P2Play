@@ -7,7 +7,7 @@ set(P2P_UI_DIR ${PROJECT_SOURCE_DIR}/plugins/mediamesh)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ui_files.cpp
         COMMAND ${CMAKE_COMMAND} -DUI_DIR=${P2P_UI_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/ui_files.cpp
                 -P ${PROJECT_SOURCE_DIR}/cmake/embed-ui.cmake
-        DEPENDS ${P2P_UI_DIR}/index.html ${P2P_UI_DIR}/app.js ${P2P_UI_DIR}/style.css
+        DEPENDS ${P2P_UI_DIR}/index.html ${P2P_UI_DIR}/app.js ${P2P_UI_DIR}/style.css ${P2P_UI_DIR}/lang/en.json ${P2P_UI_DIR}/lang/ru.json
                 ${PROJECT_SOURCE_DIR}/cmake/embed-ui.cmake)
 
 add_library(p2play_core STATIC

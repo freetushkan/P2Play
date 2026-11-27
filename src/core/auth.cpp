@@ -175,6 +175,8 @@ namespace p2p {
                 user.token = u.value("api_token", u.value("token", ""));
                 user.banned = u.value("is_banned", false);
                 user.created = u.value("created_at", static_cast<int64_t>(0));
+                user.preferences = u.value("preferences", json::object());
+                if (!user.preferences.is_object()) user.preferences = json::object();
                 if (user.name.empty() || (!user.id.empty() && findLocked(user.id))) {
                     continue;
                 }
@@ -236,7 +238,8 @@ namespace p2p {
                              {"rank", u.rank},
                              {"api_token", u.token},
                              {"is_banned", u.banned},
-                             {"created_at", u.created}});
+                             {"created_at", u.created},
+                             {"preferences", u.preferences}});
         }
         std::string tmp = m_path + ".tmp";
         std::string text = json{{"users", users}}.dump(2);
@@ -346,6 +349,42 @@ namespace p2p {
         return User();
     }
 
+    nlohmann::json Auth::preferences(const std::string &id) const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const User &user : m_users) {
+            if (user.id == id) {
+                const json values = user.preferences.is_object() ? user.preferences : json::object();
+                const std::string language = values.value("language", std::string("en"));
+                const std::string theme = values.value("theme", std::string("light"));
+                return {{"language", language == "ru" ? "ru" : "en"},
+                        {"theme", theme == "dark" ? "dark" : "light"}};
+            }
+        }
+        return {{"language", "en"}, {"theme", "light"}};
+    }
+
+    std::string Auth::setPreferences(const std::string &id, const nlohmann::json &values) {
+        if (!values.is_object() || values.empty()) return "preferences must be a non-empty object";
+        for (auto it = values.begin(); it != values.end(); ++it) {
+            if (it.key() == "language") {
+                if (!it.value().is_string() || (it.value() != "en" && it.value() != "ru"))
+                    return "language must be en or ru";
+            } else if (it.key() == "theme") {
+                if (!it.value().is_string() || (it.value() != "light" && it.value() != "dark"))
+                    return "theme must be light or dark";
+            } else return "unknown preference: " + it.key();
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (User &user : m_users) {
+            if (user.id == id) {
+                if (!user.preferences.is_object()) user.preferences = json::object();
+                for (auto it = values.begin(); it != values.end(); ++it) user.preferences[it.key()] = it.value();
+                save();
+                return "";
+            }
+        }
+        return "user not found";
+    }
     std::vector<User> Auth::list() const {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_users;

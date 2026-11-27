@@ -259,6 +259,10 @@ namespace p2p {
                           std::string &source, std::string &error);
         // the cached cover of a torrent: its bytes, image type and where it came from
         bool coverRead(const std::string &hash, std::string &bytes, std::string &type, std::string &source);
+        // validate and persist a user-selected image in the same infohash-owned cover store
+        bool coverValidate(const std::string &bytes, std::string &type) const;
+        bool coverFetchUrl(const std::string &url, std::string &bytes, std::string &type, std::string &error);
+        bool coverStore(const std::string &hash, const std::string &bytes, const std::string &source, std::string &error);
         // the same without the bytes: for a listing, one small file read per torrent
         bool coverInfo(const std::string &hash, std::string &source);
         void coverForget(const std::string &hash);
