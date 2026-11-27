@@ -182,3 +182,90 @@ fingerprint SDK/compiler, иначе restore prefix слишком широки�
   не путают torrent membership с catalog subscription.
 - Локальные mock HTTP тесты + хотя бы Linux live pPlay/adapter ↔ daemon smoke.
   Наличие standalone core/Silo tests не заменяет pPlay acceptance.
+
+
+## Повторная проверка 2026-11-27: native library API и pPlay network UX
+
+Проверены P2Play master после merge PR #39
+(41baee745326d52ee33e70277345fe14e4ad021c) и pPlay dev
+(2f38becc179132256b131194765d5f6b3266295d). Это статический code review,
+не физическое воспроизведение на устройстве.
+
+### Новые P2Play library endpoints
+
+P2Play master теперь предоставляет независимый REST namespace:
+
+| Метод | Путь | Назначение |
+| --- | --- | --- |
+| GET | /api/v1/library/torrents | Пользовательская библиотека, q/category/sort/order/offset/limit |
+| GET | /api/v1/library/categories | Категории библиотечных записей |
+| POST | /api/v1/torrents | Magnet/link JSON или multipart .torrent |
+| GET | /api/v1/torrents/{hash} | Запись из собственной библиотеки |
+| PUT | /api/v1/torrents/{hash} | Title/category metadata |
+| DELETE | /api/v1/torrents/{hash} | Убрать только membership текущего пользователя |
+
+Native library API использует существующий Silo-compatible login/token auth:
+POST /api/auth/login, Bearer token (и same-origin cookie в web UI). Эти auth
+routes пока не versioned. Catalog, users, progress и подробный stream/file status
+также остаются отдельными уже существующими контрактами. Нельзя считать, что
+ответ /api/v1/library/torrents заменяет подробный status/file_stats response:
+он содержит поля карточки, а не все данные для воспроизведения.
+
+В pPlay/dev (src/net/p2play.cpp) уже используются старые Silo-shaped routes
+для добавления/получения torrent status и API каталога. Library CRUD нужно
+перевести на новые пути с отдельным разбором items, total/category и новым
+форматом add response; получение file list, file indices, authenticated stream
+URL и progress пока не менять механически — сначала сопоставить поля/маршруты.
+P2Play MatriX build opt-out не должен выключать native/Silo auth или stream paths.
+
+### Сокращение вариантов сети
+
+Текущая модель pPlay имеет отдельные NetworkType::TorrServe и
+TorrServeSilo, а также P2Play и P2PlayEmbedded. UI показывает
+TorrServer.MatriX, TorrServer.Silo, P2Play, P2Play_embedded.
+Discovery в src/net/discovery.cpp ищет хосты в локальном /24 на TCP 8090,
+после чего для одного выбора типа проверяет только один маршрут:
+MatriX /echo, Silo /api/system/ping (ответ JSON status=ok).
+Встроить оба probe в единую проверку одного типа TorrServer; не считать
+отсутствие MatriX /echo признаком недоступности Silo. Сканирование сейчас
+опирается на один адрес, выбранный route-to-8.8.8.8; многосетевые интерфейсы
+и конкретные interface routes ещё не проверены.
+
+Предлагаемая модель настройки:
+- один видимый тип TorrServer, dialect определяется успешным уникальным ping;
+- один видимый тип P2Play, рядом instance selector: External/Built-in;
+- External сохраняет URL, user/password, Bearer login;
+- Built-in использует 127.0.0.1:8090, фиксированный user owner и только
+  password field, передаваемый через p2play_config.owner_password;
+- старые enum/string значения остаются распознаваемыми при чтении config и
+  нормализуются при сохранении; существующие URLs, users, passwords, TLS/sync
+  settings не теряются.
+
+### Возможная область прерываний TorrServer playback
+
+Наблюдение пользователя: playback через TorrServer иногда прерывается, когда
+в filer открыт встроенный P2Play; предполагаемая корреляция — моменты sync.
+Причина пока не подтверждена.
+
+Статические участки, которые нужно измерить:
+- TorrServer list refresh: torrserve.cpp использует global g_fetchMutex
+  для одного fetch одновременно, cache interval networkSync(root), stale
+  fallback и отдельные viewed/progress workers.
+- Embedded P2Play: p2play_embedded.cpp запускает отдельный core worker,
+  останавливает accept на source change и ждёт p2play_active_requests() /
+  p2play_active_streams() до graceful stop. Core создаёт libtorrent session.
+- HTTP: pPlay Http::perform использует Utility::NetworkLock; сам lock
+  блокирует параллельные операции только на Switch, на остальных платформах
+  это no-op. Это не доказывает, что lock участвует в mpv stream stalls.
+- Player progress: Io dispatch различает TorrServer и P2Play; TorrServer
+  progress setter ставит фоновую job, а P2Play setter выполняется через свой
+  adapter. Предыдущий unconditional TorrServer flush уже ограничен только
+  DeviceType::TorrServe.
+
+Следующий шаг — instrumentation с monotonic timestamps и bounded regression test:
+TorrServer stream active + filer listing embedded library + periodic MediaMesh
+sync, сравнить без embedded, embedded idle и embedded loaded. Фиксировать
+stream read gaps/reconnects, CPU/network throughput, lock wait times, queue depth,
+sync duration и stop/drain transitions. Не считать CPU/network contention доказанной
+причиной до воспроизводимого теста.
+
