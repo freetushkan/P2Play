@@ -70,6 +70,11 @@ jobs:
           python3 tools/core-test.py build-matrix/src/app/p2playd --disk
           python3 tools/auth-test.py build-matrix/src/app/p2playd
           python3 tools/silo-test.py build-matrix/src/app/p2playd
+          # PublisherProxy administration still uses the MatriX /settings contract;
+          # keep its API-level routing tests on the explicit compatibility binary.
+          python3 -I tools/proxy-test.py build-matrix/src/app/p2playd
+          python3 -I tools/proxy-dante-test.py build-matrix/src/app/p2playd --trace
+          python3 -I tools/proxy-netns-test.py build-matrix/src/app/p2playd
 
           # Native P2Play/Silo and MediaMesh tests must pass in the default MatriX-OFF build.
           python3 tools/mesh-test.py build/src/app/p2playd
@@ -88,9 +93,6 @@ jobs:
           python3 -I tools/mesh-media-test.py build/src/app/p2playd
           python3 -I tools/mesh-selective-test.py build/src/app/p2playd
           python3 -I tools/mesh-scale-test.py build/src/app/p2playd
-          python3 -I tools/proxy-test.py build/src/app/p2playd
-          python3 -I tools/proxy-dante-test.py build/src/app/p2playd --trace
-          python3 -I tools/proxy-netns-test.py build/src/app/p2playd
           node --check plugins/mediamesh/service.js
           node --check plugins/mediamesh/app.js
 
