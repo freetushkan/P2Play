@@ -89,7 +89,7 @@ class Node:
             stdout=log, stderr=subprocess.STDOUT
         )
         log.close()
-        wait(lambda: self.call("/api/system/ping")[0] == 200, 20)
+        wait(lambda: self.call("/api/v1/system/ping")[0] == 200, 20)
 
     def stop(self):
         if self.proc is not None:
@@ -112,7 +112,7 @@ class Node:
             return error.code, json.loads(error.read())
 
     def lists(self):
-        return self.call("/api/lists")[1]["lists"]
+        return self.call("/api/v1/lists")[1]["lists"]
 
     def log_tail(self):
         path = os.path.join(self.data, "stdout.log")
@@ -155,13 +155,13 @@ def main():
 
         publisher = Node(daemon, root, "publisher")
         nodes.append(publisher)
-        status, result = publisher.call("/api/publish", {"name": "Reference interop"})
+        status, result = publisher.call("/api/v1/publish", {"name": "Reference interop"})
         assert status == 201, result
         pubkey = result["pubkey"]
         key = bytes.fromhex(pubkey)
         record = json.dumps({"ih": "d" * 40, "title": "Reference interop item"}).encode()
-        assert publisher.call("/api/publish/" + pubkey + "/records", raw=record)[0] == 200
-        status, released = publisher.call("/api/publish/" + pubkey + "/release", {})
+        assert publisher.call("/api/v1/publish/" + pubkey + "/records", raw=record)[0] == 200
+        status, released = publisher.call("/api/v1/publish/" + pubkey + "/release", {})
         assert status == 200 and released["seq"] == 1
 
         source = ReferencePeer(publisher.bt, advertised_port=publisher.bt)
@@ -182,7 +182,7 @@ def main():
 
         subscriber = Node(daemon, root, "subscriber")
         nodes.append(subscriber)
-        status, _ = subscriber.call("/api/lists/" + pubkey, {})
+        status, _ = subscriber.call("/api/v1/lists/" + pubkey, {})
         assert status == 202
 
         # The independent peer advertises the publisher's listening port. The

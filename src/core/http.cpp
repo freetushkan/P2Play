@@ -184,7 +184,7 @@ namespace p2p {
         stop();
     }
 
-    bool HttpServer::start(uint16_t port, Handler handler) {
+    bool HttpServer::start(uint16_t port, Handler handler, bool loopbackOnly) {
         m_handler = std::move(handler);
         m_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (m_fd < 0) {
@@ -195,7 +195,7 @@ namespace p2p {
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_addr.s_addr = htonl(loopbackOnly ? INADDR_LOOPBACK : INADDR_ANY);
         if (bind(m_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 || listen(m_fd, 16) != 0) {
             close(m_fd);
             m_fd = -1;

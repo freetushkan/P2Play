@@ -1,0 +1,8 @@
+#pragma once
+
+namespace p2p {
+    // Mozilla-derived CA bundle shipped with the pPlay platform builds. Used only on
+    // PS4/PS5, whose SDK libcurl builds do not use the desktop system certificate store.
+    inline constexpr char kEmbeddedCaBundle[] = R"P2PLAY_CA(
+@P2P_CA_BUNDLE@)P2PLAY_CA";
+}

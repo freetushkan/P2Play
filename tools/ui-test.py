@@ -20,6 +20,11 @@ import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:8191"
+HTTP_PREFIX = ""
+
+
+def request_url(path, prefixed=True):
+    return BASE + (HTTP_PREFIX if prefixed else "") + path
 OWNER_PASSWORD = "test"
 OWNER_TOKEN = "ts_test00000000000000000000"
 
@@ -30,18 +35,21 @@ def check(cond, what):
         raise RuntimeError(what)
 
 
-def start_daemon(daemon, data):
+def start_daemon(daemon, data, base_path=""):
     if not os.path.exists(os.path.join(data, "auth.json")):
         with open(os.path.join(data, "auth.json"), "w") as f:
             json.dump({"users": [{"username": "owner", "password": OWNER_PASSWORD,
                                   "api_token": OWNER_TOKEN}]}, f)
     log = open(os.path.join(data, "stdout.log"), "a")
-    proc = subprocess.Popen([daemon, "--data", data, "--port", "8191"],
+    args = [daemon, "--data", data, "--port", "8191"]
+    if base_path:
+        args.extend(["--base-path", base_path])
+    proc = subprocess.Popen(args,
                             stdout=log, stderr=subprocess.STDOUT)
     log.close()
     for _ in range(100):
         try:
-            if get("/api/system/ping")[0] == 200:
+            if get("/api/v1/system/ping")[0] == 200:
                 return proc
         except (OSError, urllib.error.URLError):
             pass
@@ -62,8 +70,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def get(path, headers=None):
-    req = urllib.request.Request(BASE + path, headers=headers or {})
+def get(path, headers=None, prefixed=True):
+    req = urllib.request.Request(request_url(path, prefixed), headers=headers or {})
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=10) as r:
             return r.status, dict(r.headers), r.read()
@@ -72,7 +80,7 @@ def get(path, headers=None):
 
 
 def call(path, body=None):
-    req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(),
+    req = urllib.request.Request(request_url(path), data=None if body is None else json.dumps(body).encode(),
                                  method="POST" if body is not None else "GET")
     req.add_header("Authorization", "Bearer " + OWNER_TOKEN)
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -86,7 +94,7 @@ def api_v1(method, path, body=None, token=OWNER_TOKEN, content_type=None):
         content_type = content_type or "application/json"
     else:
         payload = body
-    req = urllib.request.Request(BASE + path, data=payload, method=method)
+    req = urllib.request.Request(request_url(path), data=payload, method=method)
     if token:
         req.add_header("Authorization", "Bearer " + token)
     if content_type:
@@ -119,6 +127,45 @@ def multipart(fields, file_name, file_data):
     return b"".join(chunks), "multipart/form-data; boundary=" + boundary
 
 
+def make_torrs_link(infohash, title, poster="", category="", size=0, trackers=()):
+    """Build the public torrs:// card representation (base62 of zlib metadata)."""
+    import struct
+    import zlib
+
+    payload = bytearray(bytes.fromhex(infohash))
+
+    def field(tag, value):
+        raw = value.encode("utf-8")
+        payload.append(tag)
+        payload.extend(struct.pack("<H", len(raw)))
+        payload.extend(raw)
+
+    field(0, title)
+    if poster:
+        field(1, poster)
+    if category:
+        field(3, category)
+    if size:
+        payload.append(4)
+        payload.extend(struct.pack("<Q", size))
+    for tracker in trackers:
+        field(2, tracker)
+
+    compressed = zlib.compress(bytes(payload))
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    number = int.from_bytes(compressed, "big")
+    digits = ""
+    while number:
+        number, remainder = divmod(number, 62)
+        digits = alphabet[remainder] + digits
+    leading_zeroes = 0
+    for byte in compressed:
+        if byte:
+            break
+        leading_zeroes += 1
+    return "torrs://" + ("0" * leading_zeroes) + digits
+
+
 def native_library():
     check(api_v1("GET", "/api/v1/library/torrents", token="")[0] == 401,
           "native library API requires a session token")
@@ -133,7 +180,24 @@ def native_library():
     check(status == 201 and added["torrent"]["hash"] == magnet_hash,
           "native API adds a magnet to the current user's library")
 
+    for scheme in ("http", "https"):
+        status, rejected = api_v1("POST", "/api/v1/torrents", {
+            "link": scheme + "://127.0.0.1:9/private.torrent"
+        })
+        check(status == 400 and "publicly reachable" in rejected.get("error", ""),
+              scheme.upper() + " torrent URLs reject loopback targets")
+
     second_hash = "b" * 40
+    preview_hash = "d" * 40
+    status, preview = api_v1("POST", "/api/v1/torrents/preview", {
+        "link": "magnet:?xt=urn:btih:" + preview_hash, "title": "Preview only"
+    })
+    check(status == 200 and preview["preview"] and preview["torrent"]["hash"] == preview_hash,
+          "native preview route returns an ephemeral torrent")
+    status, preview_library = api_v1("GET", "/api/v1/library/torrents?q=Preview%20only")
+    check(status == 200 and all(item["hash"] != preview_hash for item in preview_library["items"]),
+          "preview torrents do not enter the persistent library")
+
     status, added_second = api_v1("POST", "/api/v1/torrents", {
         "link": "magnet:?xt=urn:btih:" + second_hash,
         "title": "Alpha", "category": "Drama"
@@ -177,7 +241,13 @@ def native_library():
     status, detail = api_v1("GET", "/api/v1/torrents/" + file_hash)
     check(status == 200 and "file_stats" in detail["details"],
           "native detailed torrent route exposes file metadata and per-user playback state")
-    status, file_list = api_v1("GET", "/api/v1/torrents/" + file_hash + "/files")
+    status, file_list = api_v1("GET", "/api/v1/torrents/" + file_hash + "/files");
+    status, file_share = api_v1("POST", "/api/v1/torrents/" + file_hash + "/files/0/share", {})
+    check(status == 200 and "/files/0/stream?token=" in file_share["url"] and file_share["file"],
+          "file share URL contains the stable user token")
+    status, torrent_share = api_v1("POST", "/api/v1/torrents/" + file_hash + "/share", {})
+    check(status == 200 and "/stream?token=" in torrent_share["url"] and torrent_share["file"],
+          "torrent share URL selects a playable file")
     check(status == 200, "native file-list route responds successfully")
     check(len(file_list.get("files", [])) == 1, "native file-list route returns one file")
     check(file_list["files"][0].get("name") == "one.bin",
@@ -221,7 +291,7 @@ def native_library():
           storage_settings["settings"]["DiskCacheSize"] == 3 * 1024 * 1024 * 1024 and
           not storage_settings["settings"]["CacheListsInMemory"],
           "disk cache and disk-backed catalog settings apply without restarting")
-    status, disk_catalog = api_v1("GET", "/api/catalog/search?q=UI")
+    status, disk_catalog = api_v1("GET", "/api/v1/catalog/search?q=UI")
     check(status == 200, "catalog search works with the in-memory record cache disabled")
     status, restored_storage = api_v1("PUT", "/api/v1/settings", {"settings": {
         "DiskCacheEnabled": original_disk_cache, "DiskCacheSize": original_disk_limit,
@@ -229,6 +299,16 @@ def native_library():
     }})
     check(status == 200 and restored_storage["settings"]["CacheListsInMemory"] == original_list_cache,
           "storage settings test restores the original cache modes")
+    original_mesh_directory = before_settings["settings"]["DisableMeshDirectory"]
+    status, mesh_disabled = api_v1("PUT", "/api/v1/settings",
+                                   {"settings": {"DisableMeshDirectory": not original_mesh_directory}})
+    check(status == 200 and mesh_disabled["restart_required"],
+          "changing public MediaMesh directory advertisement requires a restart")
+    status, mesh_restored = api_v1("PUT", "/api/v1/settings",
+                                   {"settings": {"DisableMeshDirectory": original_mesh_directory}})
+    check(status == 200 and mesh_restored["restart_required"] and
+          mesh_restored["settings"]["DisableMeshDirectory"] == original_mesh_directory,
+          "the original public MediaMesh directory setting is restored")
     updated_readahead = 90 if original_readahead != 90 else 89
     status, saved_settings = api_v1("PUT", "/api/v1/settings",
                                    {"settings": {"ReaderReadAHead": updated_readahead}})
@@ -251,6 +331,12 @@ def native_library():
     status, prefs = api_v1("PUT", "/api/v1/preferences", {"language": "ru", "theme": "dark"})
     check(status == 200 and prefs["preferences"] == {"language": "ru", "theme": "dark"},
           "native UI preferences accept Russian and dark theme")
+    status, auto_prefs = api_v1("PUT", "/api/v1/preferences", {"theme": "auto"})
+    check(status == 200 and auto_prefs["preferences"]["theme"] == "auto",
+          "native UI preferences persist automatic theme")
+    status, dark_prefs = api_v1("PUT", "/api/v1/preferences", {"theme": "dark"})
+    check(status == 200 and dark_prefs["preferences"]["theme"] == "dark",
+          "native UI preferences can restore a fixed theme")
     status, other_prefs = api_v1("GET", "/api/v1/preferences", token=native_user["api_token"])
     check(status == 200 and other_prefs["preferences"] == {"language": "en", "theme": "light"},
           "UI preferences are isolated per user")
@@ -264,7 +350,7 @@ def native_library():
     check(status == 200 and set(categories["categories"]) == {"Animation", "Files", "Series"},
           "library category endpoint returns the current user's distinct categories")
 
-    owner_user = call("/api/users", {"username": "library-user", "password": "test-user", "rank": 10})
+    owner_user = call("/api/v1/users", {"username": "library-user", "password": "test-user", "rank": 10})
     user_token = owner_user["api_token"]
     status, own_before = api_v1("GET", "/api/v1/library/torrents", token=user_token)
     check(status == 200 and own_before["total"] == 0,
@@ -286,6 +372,39 @@ def native_library():
     status, own_after = api_v1("GET", "/api/v1/library/torrents", token=user_token)
     check(status == 200 and own_after["total"] == 0,
           "the second user's library is empty after their own removal")
+
+    torrs_hash = "c" * 40
+    remote_poster = "http://127.0.0.1:9/no-poster.png"
+    torrs = make_torrs_link(torrs_hash, "Torrs Card Title", remote_poster, "Films", 123456,
+                            ["udp://127.0.0.1:1234/announce"])
+    status, torrs_added = api_v1("POST", "/api/v1/torrents", {"link": torrs})
+    check(status == 201 and torrs_added["torrent"]["hash"] == torrs_hash and
+          torrs_added["torrent"]["title"] == "Torrs Card Title",
+          "native API parses a torrs:// card and imports its torrent metadata")
+    check(torrs_added["torrent"]["poster"] == remote_poster,
+          "an unsafe/unreachable torrs:// poster does not block the add or escape as a fetched image")
+    status, _ = api_v1("DELETE", "/api/v1/torrents/" + torrs_hash)
+    check(status == 200, "torrs:// regression torrent is removed from the test library")
+
+    # A portable library file is catalogue data, not a request to activate every swarm.
+    bulk_cards = [make_torrs_link(format(i, "040x"), "Bulk card %04d " % i + os.urandom(2048).hex(),
+                                 category="Bulk") for i in range(64)]
+    bulk_text = ("\n".join(bulk_cards) + "\n").encode()
+    check(len(bulk_text) > 100 * 1024, "bulk .torrs fixture is substantially larger than a small list")
+    stats_status, stats_before = api_v1("GET", "/api/v1/system/stats")
+    import_status, imported = api_v1("POST", "/api/v1/library/import", bulk_text,
+                                     content_type="text/plain; charset=utf-8")
+    stats_after_status, stats_after = api_v1("GET", "/api/v1/system/stats")
+    check(import_status == 200 and imported["added"] == len(bulk_cards) and
+          imported["rejected"] == 0 and imported["skipped"] == 0,
+          "large .torrs import adds all catalogue cards")
+    check(stats_status == 200 and stats_after_status == 200 and
+          stats_after["stats"]["active_sessions"] == stats_before["stats"]["active_sessions"],
+          "bulk .torrs import does not activate or download all imported swarms")
+    for i in range(len(bulk_cards)):
+        status, _ = api_v1("DELETE", "/api/v1/torrents/" + format(i, "040x"))
+        check(status == 200, "bulk import test card can be removed")
+
 
 
 def png_bytes(width, height):
@@ -312,6 +431,30 @@ def make_video(path):
     except (OSError, subprocess.SubprocessError):
         return False
     return os.path.exists(path) and os.path.getsize(path) > 0
+
+
+def make_video_with_attached_cover(video, picture):
+    """Put a real attached_pic video stream into MP4; False if ffmpeg cannot mux it."""
+    base, _ = os.path.splitext(video)
+    poster_png, poster_jpg, output = base + ".cover.png", base + ".cover.jpg", base + ".attached.mp4"
+    with open(poster_png, "wb") as f:
+        f.write(picture)
+    try:
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", poster_png,
+                        "-frames:v", "1", poster_jpg], check=True, timeout=30)
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", video, "-i", poster_jpg,
+                        "-map", "0:v:0", "-map", "1:v:0", "-c:v:0", "copy", "-c:v:1", "mjpeg",
+                        "-disposition:v:1", "attached_pic", output], check=True, timeout=60)
+        os.replace(output, video)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        for path in (poster_png, poster_jpg, output):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return os.path.exists(video) and os.path.getsize(video) > 0
 
 
 def seed(directory, port):
@@ -347,7 +490,7 @@ def seed(directory, port):
 
 
 def cover_response(path, headers=None):
-    request = urllib.request.Request(BASE + path, headers=headers or {})
+    request = urllib.request.Request(request_url(path), headers=headers or {})
     request.add_header("Authorization", "Bearer " + OWNER_TOKEN)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -388,7 +531,7 @@ def multipart_parts(fields, files):
 
 
 def poster_bytes(path, token=OWNER_TOKEN):
-    req = urllib.request.Request(BASE + path, headers={"Authorization": "Bearer " + token})
+    req = urllib.request.Request(request_url(path), headers={"Authorization": "Bearer " + token})
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             return response.status, dict(response.headers), response.read()
@@ -429,7 +572,12 @@ def posters():
 
 
 def covers(workdir):
-    """A cover for a torrent added without a poster: the image inside it, or an ffmpeg frame."""
+    """A cover for a torrent added without a poster: file image, embedded artwork, optional frame."""
+    status, settings = api_v1("GET", "/api/v1/settings")
+    cover_settings = settings["settings"]
+    check(status == 200 and cover_settings.get("CoverFiles") is True and
+          cover_settings.get("CoverEmbedded") is True and cover_settings.get("CoverProbe") is False,
+          "image-file and embedded-art sources default on, regular video-frame extraction defaults off")
     try:
         import libtorrent  # noqa: F401
     except ImportError:
@@ -502,10 +650,38 @@ def covers(workdir):
     finally:
         session.pause() if hasattr(session, "pause") else None
 
-    # no image inside: a frame of the video, when ffmpeg is here
+    # Embedded attached_pic takes priority over an ordinary video frame. CoverProbe is still off here.
+    import shutil
+    if has_ffmpeg and shutil.which("ffprobe"):
+        embedded_dir = os.path.join(workdir, "embedded")
+        os.makedirs(os.path.join(embedded_dir, "EmbeddedArt"))
+        embedded_video = os.path.join(embedded_dir, "EmbeddedArt", "movie.mp4")
+        embedded_ok = make_video(embedded_video) and make_video_with_attached_cover(embedded_video, picture)
+        check(embedded_ok, "a video with an attached cover stream can be muxed")
+        if embedded_ok:
+            embedded_session, embedded_hash = seed(embedded_dir, 7813)
+            try:
+                status, added = api_v1("POST", "/api/v1/torrents", {
+                    "link": "magnet:?xt=urn:btih:" + embedded_hash + "&dn=EmbeddedArt&x.pe=127.0.0.1:7813",
+                    "title": "Embedded artwork"})
+                check(status == 201, "the embedded-art torrent is in the library")
+                headers, body = wait_cover(embedded_hash)
+                check(headers.get("Content-Type") == "image/jpeg" and
+                      headers.get("X-P2Play-Cover", "").startswith("embedded:"),
+                      "the server extracts attached_pic artwork before any frame fallback")
+            finally:
+                embedded_session.pause() if hasattr(embedded_session, "pause") else None
+                api_v1("DELETE", "/api/v1/torrents/" + embedded_hash)
+    else:
+        print("SKIP the embedded-attached-picture test: ffmpeg or ffprobe is not here")
+
+    # A regular frame is a separate, explicit fallback; it must not be enabled by default.
     if not has_ffmpeg:
         print("SKIP the ffmpeg cover test: no ffmpeg")
         return
+    status, frame_enabled = api_v1("PUT", "/api/v1/settings", {"settings": {"CoverProbe": True}})
+    check(status == 200 and frame_enabled["settings"]["CoverProbe"] is True,
+          "the owner can explicitly enable frame extraction")
     bare = os.path.join(workdir, "bare")
     os.makedirs(os.path.join(bare, "OnlyVideo"))
     check(make_video(os.path.join(bare, "OnlyVideo", "feature.mp4")), "a video for the probe")
@@ -540,38 +716,83 @@ def wait_text(page, selector, needle, seconds=30):
     return False
 
 
+def ui_assets():
+    with open(os.path.join(PLUGIN, "index.html"), encoding="utf-8") as source:
+        page = source.read()
+    with open(os.path.join(PLUGIN, "app.js"), encoding="utf-8") as source:
+        app = source.read()
+    with open(os.path.join(PLUGIN, "style.css"), encoding="utf-8") as source:
+        css = source.read()
+    with open(os.path.join(PLUGIN, "lang", "ru.json"), encoding="utf-8") as source:
+        ru = json.load(source)
+    check('data-settings-view="preferences" class="active">General</button>' in page,
+          "settings starts at the General section")
+    check('id="theme-select"' not in page and 'id="language-select-settings"' not in page and
+          "theme-select" not in app and "language-select-settings" not in app,
+          "theme and language controls are not duplicated in Settings")
+    check("statusTimer" in app and "clearTimeout" in app and "setTimeout" in app and
+          "#status.visible" in css and 'aria-hidden="true"' in page,
+          "status notifications auto-dismiss and remain hidden otherwise")
+    check('status("Lists loaded.")' not in app and
+          'status("Search subscribed catalogs.")' not in app and
+          'status("Loading library…")' not in app and
+          'status(filtered+' not in app and 'status(list.length+' not in app,
+          "routine navigation and loading do not create notifications")
+    check('tr("Files: ")' in app and 'tr("files")' not in app and "Files: " in ru,
+          "file counts keep the number after a localized label")
+    check("No lists subscribed." in ru and "No public lists available." in ru and
+          ru.get("General") == "Основные",
+          "list empty states and General are translated")
+    check('tr(discovery?"No public lists available.":"No lists subscribed.")' in app and
+          'tr(discovery?"Subscribe":"Request refresh")' in app and
+          'l.description||tr("No description")' in app and 'tr("Version ")+l.seq' in app,
+          "list descriptions, versions and subscription actions are localized")
+    check('class="account-avatar button-icon"' in page and 'class="button-icon"' in page,
+          "user and search actions have vector icons")
+
+
 def browser():
     from playwright.sync_api import sync_playwright
-    pk = call("/api/publish", {"name": "UI list", "description": "for the page"})["pubkey"]
+    pk = call("/api/v1/publish", {"name": "UI list", "description": "for the page"})["pubkey"]
     ih = "d" * 40
-    req = urllib.request.Request(BASE + f"/api/publish/{pk}/records", method="POST",
+    req = urllib.request.Request(request_url(f"/api/v1/publish/{pk}/records"), method="POST",
                                  data=json.dumps({"ih": ih, "title": "Мультфильм Ёжик (1975)", "tags": ["cartoon"]}, ensure_ascii=False).encode())
     req.add_header("Authorization", "Bearer " + OWNER_TOKEN)
     urllib.request.urlopen(req, timeout=30).read()
-    call(f"/api/publish/{pk}/release", {})
+    call(f"/api/v1/publish/{pk}/release", {})
     with sync_playwright() as p:
         b = p.chromium.launch()
         page = b.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(BASE + "/")
+        page.goto(request_url("/"))
         check(page.url.endswith("/ui/"), "the browser at /ui/")
         page.wait_for_selector("#login-view:not([hidden])")
         page.fill("#password", OWNER_PASSWORD)
         page.click("#login-form button")
         page.wait_for_selector("#library-view:not([hidden])")
         check(not page.locator("#library-tab").is_hidden(), "core-host exposes the Library tab")
-        check(page.title() == "MediaMesh · P2Play", "logged in on the page")
-        check("Your library" in page.inner_text("#library-view"), "native UI opens the library by default")
+        check(page.title() == "P2Play", "logged in on the page")
+        check("Library" in page.inner_text("#library-view"), "native UI opens the library by default")
+        check(page.locator("#account-menu-wrap").is_visible() and
+              page.locator("#identity-role").inner_text() == "Owner",
+              "the account menu shows the username with its translated role")
+        page.click("#account-menu-trigger")
+        check(page.locator("#logout").is_visible(), "account menu exposes the logout action")
+        page.click("#account-menu-trigger")
         page.select_option("#language-select", "ru")
-        check(wait_text(page, "#library-heading", "Моя библиотека"), "Russian UI locale is applied")
+        check(wait_text(page, "#library-heading", "Библиотека"), "Russian UI locale is applied")
+        check(wait_text(page, "#identity-role", "Владелец"), "the account role is translated in Russian")
         wait_idle(page)
         page.select_option("#language-select", "en")
-        check(wait_text(page, "#library-heading", "Your library"), "English UI locale can be restored")
+        check(wait_text(page, "#library-heading", "Library"), "English UI locale can be restored")
         wait_idle(page)
         page.click("#theme-toggle")
         wait_idle(page)
         check(page.locator("html").get_attribute("data-theme") == "dark", "dark theme can be enabled")
+        page.click("#theme-toggle")
+        wait_idle(page)
+        check(page.locator("html").get_attribute("data-theme") == "auto", "automatic theme can be selected")
         page.click("#theme-toggle")
         wait_idle(page)
         check(page.locator("html").get_attribute("data-theme") == "light", "light theme can be restored")
@@ -583,7 +804,7 @@ def browser():
         check("Ёжик" in page.inner_text("#results"), "found in Cyrillic, ё as е")
         page.click("#results .row button")
         page.wait_for_selector("#results .row button:disabled")
-        check(any(t["hash"] == ih for t in call("/api/torrents")["torrents"]), "added: in the owner's library")
+        check(any(t["hash"] == ih for t in call("/api/v1/torrents")["torrents"]), "added: in the owner's library")
         wait_idle(page)
         page.click("[data-view=library]")
         page.wait_for_selector("#library-view:not([hidden])")
@@ -607,6 +828,10 @@ def browser():
         page.wait_for_selector("#add-modal", state="hidden")
         check(wait_text(page, "#library-rows", "Browser Library Entry"),
               "the new library entry appears in the list")
+        check(page.locator("#library-filter-count").inner_text() == "(2/2)",
+              "the filter disclosure shows filtered and total counts")
+        check(page.locator("#library-pager").is_hidden(),
+              "single-page libraries do not show pagination controls")
         check("Browser Library Entry" in page.inner_text("#library-rows"),
               "browser Library tab adds a magnet to the user library")
         custom_row = page.locator("#library-rows .library-row").filter(has_text="Browser Library Entry")
@@ -620,15 +845,25 @@ def browser():
         page.wait_for_selector("#torrent-detail", state="hidden")
         wait_idle(page)
         library_row = page.locator("#library-rows .library-row").filter(has_text="Browser Library Entry")
-        library_row.locator("input[aria-label^='Title for']").fill("Edited Browser Entry")
-        library_row.locator("input[aria-label^='Category for']").fill("Edited Category")
-        wait_idle(page)
-        library_row.locator("button").filter(has_text="Save changes").click()
-        check(wait_text(page, "#library-rows", "Edited Browser Entry"),
-              "the edited title appears in the list")
+        library_row.locator("h3.torrent-title").click()
+        title_editor = library_row.locator("input.title-editor")
+        title_editor.fill("Edited Browser Entry")
+        with page.expect_response(lambda response: response.request.method == "PUT" and "/api/v1/torrents/" in response.url):
+            title_editor.press("Enter")
         edited_row = page.locator("#library-rows .library-row").filter(has_text="Edited Browser Entry")
-        check(edited_row.locator("input[aria-label^='Category for']").input_value() == "Edited Category",
-              "browser Library tab edits torrent title and category")
+        category_editor = edited_row.locator("input.category-editor")
+        category_editor.fill("Edited Category")
+        with page.expect_response(lambda response: response.request.method == "PUT" and "/api/v1/torrents/" in response.url):
+            category_editor.press("Tab")
+        check(wait_text(page, "#library-rows", "Edited Browser Entry"),
+              "the title is saved with Enter from inline editing")
+        edited_row = page.locator("#library-rows .library-row").filter(has_text="Edited Browser Entry")
+        check(edited_row.locator("button").count() == 2 and
+              edited_row.locator("button").nth(0).inner_text() == "Remove" and
+              edited_row.locator("button").nth(1).inner_text() == "Details / files",
+              "the compact torrent card keeps only Remove and Details actions")
+        check(edited_row.locator("input.category-editor").input_value() == "Edited Category",
+              "category is saved on blur or Enter without a save button")
         page.locator("#library-rows .library-row").filter(has_text="Edited Browser Entry").locator("button").filter(has_text="Details / files").click()
         page.wait_for_selector("#torrent-detail:not([hidden])")
         page.wait_for_selector("#torrent-files")
@@ -645,8 +880,11 @@ def browser():
               "the server tab shows the disk cache switch")
         check(page.evaluate("document.querySelector('#setting-cache-lists').checked") in (True, False),
               "the server tab shows the catalog cache switch")
-        check(page.evaluate("document.querySelector('#setting-disk-cache-size').value").isdigit(),
-              "the server tab shows the disk cache size")
+        check(page.locator("#disk-cache-size-control").is_hidden(),
+              "the disk cache size slider is hidden when disk cache is disabled")
+        page.check("#setting-disk-cache-enabled")
+        check(page.locator("#disk-cache-size-control").is_visible(),
+              "enabling disk cache reveals its size slider")
         page.fill("#setting-readahead", "88")
         wait_idle(page)
         page.click("#server-form button")
@@ -661,9 +899,20 @@ def browser():
         page.click("#user-add-form button")
         check(wait_text(page, "#users-rows", "browser-user"), "the new user appears in the list")
         wait_idle(page)
-        page.click("[data-settings-view=continue]")
+        new_user = page.locator("#users-rows .user-row").filter(has_text="browser-user")
+        new_user.locator("button").filter(has_text="Reset password").click()
+        page.wait_for_selector("#dialog-modal:not([hidden])")
+        page.fill("#dialog-input", "browser-password-updated")
+        page.click("#dialog-accept")
+        page.wait_for_selector("#dialog-modal", state="hidden")
+        wait_idle(page)
+        page.click("#settings-close")
+        page.wait_for_selector("#settings-modal", state="hidden")
+        page.click("#continue-tab")
         page.wait_for_selector("#continue-view:not([hidden])")
         wait_idle(page)
+        page.click("#settings-open")
+        page.wait_for_selector("#settings-modal:not([hidden])")
         page.click("[data-settings-view=lists]")
         page.wait_for_selector("#lists-view:not([hidden])")
         page.wait_for_selector("#lists .row")
@@ -691,14 +940,15 @@ def main():
             check(status == 200 and same and "frame-ancestors" in headers.get("Content-Security-Policy", "")
                   and headers.get("X-Content-Type-Options") == "nosniff", path + ": the plugin's " + name)
         check(get("/ui/service.js")[0] == 404 and get("/ui/info.yaml")[0] == 404, "the plugin's server side not served")
-        check(get("/api/p2play/version")[0] == 200 and
-              json.loads(get("/api/p2play/version")[2])["name"] == "P2Play",
+        ui_assets()
+        check(get("/api/v1/system/version")[0] == 200 and
+              json.loads(get("/api/v1/system/version")[2])["name"] == "P2Play",
               "native public P2Play identity is available without MatriX")
         matrix_status, matrix_headers, _ = get("/torrents", {"Authorization": "Basic dGVzdDp0ZXN0"})
         check(matrix_status == 404 and "WWW-Authenticate" not in matrix_headers,
-              "MatriX routes and Basic challenge are disabled in the standard build")
-        check(get("/echo")[0] == 404, "MatriX discovery route is absent in the standard build")
-        check(get("/api/auth/me")[0] == 401, "the API behind the page asks a login")
+              "MatriX routes and Basic challenge are removed")
+        check(get("/echo")[0] == 404, "MatriX discovery route is removed")
+        check(get("/api/v1/auth/me")[0] == 401, "the API behind the page asks a login")
         native_library()
         posters()
         covers(root)
@@ -707,6 +957,59 @@ def main():
         print("PASS")
     finally:
         stop_daemon(proc)
+    prefixed_server_test(daemon)
+
+
+def prefixed_server_test(daemon):
+    global HTTP_PREFIX
+    HTTP_PREFIX = "/some_sub_dir/more_path/ololo"
+    with tempfile.TemporaryDirectory(prefix="p2play-prefix-") as root:
+        proc = start_daemon(daemon, root, HTTP_PREFIX)
+        try:
+            status, _, body = get("/api/v1/system/ping")
+            check(status == 200 and json.loads(body)["status"] == "ok",
+                  "multi-level base path routes the native API")
+            check(get("/api/v1/system/ping", prefixed=False)[0] == 404,
+                  "native API is not exposed outside the configured base path")
+            check(get("/some_sub_dir/api/v1/system/ping", prefixed=False)[0] == 404,
+                  "partial base path does not expose nested API routes")
+            check(get("/ui/")[0] == 200,
+                  "web UI is served below the configured base path")
+            check(get("/ui/", prefixed=False)[0] == 404,
+                  "web UI is not exposed at the unprefixed path")
+            status, headers, _ = get("/ui")
+            check(status == 301 and headers.get("Location") == HTTP_PREFIX + "/ui/",
+                  "UI redirect preserves the configured base path")
+            status, body = api_v1("POST", "/api/v1/auth/login",
+                                  {"username": "owner", "password": OWNER_PASSWORD})
+            check(status == 200, "login works below the configured base path")
+            req = urllib.request.Request(request_url("/api/v1/auth/login"),
+                                         data=json.dumps({"username": "owner", "password": OWNER_PASSWORD}).encode(),
+                                         method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                cookie = response.headers.get("Set-Cookie", "")
+            check("Path=" + HTTP_PREFIX in cookie,
+                  "authentication cookie is scoped to the configured base path")
+
+            piece = hashlib.sha1(b"x").digest()
+            info = (b"d6:lengthi1e4:name7:one.bin" +
+                    b"12:piece lengthi16384e6:pieces20:" + piece + b"e")
+            torrent_file = b"d4:info" + info + b"e"
+            body, content_type = multipart({"title": "Prefixed share"}, "one.torrent", torrent_file)
+            status, uploaded = api_v1("POST", "/api/v1/torrents", body,
+                                      content_type=content_type)
+            file_hash = uploaded["torrent"]["hash"] if uploaded and uploaded.get("torrent") else ""
+            check(status == 201 and len(file_hash) == 40,
+                  "multipart torrent upload works below the configured base path")
+            status, shared = api_v1("POST", "/api/v1/torrents/" + file_hash + "/files/0/share", {})
+            check(status == 200 and shared["url"].startswith(
+                HTTP_PREFIX + "/api/v1/torrents/" + file_hash + "/files/0/stream?token="),
+                "generated stream share URL includes the full configured base path")
+            status, _ = api_v1("DELETE", "/api/v1/torrents/" + file_hash)
+            check(status == 200, "prefixed base-path test removes its temporary torrent")
+        finally:
+            stop_daemon(proc)
+    HTTP_PREFIX = ""
 
 
 if __name__ == "__main__":

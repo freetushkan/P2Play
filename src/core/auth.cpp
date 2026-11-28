@@ -36,9 +36,9 @@ namespace p2p {
             return out;
         }
 
-        // as Silo: "ts_" and 24 letters or digits
+        // 24 random alphanumeric characters, namespaced to identify a P2Play API key
         std::string newToken() {
-            return "ts_" + randomString(24);
+            return "p2p-" + randomString(24);
         }
 
         std::string hex(const char *data, size_t size) {
@@ -91,25 +91,6 @@ namespace p2p {
                 return false;
             }
             return equalTime(digest(stored.substr(b + 1, c - b - 1), password, rounds), stored.substr(c + 1));
-        }
-
-        std::string base64Decode(const std::string &in) {
-            static const std::string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            std::string out;
-            int val = 0, bits = -8;
-            for (unsigned char c : in) {
-                size_t pos = chars.find(static_cast<char>(c));
-                if (pos == std::string::npos) {
-                    break;
-                }
-                val = (val << 6) + static_cast<int>(pos);
-                bits += 6;
-                if (bits >= 0) {
-                    out += static_cast<char>((val >> bits) & 0xFF);
-                    bits -= 8;
-                }
-            }
-            return out;
         }
 
         std::string cookie(const HttpRequest &req, const std::string &name) {
@@ -282,12 +263,7 @@ namespace p2p {
         if (token.empty() && header.compare(0, 7, "Bearer ") == 0) {
             token = header.substr(7);
         }
-        if (token.empty()) {
-            token = cookie(req, "silo_token");
-        }
-        if (token.empty()) {
-            token = cookie(req, "p2play_token");
-        }
+        if (token.empty()) token = cookie(req, "p2play_token");
         std::lock_guard<std::mutex> lock(m_mutex);
         for (const User &u : m_users) {
             if (!token.empty() && !u.banned && equalTime(u.token, token)) {
@@ -309,24 +285,6 @@ namespace p2p {
         o->passwordHash = hashPassword(password);
         save();
         return *o;
-    }
-
-    User Auth::byBasic(const HttpRequest &req) {
-        const std::string header = req.header("authorization");
-        if (header.compare(0, 6, "Basic ") != 0) {
-            return User();
-        }
-        std::string pair = base64Decode(header.substr(6));
-        size_t colon = pair.find(':');
-        if (colon == std::string::npos) {
-            return User();
-        }
-        const std::string name = pair.substr(0, colon), password = pair.substr(colon + 1);
-        User u = login(name, password);
-        if (!u.valid() && name == kOwner) {
-            u = claimOwner(password);
-        }
-        return u;
     }
 
     User Auth::login(const std::string &name, const std::string &password) const {
@@ -357,7 +315,7 @@ namespace p2p {
                 const std::string language = values.value("language", std::string("en"));
                 const std::string theme = values.value("theme", std::string("light"));
                 return {{"language", language == "ru" ? "ru" : "en"},
-                        {"theme", theme == "dark" ? "dark" : "light"}};
+                        {"theme", theme == "dark" || theme == "auto" ? theme : "light"}};
             }
         }
         return {{"language", "en"}, {"theme", "light"}};
@@ -370,8 +328,8 @@ namespace p2p {
                 if (!it.value().is_string() || (it.value() != "en" && it.value() != "ru"))
                     return "language must be en or ru";
             } else if (it.key() == "theme") {
-                if (!it.value().is_string() || (it.value() != "light" && it.value() != "dark"))
-                    return "theme must be light or dark";
+                if (!it.value().is_string() || (it.value() != "light" && it.value() != "dark" && it.value() != "auto"))
+                    return "theme must be light, dark or auto";
             } else return "unknown preference: " + it.key();
         }
         std::lock_guard<std::mutex> lock(m_mutex);

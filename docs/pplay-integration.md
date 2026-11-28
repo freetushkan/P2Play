@@ -11,14 +11,14 @@ share assumptions about source layout, runtime bindings, packaging or identity.
 
 ## Current audit and implementation status
 
-Updated 2026-11-27 against pPlay/dev
+Updated 2026-11-28 against pPlay/dev
 `23444a68e920329f09c7dbef89ad39c00a18afb2` and P2Play/master
 `f5a70868f791a2e1dfc07654767adde0383d7098`.
-See [pplay-audit.md](pplay-audit.md) for the feature-by-feature TorrServer comparison,
+See [pplay-audit.md](pplay-audit.md) for the feature-by-feature legacy backend comparison,
 confirmed gaps, security/UI risks and proposed latest-SHA/compiler-cache design.
 Implemented below means present in code, not full device acceptance or feature parity.
 The dedicated P2Play adapter is independent; some shared UI/audio-artwork paths
-still call TorrServe directly and must be migrated to neutral Io operations.
+still call legacy adapter directly and must be migrated to neutral Io operations.
 
 A working pPlay implementation branch, `feature/p2play-library-management`
 (commit `1fdebdebe5bde6408923f1f55cd7177aff193a44`, based directly on `dev`),
@@ -27,54 +27,52 @@ title/category editing and per-user deletion UI. It is intentionally not a PR.
 It has not been built or run through Actions/device acceptance; do not treat its
 branch-only code as validated or merged `dev` behavior.
 
-## 1. File-level independence from TorrServer
+## 1. File-level independence from legacy backend
 
-The P2Play support module inside pPlay MUST be independent from TorrServer at the
+The P2Play support module inside pPlay MUST be independent from legacy backend at the
 file and source-tree level.
 
 - Every file belonging to the P2Play module lives in a P2Play-owned directory and
   has its own path, ownership and build/package entry.
-- This rule applies even when a file is a byte-for-byte copy of TorrServer code.
+- This rule applies even when a file is a byte-for-byte copy of legacy backend code.
   A copied implementation MUST be stored as a separate P2Play-owned file; it MUST
   NOT reuse, overwrite, patch in place, or be referenced through the original
-  TorrServer file path.
+  legacy backend file path.
 - Do not use symlinks, hard links, shared source files, source overlays, generated
-  includes pointing into a TorrServer checkout, or build rules that compile a
-  TorrServer source file as part of the P2Play module.
+  includes pointing into a legacy backend checkout, or build rules that compile a
+  legacy backend source file as part of the P2Play module.
 - Updating, deleting, packaging or replacing the P2Play module MUST NOT modify or
-  require edits to any TorrServer file. The inverse must also hold.
+  require edits to any legacy backend file. The inverse must also hold.
 - Keep module-specific tests, resources, manifests and packaging metadata within
-  the P2Play-owned tree. Do not install P2Play files into TorrServer directories.
+  the P2Play-owned tree. Do not install P2Play files into legacy backend directories.
 - If upstream code is copied, preserve its applicable copyright/license notices
   and record provenance. File independence does not remove attribution or
   licensing obligations.
 
-Compatibility at the API/protocol boundary is allowed and required where the
-pPlay host expects TorrServer-compatible behavior. That compatibility MUST be
-implemented by the independent P2Play module files; it is not a reason to share
-TorrServer files.
+P2Play is now a standalone product with its own versioned REST API. The pPlay
+P2Play adapter talks only to `/api/v1`; it must not require MatriX or Silo
+compatibility endpoints. The separate legacy backend adapter remains an independent
+backend and is not part of P2Play core.
 
 The neutral pPlay host dispatcher (`Io`) may select a backend and call its adapter.
 It is the integration boundary, not part of the P2Play adapter. Shared playback and
 media-probing code must use neutral `Io` operations; it must not include or invoke
-`TorrServe` or `P2Play` APIs directly. The P2Play-owned adapter files (`p2play.h/.cpp`)
+`legacy adapter` or `P2Play` APIs directly. The P2Play-owned adapter files (`p2play.h/.cpp`)
 may use common HTTP/configuration primitives, but MUST NOT include, call or depend on
-TorrServer adapter files, paths, saved-copy storage or TorrServer-specific helpers.
+legacy adapter files, paths, saved-copy storage or backend-specific helpers.
 
 ## 2. Separate P2Play product identity and version endpoint
 
-TorrServer compatibility probes and P2Play product identity are different
-contracts. Existing TorrServer-compatible ping endpoints remain available and
-must keep their existing response formats, including their compatibility
-identifiers/prefixes.
+P2Play product identity is a native contract. P2Play exposes a native product identity endpoint. The old compatibility probes
+are not part of P2Play and must not be reintroduced into its core.
 
 P2Play exposes its own read-only, public version endpoint:
 
-`GET /api/p2play/version`
+`GET /api/v1/system/version`
 
 The route is handled before the native API token check, so clients can identify
 the product before configuring credentials. Its implementation is separate from
-the legacy ping and Silo/MatriX version routes.
+the native `/api/v1/system/ping` and `/api/v1/system/version` routes.
 
 Canonical response:
 
@@ -86,7 +84,7 @@ Canonical response:
 ```
 
 The `version` value is the native P2Play application version from the project's
-single version source/build metadata. It MUST NOT be the MatriX, TorrServer,
+single version source/build metadata. It MUST NOT be the MatriX, legacy backend,
 Silo, or other compatibility label and MUST NOT contain a compatibility prefix.
 The endpoint must not be an alias for a legacy ping endpoint.
 
@@ -94,30 +92,28 @@ The P2Play endpoint and the compatibility probes serve different purposes:
 
 | Interface | Purpose | Identity |
 | --- | --- | --- |
-| TorrServer MatriX ping/echo | Client compatibility detection | Existing MatriX/TorrServer-compatible response |
-| TorrServer Silo ping | Silo compatibility detection | Existing Silo-compatible response |
-| `GET /api/p2play/version` | Identify the actual P2Play product/build | `P2Play` and its native version only |
+| `GET /api/v1/system/version` | Identify the P2Play product/build | `P2Play` and its native version only |
 
 Do not change legacy ping responses to make them look like the native P2Play
 version endpoint. Do not make pPlay infer the native P2Play version by parsing a
-TorrServer compatibility string.
+legacy backend compatibility string.
 
 ## 3. External pPlay client baseline
 
 The external `P2Play` network integration is implemented in `freetushkan/pPlay/dev`.
 Its adapter is isolated in `src/net/p2play.h/.cpp`; `Io` is the only backend dispatcher.
 Playback progress and FFmpeg `MediaProbe` use neutral operations. This boundary
-is not yet universal: `player_visual.cpp::pictureUrlsOf` still calls TorrServe
+is not yet universal: `player_visual.cpp::pictureUrlsOf` still calls legacy adapter
 directly; see the audit before claiming complete shared-player independence.
 
 Completed external-client features:
-- native `GET /api/p2play/version` identity check, Bearer login and account-scoped API calls;
+- native `GET /api/v1/system/version` identity check, Bearer login and account-scoped API calls;
 - MediaMesh discovery/subscriptions, search, selected-list filtering, record details,
   lazy poster/description loading, add-to-library and authenticated playback;
 - per-network user management (PR #8): list/create/change password/change rank/delete,
   with owner protection and rank-filtered role choices;
 - per-user playback progress read/write and position restore (PR #9), preserving the
-  existing TorrServer path behind the neutral dispatcher;
+  existing legacy backend path behind the neutral dispatcher;
 - duration retention and FFmpeg `MediaProbe` fallback when mpv has no duration (PR #9).
 
 PR #8 and PR #9 were merged into `dev`; their CI workflows passed for Linux, Android,
@@ -155,21 +151,26 @@ without the standalone application target.
   drained. It must not terminate a stream halfway through or leave a listener
   running after deactivation.
 - The embedded server uses a dedicated data directory owned by pPlay. It must not
-  share the data directory of an external P2Play daemon or any TorrServer data.
+  share the data directory of an external P2Play daemon or any legacy backend data.
 - The C API is the lifecycle boundary: pPlay starts, observes and stops the core
   in-process. The standalone daemon remains independently buildable and usable.
 
 ### LAN access and authentication
 
-The embedded HTTP server keeps its existing wildcard listener
-(`INADDR_ANY` for IPv4). Do not add loopback-only, interface, subnet, allowlist or
-other LAN filtering. Reachability is determined by ordinary routing, NAT and the
-device's firewall configuration; P2Play/pPlay must not introduce an extra LAN
-network policy or attempt to configure NAT/port forwarding.
+The embedded HTTP server defaults to port `8660`. pPlay exposes a per-network
+port setting for the Built-in instance (valid TCP ports 1–65535; zero and values
+outside the range are rejected). Changing the port restarts the embedded service
+and updates its base URL and poster transport context.
+
+The listener defaults to `127.0.0.1` for a newly created Built-in P2Play network.
+The user may disable this restriction to expose the service on the device's
+network interfaces (`INADDR_ANY` for IPv4). When loopback-only mode is enabled,
+network sharing is unavailable. The UI offers network sharing only on Android.
 
 The embedded server keeps the existing fixed owner identity: username `owner` and
-internal ID `owner`. pPlay passes the password from the `P2Play_embedded` network
-settings through `p2play_config.owner_password` to `p2play_start()`. On every
+internal ID `owner`. pPlay passes the password from the P2Play network settings through
+`p2play_config.owner_password` to `p2play_start()`. A new Built-in P2Play
+network receives a randomly generated owner password. On every
 embedded start, that password is applied to the owner's password hash, replacing
 the previous password when it changes. The owner ID, username, API token and all
 other user records MUST remain unchanged. A NULL `owner_password` preserves the
@@ -216,7 +217,7 @@ MediaMesh lists and the cover cache are all nested in pPlay's tree:
 
 - The embedded core MUST NOT write outside that directory, must not use an absolute or
   system-wide path of its own, and must not share the directory of an external P2Play
-  daemon or of any TorrServer data.
+  daemon or of any legacy backend data.
 - Removing or resetting the pPlay data directory removes the embedded server's data with
   it; a backup of pPlay's data directory is a complete backup of the embedded server.
 - The same rule applies to caches: they are caches of that instance, not of the device.
@@ -252,14 +253,14 @@ torrent, then a frame of its video through ffmpeg) and caches it by infohash. Co
 The implementation is complete only when tests prove all of the following:
 
 1. The P2Play module can be built, packaged, updated and removed without reading
-   from or writing to the TorrServer source tree.
+   from or writing to the legacy backend source tree.
 2. P2Play-owned files (including byte-for-byte copied implementations) have their
-   own paths and compile/package entries. No `torrserve.*` implementation file,
+   own paths and compile/package entries. No `previous backend files` implementation file,
    symlink, hard link or generated source overlay is reused.
-3. A clean TorrServer checkout is not modified by a pPlay module build/test.
-4. Legacy TorrServer ping responses remain byte/contract compatible with their
+3. A clean legacy backend checkout is not modified by a pPlay module build/test.
+4. Legacy backend ping responses remain byte/contract compatible with their
    existing tests.
-5. `GET /api/p2play/version` is independently reachable and returns the native
+5. `GET /api/v1/system/version` is independently reachable and returns the native
    P2Play version without compatibility prefixes.
 6. The returned native version matches the version embedded in the P2Play build;
    changing the application version source updates this endpoint without
@@ -293,7 +294,7 @@ Covers are implemented on the server side (`GET/POST/DELETE /api/v1/torrents/{ha
 
 The native identity, external adapter, Continue Watching, embedded lifecycle,
 owner provisioning and embedded reuse of user management are implemented in code.
-Physical LAN/lifecycle acceptance remains open. Full TorrServer parity is not
+Physical LAN/lifecycle acceptance remains open. Full legacy backend parity is not
 complete: watched/reset/folder UI, library listing/deletion, offline storage and
 shared artwork need the work recorded in [pplay-audit.md](pplay-audit.md).
 
@@ -310,3 +311,21 @@ shared artwork need the work recorded in [pplay-audit.md](pplay-audit.md).
 - Keep one resolved core SHA across all platform jobs/Android ABIs, record build
   provenance, and invalidate dependency/compiler caches using actual toolchain,
   flags, headers and patch fingerprints. See the audit for acceptance criteria.
+
+
+## 5. Stable tokens and HTTPS poster transport
+
+P2Play owns one durable API token per user. Login returns the existing token; it
+does not rotate it. The user or an administrator with sufficient rank may explicitly
+reset it. pPlay keeps the token in its in-memory account/session cache and sends it
+as `Authorization: Bearer` for authenticated API calls. It is not shown in network
+settings. The browser's share-link operation is separate: it asks the server to
+create a URL containing the user's token for an individual file stream.
+
+For poster URL fetching in the embedded core, reuse pPlay's existing
+`Http::perform` transport. The callback must use `Io::tlsVerify(url, context)`
+so the selected P2Play network's certificate-verification setting applies to
+external poster hosts too. Certificate verification is enabled by default and
+must not be disabled automatically on errors. Redirects are returned to the core
+one hop at a time; the core revalidates every target before the next request.
+Do not instantiate another HTTP/TLS client in the embedded core.

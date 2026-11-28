@@ -20,7 +20,7 @@ import tempfile
 import time
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("core_test", os.path.join(os.path.dirname(__file__), "core-test.py"))
+spec = importlib.util.spec_from_file_location("test_utils", os.path.join(os.path.dirname(__file__), "test_utils.py"))
 ct = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ct)
 check = ct.check
@@ -65,7 +65,7 @@ def start(daemon, root, node):
     proc = subprocess.Popen([daemon, "--data", data, "--port", str(http)], stdout=log, stderr=subprocess.STDOUT)
     for _ in range(100):
         try:
-            if call(node, "/api/system/ping")[0] == 200:
+            if call(node, "/api/v1/system/ping")[0] == 200:
                 return proc
         except Exception:
             pass
@@ -91,23 +91,23 @@ def main():
         procs.append(start(daemon, root, "a"))
         procs.append(start(daemon, root, "b"))
         procs.append(start(daemon, root, "c"))
-        pk = call("a", "/api/publish", {"name": "Net list"})[1]["pubkey"]
-        call("a", f"/api/publish/{pk}/records",
+        pk = call("a", "/api/v1/publish", {"name": "Net list"})[1]["pubkey"]
+        call("a", f"/api/v1/publish/{pk}/records",
              raw=json.dumps({"ih": "d" * 40, "title": "Network Movie 2026", "tags": ["movie"]}).encode())
-        status, out = call("a", f"/api/publish/{pk}/release", {})
+        status, out = call("a", f"/api/v1/publish/{pk}/release", {})
         check(status == 200 and out["net"]["seeding"] and len(out["net"].get("version_ih", "")) == 64,
               "A: version 1 seeded as a v2 torrent")
         time.sleep(3)  # the DHT nodes find each other, A's pointer put
 
-        status, _ = call("b", f"/api/lists/{pk}", {})
+        status, _ = call("b", f"/api/v1/lists/{pk}", {})
         check(status == 202, "B: subscribing by the key")
-        got = wait("B takes version 1", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 1 and l["net"].get("records_ready")])
+        got = wait("B takes version 1", lambda: [l for l in call("b", "/api/v1/lists")[1]["lists"] if l["seq"] == 1 and l["net"].get("records_ready")])
         if not got:
             print(open(os.path.join(root, "b", "p2play.log")).read()[-3000:])
         check(bool(got) and not got[0]["own"], "B: version 1 from the DHT pointer and A's seed")
-        res = call("b", "/api/catalog/search?q=network")[1]["results"]
+        res = call("b", "/api/v1/catalog/search?q=network")[1]["results"]
         check([r["hash"] for r in res] == ["d" * 40], "B: the list searched")
-        check(wait("B seeds", lambda: call("b", "/api/lists")[1]["lists"][0]["net"]["seeding"], 20), "B: seeding it")
+        check(wait("B seeds", lambda: call("b", "/api/v1/lists")[1]["lists"][0]["net"]["seeding"], 20), "B: seeding it")
         b_records_dir = os.path.join(root, "b", "lists", pk, "records")
         old_segments = [name for name in os.listdir(b_records_dir) if name.endswith(".z")]
         check(len(old_segments) == 1, "B: keeps the first immutable record segment locally")
@@ -116,16 +116,16 @@ def main():
             json.dumps({"ih": "d" * 40, "title": "Revised Film", "tags": ["movie"]}),
             json.dumps({"ih": "e" * 40, "title": "Second Film"}),
         )) + "\n"
-        call("a", f"/api/publish/{pk}/records", raw=update_batch.encode())
-        check(call("a", f"/api/publish/{pk}/release", {})[1]["seq"] == 2, "A: version 2")
+        call("a", f"/api/v1/publish/{pk}/records", raw=update_batch.encode())
+        check(call("a", f"/api/v1/publish/{pk}/release", {})[1]["seq"] == 2, "A: version 2")
         time.sleep(2)
-        call("b", f"/api/lists/{pk}", {})
-        got = wait("B takes version 2", lambda: [l for l in call("b", "/api/lists")[1]["lists"] if l["seq"] == 2 and l["net"].get("records_ready")])
-        check(bool(got) and call("b", "/api/catalog/search?q=second")[1]["results"] != [], "B: version 2 taken")
-        revised = call("b", "/api/catalog/search?q=revised")[1]["results"]
+        call("b", f"/api/v1/lists/{pk}", {})
+        got = wait("B takes version 2", lambda: [l for l in call("b", "/api/v1/lists")[1]["lists"] if l["seq"] == 2 and l["net"].get("records_ready")])
+        check(bool(got) and call("b", "/api/v1/catalog/search?q=second")[1]["results"] != [], "B: version 2 taken")
+        revised = call("b", "/api/v1/catalog/search?q=revised")[1]["results"]
         check([r["hash"] for r in revised] == ["d" * 40],
               "B: later segment fully replaces the prior record with the same infohash")
-        check(call("b", "/api/catalog/search?q=network")[1]["results"] == [],
+        check(call("b", "/api/v1/catalog/search?q=network")[1]["results"] == [],
               "B: fields omitted from a replacement are not implicitly retained")
         with open(os.path.join(root, "b", "p2play.log"), encoding="utf-8") as log_file:
             b_log = log_file.read()
@@ -134,11 +134,11 @@ def main():
         # the directory swarm: C holds no list, learns of this one and of its holders
         # Directory peers form a graph, not a guaranteed full mesh. C can learn via
         # one neighbor's transitive KNOWN snapshot; only HAVE contributes to holders.
-        found = wait("C learns of the list", lambda: [l for l in call("c", "/api/lists/discover")[1]["lists"]
+        found = wait("C learns of the list", lambda: [l for l in call("c", "/api/v1/lists/discover")[1]["lists"]
                                                        if l["pubkey"] == pk and l["seq"] == 2
                                                        and l.get("name") == "Net list" and l.get("known_by", 0) >= 1], 90)
         if not found:
-            snapshot = call("c", "/api/lists/discover")[1]
+            snapshot = call("c", "/api/v1/lists/discover")[1]
             print("C discovery snapshot:", json.dumps(snapshot, ensure_ascii=False))
             log_path = os.path.join(root, "c", "p2play.log")
             if os.path.exists(log_path):
@@ -148,15 +148,15 @@ def main():
               "C: signed list discovery without subscribing")
         check(found[0]["holders"] <= found[0]["known_by"],
               "C: HAVE holders are included in knowledge, KNOWN does not inflate popularity")
-        check(not call("c", "/api/lists")[1]["lists"],
+        check(not call("c", "/api/v1/lists")[1]["lists"],
               "C: discovery-only lookup does not import the version torrent")
         time.sleep(1)  # allow a background worker turn after pointer acceptance
         with open(os.path.join(root, "c", "p2play.log"), encoding="utf-8") as log_file:
             c_log = log_file.read()
         check(f"[Mesh] list {pk[:16]}: fetching manifest" not in c_log,
               "C: discovery-only lookup does not start a version-torrent fetch")
-        check(call("c", "/api/torrents")[0] == 404 and call("c", "/torrents", {"action": "list"})[0] == 404
-              and call("c", "/api/catalog/search?q=x")[0] == 200, "C, a catalog node: no streamer, the catalog")
+        check(call("c", "/api/v1/torrents")[0] == 404 and call("c", "/torrents", {"action": "list"})[0] == 404
+              and call("c", "/api/v1/catalog/search?q=x")[0] == 200, "C, a catalog node: no streamer, the catalog")
         print("PASS")
     finally:
         for p in procs:

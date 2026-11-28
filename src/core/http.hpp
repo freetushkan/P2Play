@@ -73,7 +73,7 @@ namespace p2p {
         ~HttpServer();
 
         // port 0: any free one (port() tells which)
-        bool start(uint16_t port, Handler handler);
+        bool start(uint16_t port, Handler handler, bool loopbackOnly = false);
 
         // Stop the listener without terminating already accepted connections.
         void stopAccepting();

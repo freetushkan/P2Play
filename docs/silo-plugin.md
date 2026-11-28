@@ -12,7 +12,7 @@ into the signed-in user's native Silo torrent library.
 at `/` is sent there). There is no second copy. `app.js` tells the host by the address:
 under `/plugins/` it calls this plugin's routes (`service.js`); anywhere else it calls the
 core's `/api` in the same shapes (search, lists, discovery, subscription, adding to the
-signed-in user's library) and logs in through `/api/auth/login`. Elements only Silo has
+signed-in user's library) and logs in through `/api/v1/auth/login`. Elements only Silo has
 (the back link, the daemon settings, Silo's permission notes) carry `silo-only`.
 `index.html` refers to its files relatively, so the page works at `/plugins/mediamesh/`
 and at `/ui/`. `tools/ui-test.py` checks the core side (with `--browser`: the page itself,
@@ -20,14 +20,18 @@ in Chromium).
 
 ## Compatibility pin
 
-Inspected and tested against **YouROK/TorrServer, branch `silo`, commit
-`3610db846fd2132f06aa626a4cb94f4a0cfa69ae`**. The upstream branch is explicitly
-labelled early development; do not assume compatibility with `master`, a stable
-TorrServer release, or a future Silo commit.
+Pinned and tested against the Silo source branch at commit
+`3610db846fd2132f06aa626a4cb94f4a0cfa69ae`. That branch is explicitly labelled
+early development; do not assume compatibility with other Silo revisions or future commits.
 
-Source: <https://github.com/YouROK/TorrServer/tree/3610db846fd2132f06aa626a4cb94f4a0cfa69ae>.
+Source: pinned Silo host revision `3610db846fd2132f06aa626a4cb94f4a0cfa69ae`.
+This upstream repository URL is used only to retrieve the pinned Silo host source for
+the plugin test harness. It is not a P2Play runtime service, API or library dependency.
 Initial inspection used the GitHub web page, followed by a separate isolated clone.
 The integration does not vendor or modify upstream Go code.
+In `tools/silo-live-test.py`, requests to the pinned Silo host use `/api`
+(including `GET /api/system/ping` for readiness); P2Play daemon requests use
+`/api/v1`. The plugin itself is served under `/plugins/mediamesh/`.
 
 Verified upstream contracts (paths relative to that commit):
 
@@ -112,19 +116,18 @@ Android acceptance remains open:
 - verify service stop/restart, permissions, background restrictions and
   persistence on a real device.
 
-Sources: [Silo.3 Android server assets](https://github.com/YouROK/TorrServer/releases/tag/Silo.3),
-[pinned Silo plugin runtime](https://github.com/YouROK/TorrServer/tree/3610db846fd2132f06aa626a4cb94f4a0cfa69ae/internal/plugin),
+Sources: Silo.3 Android server assets and the pinned Silo plugin runtime revision listed above.
 and P2Play's `android/app` / `ci/android-apk.sh`.
 
 ## Data flow and permissions
 
 | Plugin function | Native daemon API | Silo permission |
 | --- | --- | --- |
-| Search, optional tag, bounded limit | `GET /api/catalog/search?q=&tag=&limit=` | rank 10+ |
-| Re-read chosen record | `GET /api/catalog/:infohash` | rank 10+ |
-| Subscribed lists | `GET /api/lists` | rank 10+ |
-| Network list discovery | `GET /api/lists/discover` | rank 10+ |
-| Subscribe / request refresh | `POST /api/lists/:pubkey` with `{}` | rank 50+ |
+| Search, optional tag, bounded limit | `GET /api/v1/catalog/search?q=&tag=&limit=` | rank 10+ |
+| Re-read chosen record | `GET /api/v1/catalog/:infohash` | rank 10+ |
+| Subscribed lists | `GET /api/v1/lists` | rank 10+ |
+| Network list discovery | `GET /api/v1/lists/discover` | rank 10+ |
+| Subscribe / request refresh | `POST /api/v1/lists/:pubkey` with `{}` | rank 50+ |
 | Change daemon URL/token | Plugin-private BoltDB settings | rank 50+ |
 | Add release | Server-side record lookup, then `ts.torrent.add` | rank 10+, own library |
 
@@ -195,12 +198,12 @@ responsibility. There is no browser-to-daemon transfer or automatic external pla
 
 ## Explicit functional limits
 
-- **Remove subscription is unavailable:** native `DELETE /api/lists/:pubkey`
+- **Remove subscription is unavailable:** native `DELETE /api/v1/lists/:pubkey`
   exists, but the pinned Silo JS `ts.http` exposes only GET/POST. There is no fake
   DELETE override, localhost core API workaround, method-tunnelling query, or Go
   patch. Use the daemon's native authorized UI/API for deletion. The plugin does
   not expose a misleading remove button.
-- **Refresh means re-subscribe** through the supported `POST /api/lists/:pubkey`
+- **Refresh means re-subscribe** through the supported `POST /api/v1/lists/:pubkey`
   path, not an invented `/refresh` endpoint. Installation/download happens
   asynchronously in the native daemon; reload the list view after it completes.
 - v2/64-character torrent hashes cannot be transferred through this pinned Silo
@@ -225,7 +228,7 @@ To use a clean checkout already at the exact commit (not modified by the tests):
 
 ```sh
 python3 -I /path/to/P2Play/tools/silo-plugin-test.py \
-  --upstream /path/to/TorrServer --go /path/to/go
+  --upstream /path/to/silo-source --go /path/to/go
 ```
 
 The runner checks the pin, creates an isolated temporary tree, injects

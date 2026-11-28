@@ -374,31 +374,6 @@ namespace {
         return found;
     }
 
-    // a GET on 127.0.0.1; the answer's start
-    std::string localGet(uint16_t port, const char *path) {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
-            return "";
-        }
-        timeval tv{2, 0};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        sockaddr_in addr = loopback(port);
-        std::string out;
-        if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-            std::string req = std::string("GET ") + path + " HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
-            if (send(fd, req.data(), req.size(), 0) == static_cast<ssize_t>(req.size())) {
-                char b[512];
-                ssize_t n;
-                while (out.size() < 4096 && (n = recv(fd, b, sizeof(b), 0)) > 0) {
-                    out.append(b, static_cast<size_t>(n));
-                }
-            }
-        }
-        close(fd);
-        return out;
-    }
-
     // the running server asked to quit; true once its port is free (killed after 10 s)
     bool stopRunning() {
         int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -438,21 +413,6 @@ bool p2p::platformInit() {
         klog_printf("[p2play] already running: stopping it\n");
         platformNotify(stopRunning() ? "P2Play: stopped. Open it again to start"
                                      : "P2Play: the running server does not stop");
-        return false;
-    }
-    // a server from before the control port: its MatriX /shutdown
-    if (localGet(8090, "/echo").find("P2Play/") != std::string::npos) {
-        klog_printf("[p2play] an older server answers on 8090: /shutdown\n");
-        localGet(8090, "/shutdown");
-        bool gone = false;
-        for (int i = 0; i < 40 && !gone; i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            gone = localGet(8090, "/echo").find("P2Play/") == std::string::npos;
-        }
-        close(g_control);
-        g_control = -1;
-        platformNotify(gone ? "P2Play: stopped. Open it again to start"
-                            : "P2Play: an older server holds port 8090 and does not stop: restart the console");
         return false;
     }
     if (!g_bigApp) {

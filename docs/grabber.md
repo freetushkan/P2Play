@@ -408,7 +408,7 @@ payload = zlib.decompress(compressed_bytes, -15)
 items = json.loads(payload)
 ```
 
-Accept either an operator-supplied local `rutor.ls` copied from the TorrServer
+Accept either an operator-supplied local `rutor.ls` copied from the source
 configuration directory or an explicitly enabled remote refresh. Remote mode
 must use bounded timeouts/size limits and the same configured tunnel/egress
 policy as publisher traffic. Enforce both compressed and decompressed size

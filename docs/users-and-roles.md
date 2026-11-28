@@ -1,6 +1,6 @@
 # User roles and permissions
 
-P2Play follows TorrServer.Silo numeric rank. UI uses named presets; stored
+P2Play uses numeric access ranks. UI uses named presets; stored
 `rank` remains Silo-compatible.
 
 | Role | Rank | Notes |

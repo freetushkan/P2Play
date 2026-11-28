@@ -1,9 +1,9 @@
 // P2Play: the core as an application. Linux and Android: the service p2playd (systemd, the
 // Android app's foreground service); Switch, PS4, PS5: a homebrew application. It serves
-// the TorrServer MatriX API and the streams on port 8090; players (pPlay, Lampa, mpv) use it
-// there, on this device or over the network.
+// its own API and the streams on port 8660; players (pPlay, Lampa, mpv) use it there,
+// on this device or over the network.
 //
-//   Linux, Android: p2playd [--data DIR] [--port N]
+//   Linux, Android: p2playd [--data DIR] [--port N] [--base-path /prefix/path]
 //     DIR: $P2PLAY_DATA, else $XDG_DATA_HOME/p2play or ~/.local/share/p2play
 //   Switch: sdmc:/switch/p2play, + quits. PS4, PS5: /data/p2play, quits on a "stop" file there.
 
@@ -25,6 +25,7 @@
 #include <exception>
 
 #include "crashlog.h"
+#include "https.hpp"
 #include "p2play.h"
 #include "platform.hpp"
 
@@ -102,6 +103,9 @@ namespace {
 int main(int argc, char **argv) {
     std::string dataDir = p2p::dataDir();
     int port = 0;
+    int httpsBridgePort = 0;
+    std::string httpsBridgeToken;
+    std::string httpPrefix;
 #if !P2P_CONSOLE
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -109,11 +113,19 @@ int main(int argc, char **argv) {
             dataDir = argv[++i];
         } else if (a == "--port" && i + 1 < argc) {
             port = std::atoi(argv[++i]);
+        } else if (a == "--base-path" && i + 1 < argc) {
+            httpPrefix = argv[++i];
+#if defined(__ANDROID__)
+        } else if (a == "--https-bridge-port" && i + 1 < argc) {
+            httpsBridgePort = std::atoi(argv[++i]);
+        } else if (a == "--https-bridge-token" && i + 1 < argc) {
+            httpsBridgeToken = argv[++i];
+#endif
         } else if (a == "--version") {
             std::printf("%s\n", p2play_version());
             return 0;
         } else {
-            std::fprintf(stderr, "usage: p2playd [--data DIR] [--port N]\n");
+            std::fprintf(stderr, "usage: p2playd [--data DIR] [--port N] [--base-path /prefix/path]\n");
             return 2;
         }
     }
@@ -128,6 +140,10 @@ int main(int argc, char **argv) {
     makeDirs(dataDir);
     g_log = std::fopen((dataDir + "/p2play.log").c_str(), P2P_CONSOLE ? "w" : "a");
     std::set_terminate(onTerminate);
+    const bool httpsReady = p2p::httpsInit(dataDir, httpsBridgePort, httpsBridgeToken, logLine);
+    if (!httpsReady) {
+        logLine("[App] HTTPS poster transport is unavailable; HTTP posters remain supported", nullptr);
+    }
 #ifndef __PS4__
     // PS4: ps4/crashlog.c installs itself (/data/p2play/crash.log)
     p2p::CrashLog::install(dataDir + "/crash.log");
@@ -136,11 +152,14 @@ int main(int argc, char **argv) {
     p2play_config config{};
     config.data_dir = dataDir.c_str();
     config.http_port = port;
+    config.http_prefix = httpPrefix.empty() ? nullptr : httpPrefix.c_str();
     config.console = p2p::platformIsConsole() ? 1 : 0;
     const std::string platform = p2p::platformName();
     config.platform = platform.c_str();
     config.log = logLine;
+    config.http_get = httpsReady ? p2p::httpsGet : nullptr;
     if (p2play_start(&config) != 0) {
+        p2p::httpsShutdown();
         logLine("[App] cannot start (already running?)", nullptr);
         p2p::platformNotify("P2Play: cannot start (already running?)");
 #ifdef __SWITCH__
@@ -162,6 +181,7 @@ int main(int argc, char **argv) {
     }
     logLine("[App] quitting", nullptr);
     p2play_stop();
+    p2p::httpsShutdown();
     if (g_log) {
         std::fclose(g_log);
     }

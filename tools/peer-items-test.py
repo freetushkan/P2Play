@@ -180,7 +180,7 @@ class Node:
         self.proc = subprocess.Popen([self.daemon, "--data", self.data, "--port", str(self.http)],
                                      stdout=log, stderr=subprocess.STDOUT)
         log.close()
-        wait(lambda: self.call("/api/system/ping")[0] == 200, 20)
+        wait(lambda: self.call("/api/v1/system/ping")[0] == 200, 20)
 
     def stop(self):
         if self.proc is not None:
@@ -199,7 +199,7 @@ class Node:
             return e.code, json.loads(e.read())
 
     def lists(self):
-        return self.call("/api/lists")[1]["lists"]
+        return self.call("/api/v1/lists")[1]["lists"]
 
 
 def wait(test, seconds=30):
@@ -223,10 +223,10 @@ def main():
     try:
         a = Node(daemon, root, "a")
         nodes.append(a)
-        pk = a.call("/api/publish", {"name": "Peer pointer"})[1]["pubkey"]
+        pk = a.call("/api/v1/publish", {"name": "Peer pointer"})[1]["pubkey"]
         key = bytes.fromhex(pk)
-        a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "d" * 40, "title": "Peer Film"}).encode())
-        assert a.call(f"/api/publish/{pk}/release", {})[0] == 200
+        a.call(f"/api/v1/publish/{pk}/records", raw=json.dumps({"ih": "d" * 40, "title": "Peer Film"}).encode())
+        assert a.call(f"/api/v1/publish/{pk}/release", {})[0] == 200
         source = Peer(a.bt)
         peers.append(source)
         first = source.get(key)
@@ -279,7 +279,7 @@ def main():
         peers.append(probe)
         probe.known(key, 1)
         probe.inject(first)
-        discovered = wait(lambda: next((l for l in b.call("/api/lists/discover")[1]["lists"]
+        discovered = wait(lambda: next((l for l in b.call("/api/v1/lists/discover")[1]["lists"]
                                         if l["pubkey"] == pk and l["name"] == "Peer pointer"), None), 20)
         assert discovered["subscribed"] is False, "discovery-only pointer lookup subscribed to the list"
         assert discovered["holders"] == 0, "KNOWN gossip incorrectly inflated holder popularity"
@@ -295,13 +295,13 @@ def main():
         a.start()
         source = Peer(a.bt)
         peers.append(source)
-        assert b.call(f"/api/lists/{pk}", {})[0] == 202
+        assert b.call(f"/api/v1/lists/{pk}", {})[0] == 202
         wait(lambda: any(l["pubkey"] == pk and l["seq"] == 1 and l["net"].get("records_ready") for l in b.lists()), 60)
-        assert b.call("/api/catalog/search?q=peer")[1]["results"]
+        assert b.call("/api/v1/catalog/search?q=peer")[1]["results"]
         print("PASS later subscription reuses the cached pointer and downloads the v2 version")
         # A's version 2 is delivered over BEP10; the old pointer must not replace it.
-        a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "e" * 40, "title": "New Peer Film"}).encode())
-        assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 2
+        a.call(f"/api/v1/publish/{pk}/records", raw=json.dumps({"ih": "e" * 40, "title": "New Peer Film"}).encode())
+        assert a.call(f"/api/v1/publish/{pk}/release", {})[1]["seq"] == 2
         # An established directory peer gets the new signed item as a push. The have
         # snapshot announcing seq=2 must arrive first; no get is sent by this test peer.
         source.wait(lambda v: any(k == key and seq == 2 for k, seq in v.get(b"have", [])))
@@ -325,8 +325,8 @@ def main():
         probe.close()
         peers.remove(probe)
         b.stop()
-        a.call(f"/api/publish/{pk}/records", raw=json.dumps({"ih": "a" * 40, "title": "Offline update"}).encode())
-        assert a.call(f"/api/publish/{pk}/release", {})[1]["seq"] == 3
+        a.call(f"/api/v1/publish/{pk}/records", raw=json.dumps({"ih": "a" * 40, "title": "Offline update"}).encode())
+        assert a.call(f"/api/v1/publish/{pk}/release", {})[1]["seq"] == 3
         source.wait(lambda v: any(k == key and seq == 3 for k, seq in v.get(b"have", [])))
         third = source.wait(lambda v: v.get(b"item", {}).get(b"k") == key and
                             v.get(b"item", {}).get(b"seq") == 3)[b"item"]
@@ -334,7 +334,7 @@ def main():
         b.start()
         # Restore the subscription and its peer hint, then connect a raw protocol
         # peer. This separates BEP10 get recovery from TCP discovery timing.
-        assert b.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{a.bt}"]})[0] == 202
+        assert b.call(f"/api/v1/lists/{pk}", {"peers": [f"127.0.0.1:{a.bt}"]})[0] == 202
         # B must issue get for its locally held seq=2; answer with signed seq=3.
         # The advertised port points at A, which still seeds the version torrent.
         recovery = Peer(b.bt, a.bt)
@@ -357,7 +357,7 @@ def main():
         print("PASS received pointer survives restart without publisher or private seed")
         c = Node(daemon, root, "c")
         nodes.append(c)
-        assert c.call(f"/api/lists/{pk}", {"peers": [f"127.0.0.1:{b.bt}"]})[0] == 202
+        assert c.call(f"/api/v1/lists/{pk}", {"peers": [f"127.0.0.1:{b.bt}"]})[0] == 202
         wait(lambda: any(l["pubkey"] == pk and l["seq"] == 3 and l["net"].get("records_ready") for l in c.lists()), 60)
         print("PASS third node subscribes via directory peer hint after publisher exits")
         print("PASS signed peer item network tests")

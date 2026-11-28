@@ -1,5 +1,4 @@
-// P2Play's native, versioned library API. This file is deliberately independent of
-// the optional TorrServer MatriX compatibility layer (P2P_COMPAT_MATRIX).
+// P2Play's native, versioned library API.
 #include "core_torrent.hpp"
 
 #include <algorithm>
@@ -92,7 +91,10 @@ namespace p2p {
         const size_t count = parts.size();
         auto at = [&](size_t index) { return index < count ? parts[index] : std::string(); };
 
-        // This is a product-owned response schema, not a MatriX/Silo status payload.
+        if (get && count == 4 && at(2) == "auth" && at(3) == "me")
+            return apiOk(res, 200, user.json(false));
+
+        // This is a product-owned response schema, not a legacy compatibility/external host status payload.
         auto item = [&](const TorrentPtr &torrent) {
             TorrentRecord record;
             int64_t addedAt = 0;
@@ -237,6 +239,7 @@ namespace p2p {
             return apiOk(res, 200, {
                 {"items", values},
                 {"total", filtered.size()},
+                {"total_all", all.size()},
                 {"offset", offset},
                 {"limit", limit},
                 {"categories", categories}
@@ -245,6 +248,22 @@ namespace p2p {
 
         // POST /api/v1/torrents — JSON {link,title,category,poster_url} or multipart
         // {file,title,category,poster_url,poster_file}. The chosen image is stored on this node.
+        if (count == 4 && at(2) == "torrents" && at(3) == "preview" && method == "POST") {
+            const json body = json::parse(req.body, nullptr, false);
+            if (!body.is_object()) return apiError(res, 400, "JSON object required");
+            const std::string link = body.value("link", std::string());
+            if (link.empty()) return apiError(res, 400, "link is required");
+            std::string error;
+            TorrentPtr torrent = add(link, body.value("title", std::string()), body.value("poster", std::string()),
+                                     body.value("category", std::string()), body.value("data", std::string()), "", error);
+            if (!torrent) return apiError(res, 400, error);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                torrent->previewUsers.insert(user.id);
+                torrent->lastUse = std::chrono::steady_clock::now();
+            }
+            return apiOk(res, 200, {{"torrent", item(torrent)}, {"preview", true}});
+        }
         if (count == 3 && at(2) == "torrents" && method == "POST") {
             std::string link, title, category, poster, posterUrl, torrentFile, posterBytes, posterType, error;
             bool hasFile = false, hasPosterFile = false;
@@ -317,9 +336,27 @@ namespace p2p {
                 : add(link, title, posterSeed, category, "", user.id, error);
             if (!torrent) return apiError(res, 400, error.empty() ? "torrent could not be added" : error);
 
+            // A torrs:// card may carry a poster URL. Cache it on this node so the web UI
+            // can render it under the same-origin CSP; a failed/unsafe poster fetch never
+            // prevents adding the torrent itself.
+            if (!hasCustomPoster && poster.empty() && link.rfind("torrs://", 0) == 0) {
+                std::string source;
+                { std::lock_guard<std::mutex> lock(m_mutex); source = torrent->rec.poster; }
+                if (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0) {
+                    std::string imageBytes, imageType, posterError;
+                    if (coverFetchUrl(source, imageBytes, imageType, posterError) &&
+                        coverStore(torrent->rec.hash, imageBytes, "torrs", posterError)) {
+                        const std::string posterPath = m_config.httpPrefix + "/api/v1/torrents/" +
+                                                       torrent->rec.hash + "/poster";
+                        { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
+                        save(torrent);
+                    }
+                }
+            }
+
             if (hasCustomPoster) {
                 const std::string hash = torrent->rec.hash;
-                const std::string posterPath = "/api/v1/torrents/" + hash + "/poster";
+                const std::string posterPath = m_config.httpPrefix + "/api/v1/torrents/" + hash + "/poster";
                 // Mark the user poster before touching the cover cache. If this infohash
                 // already has an extraction job in flight, its final write will now skip it.
                 { std::lock_guard<std::mutex> lock(m_mutex); torrent->rec.poster = posterPath; }
@@ -355,7 +392,7 @@ namespace p2p {
             if (req.has("since") && !apiUnsigned(req.param("since"), since)) {
                 return apiError(res, 400, "since must be a non-negative Unix timestamp");
             }
-            return apiOk(res, 200, {{"progress", siloProgress(user.id, static_cast<int64_t>(since))}});
+            return apiOk(res, 200, {{"progress", libraryProgress(user.id, static_cast<int64_t>(since))}});
         }
 
         // Import/export portable .torrs library lists.
@@ -399,11 +436,17 @@ namespace p2p {
                                     {"skipped", skipped}, {"rejected", rejected}});
         }
 
-        // User management shares the core account store and permission checks with Silo.
+        // User management shares the core account store and permission checks with external host.
+        if (count >= 3 && (at(2) == "catalog" || at(2) == "lists" || at(2) == "publish")) {
+            std::vector<std::string> routeParts = {"api", at(2)};
+            routeParts.insert(routeParts.end(), parts.begin() + 3, parts.end());
+            routeMesh(req, res, user, routeParts);
+            return true;
+        }
         if (count >= 3 && at(2) == "users") {
-            std::vector<std::string> siloParts = {"api", "users"};
-            siloParts.insert(siloParts.end(), parts.begin() + 3, parts.end());
-            siloUsers(req, res, user, siloParts);
+            std::vector<std::string> userParts = {"api", "users"};
+            userParts.insert(userParts.end(), parts.begin() + 3, parts.end());
+            apiUsers(req, res, user, userParts);
             return true;
         }
 
@@ -419,7 +462,7 @@ namespace p2p {
             json next = settingsJson();
             bool restartRequired = false;
             static const std::set<std::string> booleanKeys = {
-                "UseDisk", "DiskCacheEnabled", "CacheListsInMemory", "CoverProbe", "DisableUpload", "DisableTCP",
+                "UseDisk", "DiskCacheEnabled", "CacheListsInMemory", "CoverFiles", "CoverEmbedded", "CoverProbe", "DisableUpload", "DisableTCP",
                 "DisableUTP", "DisableDHT", "DisableMeshDirectory", "DisableUPNP"
             };
             static const std::set<std::string> integerKeys = {
@@ -434,7 +477,7 @@ namespace p2p {
                 if (booleanKeys.count(key)) {
                     if (!it.value().is_boolean()) return apiError(res, 400, key + " must be boolean");
                     next[key] = it.value();
-                    if (key == "UseDisk" && changed) restartRequired = true;
+                    if ((key == "UseDisk" || key == "DisableMeshDirectory") && changed) restartRequired = true;
                 } else if (integerKeys.count(key)) {
                     if (!it.value().is_number_integer()) return apiError(res, 400, key + " must be an integer");
                     const int64_t value = it.value().get<int64_t>();
@@ -504,7 +547,7 @@ namespace p2p {
             // The saved user poster is served by P2Play itself, using the same session.
             // Its file lives in the infohash cover store and is removed with the last library entry.
             if (count == 5 && at(4) == "poster") {
-                const std::string posterPath = "/api/v1/torrents/" + hash + "/poster";
+                const std::string posterPath = m_config.httpPrefix + "/api/v1/torrents/" + hash + "/poster";
                 if (get) {
                     std::string selected, bytes, type, source;
                     { std::lock_guard<std::mutex> lock(m_mutex); selected = torrent->rec.poster; }
@@ -564,7 +607,7 @@ namespace p2p {
                 return apiError(res, 405, "method not allowed");
             }
 
-            if (get) return apiOk(res, 200, {{"torrent", item(torrent)}, {"details", siloStatus(torrent, user.id)}});
+            if (get) return apiOk(res, 200, {{"torrent", item(torrent)}, {"details", torrentStatus(torrent, user.id)}});
 
             if (method == "PUT") {
                 const json body = apiBody(req);
@@ -607,7 +650,7 @@ namespace p2p {
 
 
         // Detailed torrent controls and file actions. File indexes are zero-based, matching
-        // Silo and the native v1 API. Store records retain the core's one-based file IDs.
+        // external host and the native v1 API. Store records retain the core's one-based file IDs.
         if (count >= 5 && at(2) == "torrents") {
             const std::string hash = meshFold(at(3));
             TorrentPtr torrent = find(hash);
@@ -668,13 +711,32 @@ namespace p2p {
                 return true;
             };
 
+            if (count == 5 && at(4) == "share" && method == "POST") {
+                if (!ensureMetadata(15)) return true;
+                std::vector<FileInfo> files;
+                { std::lock_guard<std::mutex> lock(m_mutex); files = torrent->rec.files; }
+                if (files.empty()) return apiError(res, 404, "torrent has no playable files");
+                auto video = [](const std::string &path) {
+                    const size_t dot = path.rfind('.');
+                    if (dot == std::string::npos) return false;
+                    std::string ext = path.substr(dot + 1);
+                    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    return ext == "mkv" || ext == "mp4" || ext == "m4v" || ext == "avi" || ext == "mov" || ext == "ts" || ext == "webm" || ext == "mpg" || ext == "mpeg";
+                };
+                auto selected = std::find_if(files.begin(), files.end(), [&](const FileInfo &f) { return video(f.path); });
+                if (selected == files.end()) selected = files.begin();
+                const int index = selected->index >= 0 ? selected->index : selected->id - 1;
+                const std::string path = m_config.httpPrefix + "/api/v1/torrents/" + hash + "/files/" + std::to_string(index) + "/stream?token=" + user.token;
+                return res.send(200, "application/json; charset=utf-8", json{{"url", path}, {"file", selected->path}}.dump(),
+                                {{"Cache-Control", "no-store"}, {"Referrer-Policy", "no-referrer"}});
+            }
             if (count == 5 && at(4) == "files" && get) {
                 // a file listing answers quickly by default; a player that wants the metadata
                 // waits with ?wait=
                 if (!ensureMetadata(15)) return true; // ensureMetadata wrote the error response
-                return apiOk(res, 200, {{"hash", hash}, {"files", siloStatus(torrent, user.id).value("file_stats", json::array())},
-                                        {"file_progress", siloStatus(torrent, user.id).value("file_progress", json::array())},
-                                        {"viewed_files", siloStatus(torrent, user.id).value("viewed_files", json::array())}});
+                return apiOk(res, 200, {{"hash", hash}, {"files", torrentStatus(torrent, user.id).value("file_stats", json::array())},
+                                        {"file_progress", torrentStatus(torrent, user.id).value("file_progress", json::array())},
+                                        {"viewed_files", torrentStatus(torrent, user.id).value("viewed_files", json::array())}});
             }
 
             if (count == 5 && at(4) == "wake" && method == "POST") {
@@ -838,6 +900,17 @@ namespace p2p {
                 return apiOk(res, 200, {{"hash", hash}, {"peers", peers}});
             }
 
+            if (count == 7 && at(4) == "files" && at(6) == "share" && method == "POST") {
+                int index = -1;
+                if (!parseFileIndex(at(5), index)) return apiError(res, 400, "file index is invalid");
+                if (!ensureMetadata(15)) return true;
+                FileInfo selected;
+                if (!fileAt(index, selected)) return apiError(res, 404, "file not found");
+                const std::string path = m_config.httpPrefix + "/api/v1/torrents/" + hash + "/files/" + std::to_string(index) +
+                                         "/stream?token=" + user.token;
+                return res.send(200, "application/json; charset=utf-8", json{{"url", path}, {"file", selected.path}}.dump(),
+                                {{"Cache-Control", "no-store"}, {"Referrer-Policy", "no-referrer"}});
+            }
             if (count == 7 && at(4) == "files" && at(6) == "stream" && get) {
                 int index = -1;
                 if (!parseFileIndex(at(5), index)) return apiError(res, 400, "file index is invalid");
