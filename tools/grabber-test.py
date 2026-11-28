@@ -1212,6 +1212,41 @@ class GrabberTests(unittest.TestCase):
                              ga.SOURCE_ADAPTERS))
         self.assertTrue(all(source.get("enabled") is False for source in config["sources"]))
 
+    def test_local_source_paths_override_network_and_git(self):
+        from unittest.mock import patch
+
+        feed = self.root / "feed.xml"
+        feed.write_bytes(self.torznab_feed)
+        template = self.root / "template.json"
+        template.write_text(json.dumps({"entries": [{"hash": "3" * 40, "name": "Local release",
+                                                      "stamp": 1700000200, "bytes": 42}]}))
+        paths = {"csv": self.csv_path, "rutor": self.rutor_path, "rutracker": self.rutracker_path,
+                 "rss": feed, "torznab": feed, "jackett-torznab": feed, "template": template}
+        sources = []
+        for kind, path in paths.items():
+            settings = {"id": kind, "type": kind, "enabled": True,
+                        "path": str(path.relative_to(self.root)),
+                        "url": "https://example.test/unused", "remote_enabled": True}
+            if kind == "csv":
+                settings["repo"] = "missing-checkout"
+            if kind == "template":
+                settings["template"] = "custom"
+            sources.append(settings)
+        sources.append({**sources[0], "id": "missing", "path": "missing.csv"})
+        config = {"version": 1, "sources": sources, "templates": {
+            "custom": {"format": "json", "record_path": "$.entries[*]", "fields": {
+                "ih": "$.hash", "title": "$.name", "date": "$.stamp", "size": "$.bytes"}}}}
+        self.profile.write_text(json.dumps(config), encoding="utf-8")
+        with patch.object(g.urllib.request, "urlopen", side_effect=AssertionError("unexpected download")):
+            for report in (self.run_once(), gi.run_inventory(self.profile, self.report, self.root / "inventory.db")):
+                for kind in paths:
+                    with self.subTest(kind=kind):
+                        result = report["sources"][kind]
+                        self.assertGreater(result.get("accepted", 0), 0, result)
+                self.assertEqual(report["sources"]["missing"]["status"], "failed")
+                self.assertIn("file does not exist", report["sources"]["missing"]["reason"])
+                self.assertIsNone(report["sources"]["torznab"].get("checkpoint_after"))
+
     def test_direct_rss_uses_feed_parser_without_caps(self):
         feed = self.torznab_feed
         requests = []

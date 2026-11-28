@@ -791,7 +791,15 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
             raise SourceError("remote CSV temporary storage failed") from exc
     gp.substage(f"{source_id}: checking CSV revision", 0, .2)
     repo_text = source.get("repo")
-    if repo_text:
+    if source.get("path"):
+        path = Path(source["path"]).expanduser().resolve()
+        if not path.is_file():
+            raise SourceError("configured CSV file does not exist")
+        if path.stat().st_size > MAX_LOCAL_CSV_BYTES:
+            raise SourceError("CSV file exceeds the configured local source size limit")
+        revision_key = _file_sha256(path)
+        checkpoint = {"kind": "file-csv", "file_sha256": revision_key}
+    elif repo_text:
         repo = Path(repo_text).expanduser().resolve()
         data_file = str(source.get("data_file", "torrents.csv"))
         if Path(data_file).is_absolute() or ".." in Path(data_file).parts:
@@ -806,10 +814,6 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
         revision = _git_revision(repo, data_file, path)
         checkpoint = {**revision, "kind": "git-csv"}
         revision_key = revision["worktree_oid"]
-    elif source.get("path"):
-        path = Path(str(source["path"])).expanduser().resolve()
-        checkpoint = {"kind": "file-csv", "file_sha256": _file_sha256(path) if path.is_file() else ""}
-        revision_key = checkpoint["file_sha256"]
     else:
         return {"status": "skipped", "reason": "local CSV checkout/path is not configured and remote CSV is not enabled",
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
@@ -1109,6 +1113,8 @@ def _load_config(path: Path) -> Dict[str, Any]:
         seen.add(source_id)
         if "enabled" in source and not isinstance(source["enabled"], bool):
             raise GrabberError(f"enabled must be a boolean for source {source_id}")
+        if "path" in source and (not isinstance(source["path"], str) or not source["path"].strip()):
+            raise GrabberError(f"path must be a non-empty string for source {source_id}")
         if "remote_enabled" in source and not isinstance(source["remote_enabled"], bool):
             raise GrabberError(f"remote_enabled must be a boolean for source {source_id}")
         try:

@@ -50,6 +50,14 @@ All built-in source types are selected through `SOURCE_ADAPTERS` in
 wrappers around the first working handlers, and new/custom parser types are added
 there without changing the SQLite/export pipeline.
 
+Every built-in adapter accepts an optional `sources[].path`. A relative path is
+resolved against the profile directory. When set, it selects only that local
+file, even if `url` or CSV `repo` is also present. A missing or unreadable file
+fails the source without a network fallback. Omit `path` to restore the source's
+usual remote or Git mode. RuTracker remains local-only. For RSS, Torznab, and
+Jackett-Torznab, `path` points to a saved feed XML response; it is read without
+fetching capabilities or additional pages and does not advance the remote cursor.
+
 - **torrents-csv-data:** reads an existing local Git checkout, a local CSV file,
   or a direct HTTPS URL. To download without Git, set `url` and
   `remote_enabled: true`, and remove `repo` and `path` (local inputs take priority).

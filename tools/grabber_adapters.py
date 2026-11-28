@@ -605,56 +605,72 @@ def _rss_items(data: bytes, categories: Optional[Dict[str, str]] = None) -> List
 def torznab_source(source: Dict[str, Any], templates, state, run_id: str,
                    publisher: Dict[str, Any], quarantine_dir: Path) -> Dict[str, Any]:
     source_id = str(source["id"])
+    local_path = source.get("path")
     endpoint = str(source.get("url", "")).strip()
-    if not endpoint:
-        return {"status": "skipped", "reason": "feed endpoint URL is not configured",
+    if not local_path and not endpoint:
+        return {"status": "skipped", "reason": "feed file path or endpoint URL is not configured",
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
-    timeout = int(source.get("timeout", 30))
-    page_size = int(source.get("page_size", 100))
-    pages = int(source.get("max_pages", 5))
     max_items = int(source.get("max_items", 5000))
-    overlap = int(source.get("overlap_seconds", 3 * 86400))
-    if not 1 <= timeout <= 300 or not 1 <= page_size <= 1000 or not 1 <= pages <= 100:
-        raise g.SourceError("feed timeout/page_size/max_pages is outside the supported range")
-    if not 1 <= max_items <= 100000 or not 0 <= overlap <= 30 * 86400:
-        raise g.SourceError("feed max_items/overlap_seconds is outside the supported range")
-    api_key = str(source.get("api_key", ""))
-    if len(api_key) > 512 or any(ord(ch) < 32 for ch in api_key):
-        raise g.SourceError("feed API key is invalid")
-    params = source.get("params", {}) or {}
-    if not isinstance(params, dict) or any(str(k).casefold() in {"apikey", "api_key", "t", "limit", "offset"} for k in params):
-        raise g.SourceError("feed params must not override API key, mode or pagination")
+    if not 1 <= max_items <= 100000:
+        raise g.SourceError("feed max_items is outside the supported range")
+    if not local_path:
+        timeout = int(source.get("timeout", 30))
+        page_size = int(source.get("page_size", 100))
+        pages = int(source.get("max_pages", 5))
+        overlap = int(source.get("overlap_seconds", 3 * 86400))
+        if not 1 <= timeout <= 300 or not 1 <= page_size <= 1000 or not 1 <= pages <= 100:
+            raise g.SourceError("feed timeout/page_size/max_pages is outside the supported range")
+        if not 0 <= overlap <= 30 * 86400:
+            raise g.SourceError("feed overlap_seconds is outside the supported range")
+        api_key = str(source.get("api_key", ""))
+        if len(api_key) > 512 or any(ord(ch) < 32 for ch in api_key):
+            raise g.SourceError("feed API key is invalid")
+        params = source.get("params", {}) or {}
+        if not isinstance(params, dict) or any(str(k).casefold() in {"apikey", "api_key", "t", "limit", "offset"} for k in params):
+            raise g.SourceError("feed params must not override API key, mode or pagination")
     previous = state.checkpoint(source_id) or {}
     is_rss = source.get("type") == "rss"
     caps_hash = previous.get("capabilities_sha256")
     category_map: Dict[str, str] = {}
-    if not is_rss and source.get("fetch_caps", True):
+    if not local_path and not is_rss and source.get("fetch_caps", True):
         caps_data = _http_bytes(_torznab_url(endpoint, {"t": "caps"}, api_key), timeout, 8 * 1024 * 1024)
         category_map = _torznab_caps(caps_data)
         caps_hash = g._sha256(caps_data)
         for category_id, label in category_map.items():
             state.add_category(run_id, source_id, label, category_id)
     last_seen = int(previous.get("last_pubdate", 0))
-    cutoff = max(0, last_seen - overlap) if last_seen else 0
+    cutoff = max(0, last_seen - overlap) if last_seen and not local_path else 0
     counters = {"status": "success", "fetched": 0, "parsed": 0, "accepted": 0,
                 "filtered": 0, "rejected": 0, "duplicates": 0, "conflicts": 0,
                 "quarantined": 0, "quarantine_truncated": False,
                 "checkpoint": dict(previous), "errors": []}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
     seen_guids = set()
-    page_count = 1 if is_rss else pages
+    page_count = 1 if local_path or is_rss else pages
     for page in range(page_count):
         start = .1 + .8 * page / page_count
         end = .1 + .8 * (page + 1) / page_count
         middle = (start + end) / 2
-        gp.substage(f"{source_id}: fetching feed page {page + 1}", start, middle)
-        if is_rss:
-            url = endpoint
+        if local_path:
+            gp.substage(f"{source_id}: reading local feed XML", start, middle)
+            path = Path(local_path).expanduser().resolve()
+            if not path.is_file():
+                raise g.SourceError("configured feed XML file does not exist")
+            if path.stat().st_size > g.MAX_HTTP_BYTES:
+                raise g.SourceError("feed XML exceeds the size limit")
+            with path.open("rb") as stream:
+                data = stream.read(g.MAX_HTTP_BYTES + 1)
+            if len(data) > g.MAX_HTTP_BYTES:
+                raise g.SourceError("feed XML exceeds the size limit")
         else:
-            query = dict(params)
-            query.update({"t": "search", "limit": page_size, "offset": page * page_size})
-            url = _torznab_url(endpoint, query, api_key)
-        data = _http_bytes(url, timeout)
+            gp.substage(f"{source_id}: fetching feed page {page + 1}", start, middle)
+            if is_rss:
+                url = endpoint
+            else:
+                query = dict(params)
+                query.update({"t": "search", "limit": page_size, "offset": page * page_size})
+                url = _torznab_url(endpoint, query, api_key)
+            data = _http_bytes(url, timeout)
         items = _rss_items(data, category_map)
         counters["fetched"] += len(items)
         gp.substage(f"{source_id}: processing feed page {page + 1}", middle, end)
@@ -722,10 +738,13 @@ def torznab_source(source: Dict[str, Any], templates, state, run_id: str,
                     counters["quarantined"] += 1
                 else:
                     counters["quarantine_truncated"] = True
-        if is_rss or len(items) < page_size or counters["parsed"] + counters["rejected"] >= max_items:
+        if local_path or is_rss or len(items) < page_size or counters["parsed"] + counters["rejected"] >= max_items:
             break
-    counters["checkpoint"] = {"kind": "rss" if is_rss else "torznab",
-                              "last_pubdate": last_seen, "capabilities_sha256": caps_hash}
+    # A saved feed is not a network scan and must not advance the remote cursor.
+    counters["checkpoint"] = None if local_path else {
+        "kind": "rss" if is_rss else "torznab",
+        "last_pubdate": last_seen, "capabilities_sha256": caps_hash,
+    }
     return counters
 
 
