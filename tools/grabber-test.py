@@ -406,6 +406,41 @@ class GrabberTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["records_matching_multiple_categories"], 0)
         self.assertEqual({c["name"]: c["records"] for c in report["categories"]}, {"Video": 1, "Music": 1})
 
+    def test_inventory_shard_extras_compare_real_serialized_rows(self):
+        record = {"ih": "a" * 40, "title": "Video", "size": 42}
+        extras = {"Year": 2025}
+        entries = {}
+        gi._add_shard(entries, {"Movie": "movies", "Series": "series"},
+                      ["Movie", "Series"], record, extras)
+        [row] = gi._shard_summary(entries)
+        self.assertEqual((row["name"], row["categories"], row["records"], row["torrent_size_bytes"]),
+                         ("movies", ["Movie"], 1, 42))
+        self.assertEqual(row["extra_field_counts"], {"Year": 1})
+        for actual, expected in [(row, record), (row["with_local_provenance"], {**record, "provenance": extras})]:
+            data = (g._json(expected) + "\n").encode()
+            self.assertEqual(actual["catalog_ndjson_bytes"], len(data))
+            self.assertEqual(actual["catalog_zlib_estimate_bytes"], len(zlib.compress(data, 6)))
+        html = gi._render_html({"sources": {"csv": {"status": "failed", "reason": "CSV Git HEAD lookup failed",
+            "category_group_summary": {"shards": [row]}}}})
+        for text in ("CSV Git HEAD lookup failed", "Planned shards", "Year: 1", "With extras: zlib"):
+            self.assertIn(text, html)
+
+    def test_inventory_example_uses_conservative_csv_labels(self):
+        profile = Path(__file__).resolve().parent / "profiles/catalog-inventory.example.json"
+        csv_source, rutor, rutracker = g._load_config(profile)["sources"][:3]
+        groups = g._compile_inventory_title_groups(csv_source)
+        for title, expected in {"Film 2160p.mkv": "MovieUHD", "Film x264 AAC": "Movie",
+                                "Album.FLAC": "MusicLossless", "Album.mp3": "MusicLossy",
+                                "Album.flac + album.mp3": "MusicMixed", "Album.m4a": "MusicUnknown",
+                                "Album 4K.flac": "MusicLossless"}.items():
+            self.assertEqual(next((name for name, patterns in groups.items()
+                                   if any(pattern.search(title) for pattern in patterns)), None), expected)
+        mapping = rutor["inventory_shard_map"]
+        self.assertEqual(mapping["CartoonMovie"], mapping["CartoonSeries"])
+        self.assertEqual(mapping["DocMovie"], mapping["DocSeries"])
+        self.assertEqual(set(rutracker["forum_include_ids"]),
+                         {i for ids in rutracker["category_groups"].values() for i in ids})
+
     def test_source_policy_validation_and_curated_profile(self):
         from grabber_policy import validate_source_policy, policy_revision
         self.assertNotEqual(

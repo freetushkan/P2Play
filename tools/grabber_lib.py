@@ -661,15 +661,18 @@ def _quarantine(quarantine_path: Path, source_id: str, source_ref: str,
 
 
 def _git_revision(repo: Path, data_file: str, file_path: Path) -> Dict[str, Any]:
-    try:
-        commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-                                check=True, capture_output=True, text=True, timeout=15).stdout.strip()
-        blob = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", f"HEAD:{data_file}"],
-                              check=True, capture_output=True, text=True, timeout=15).stdout.strip()
-        worktree = subprocess.run(["git", "-C", str(repo), "hash-object", str(file_path)],
-                                  check=True, capture_output=True, text=True, timeout=15).stdout.strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise SourceError("cannot read local Git revision for CSV source") from exc
+    def git(step, args, timeout):
+        try:
+            return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                                  capture_output=True, text=True, timeout=timeout).stdout.strip()
+        except subprocess.TimeoutExpired as exc:
+            raise SourceError(f"CSV Git {step} timed out after {timeout}s") from exc
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SourceError(f"CSV Git {step} failed (check checkout, permissions and data_file)") from exc
+
+    commit = git("HEAD lookup", ["rev-parse", "--verify", "HEAD"], 15)
+    blob = git("tracked file lookup", ["rev-parse", "--verify", f"HEAD:{data_file}"], 15)
+    worktree = git("worktree hashing", ["hash-object", str(file_path)], 300)
     if not re.fullmatch(r"[0-9a-f]{40,64}", commit) or not re.fullmatch(r"[0-9a-f]{40,64}", blob):
         raise SourceError("Git returned an invalid commit or blob ID")
     return {"commit_oid": commit, "blob_oid": blob, "worktree_oid": worktree}
@@ -745,6 +748,10 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
         path = (repo / data_file).resolve()
         if repo not in path.parents:
             raise SourceError("CSV data_file escapes the configured local checkout")
+        if not path.is_file():
+            raise SourceError("configured CSV file does not exist in local checkout")
+        if path.stat().st_size > MAX_LOCAL_CSV_BYTES:
+            raise SourceError("CSV file exceeds the configured local source size limit")
         revision = _git_revision(repo, data_file, path)
         checkpoint = {**revision, "kind": "git-csv"}
         revision_key = revision["worktree_oid"]

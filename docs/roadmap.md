@@ -316,6 +316,11 @@
       `tools/profiles/catalog-inventory.example.json` с Lossy/Lossless и жанрами
       RuTracker, разделением Movie UHD/HD/DVD/Other и осторожной CSV-классификацией.
       Локальные тесты пройдены; выводы и команда прогона — в `docs/catalog-layout.md`.
+- [x] Уточнён план inventory: нативные категории Rutor сохранены, видео
+      RuTracker приведено к той же схеме, CSV измеряет UHD/4K и музыкальные
+      расширения эвристически. Для категорий и плановых шардов добавлено
+      сравнение NDJSON/zlib с локальными допполями и без них. Ошибки CSV
+      видны в HTML. См. `docs/catalog-layout.md`.
 - [ ] Повторить inventory на исходниках, разобрать degraded, измерить реальные
       размеры шардов и проверить маршрутизацию и лимиты списков до публикации.
 - [ ] Production classification: проверить категории на свежем полном inventory

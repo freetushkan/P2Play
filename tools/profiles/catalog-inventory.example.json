@@ -21,19 +21,22 @@
           "(?i)\\b(?:anime|аниме)\\b",
           "(?i)\\[(?:SubsPlease|HorribleSubs|Erai-raws)\\]"
         ],
-        "Video": [
+        "MovieUHD": [
+          "(?i)(?=.*\\b(?:2160p|4k|uhd|ultra[ ._-]?hd|3840x2160|4096x2160)\\b).*(?:(?:\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob)(?:$|[\\s)\\]]))|(?:\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b))"
+        ],
+        "Movie": [
           "(?i)\\.(?:mkv|mp4|m4v|avi|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob)(?:$|[\\s)\\]])",
           "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b"
         ],
         "MusicMixed": [
-          "(?i)\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD)\\b.*\\b(?:MP3|AAC|OPUS|Vorbis|lossy)\\b",
-          "(?i)\\b(?:MP3|AAC|OPUS|Vorbis|lossy)\\b.*\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD)\\b"
+          "(?i)\\.(?:flac|alac|ape|wav|aiff?|dsf|dff)(?:$|[\\s),;/\\]]).*\\.(?:mp3|aac|opus|mp2|ac3|eac3)(?:$|[\\s),;/\\]])",
+          "(?i)\\.(?:mp3|aac|opus|mp2|ac3|eac3)(?:$|[\\s),;/\\]]).*\\.(?:flac|alac|ape|wav|aiff?|dsf|dff)(?:$|[\\s),;/\\]])"
         ],
         "MusicLossless": [
-          "(?i)\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD)\\b"
+          "(?i)\\.(?:flac|alac|ape|wav|aiff?|dsf|dff)(?:$|[\\s),;/\\]])"
         ],
         "MusicLossy": [
-          "(?i)\\b(?:MP3|AAC|OPUS|Vorbis)\\b"
+          "(?i)\\.(?:mp3|aac|opus|mp2|ac3|eac3)(?:$|[\\s),;/\\]])"
         ],
         "MusicUnknown": [
           "(?i)\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD(?:-R)?|MP3|AAC|M4A|OPUS|OGG|Vorbis|WMA|AC3|DTS|MQA)\\b"
@@ -47,13 +50,25 @@
             "(?i)\\b(?:DVDRip|DVD-Rip|BDRip|BRRip|BluRay|Blu-Ray|WEBRip|WEB-DL|WEB-DLRip|HDTV|HDRip|REMUX|AVC|HEVC|H\\.264|H\\.265|x264|x265|XviD)\\b",
             "(?i)\\b(?:FLAC|ALAC|APE|WV|WavPack|WAV|AIFF|DSD(?:64|128|256|512)?|DSF|DFF|SACD(?:-R)?|MP3|AAC|M4A|OPUS|OGG|Vorbis|WMA|AC3|DTS|MQA)\\b",
             "(?i)\\b(?:anime|аниме)\\b",
-            "(?i)\\[(?:SubsPlease|HorribleSubs|Erai-raws)\\]"
+            "(?i)\\[(?:SubsPlease|HorribleSubs|Erai-raws)\\]",
+            "(?i)\\.(?:flac|alac|ape|wav|aiff?|dsf|dff)(?:$|[\\s),;/\\]])",
+            "(?i)\\.(?:mp3|aac|opus|mp2|ac3|eac3)(?:$|[\\s),;/\\]])"
           ],
           "exclude": []
         }
       },
       "inventory_category_mode": "first",
-      "_how_to_get": "git clone https://codeberg.org/heretic/torrents-csv-data.git"
+      "_how_to_get": "git clone https://codeberg.org/heretic/torrents-csv-data.git",
+      "inventory_shard_map": {
+        "Anime": "anime",
+        "MovieUHD": "movies-uhd",
+        "Movie": "movies",
+        "MusicMixed": "music-other",
+        "MusicLossless": "music-lossless",
+        "MusicLossy": "music-lossy",
+        "MusicUnknown": "music-other",
+        "Other": "other"
+      }
     },
     {
       "id": "rutor",
@@ -65,7 +80,18 @@
       "remote_enabled": false,
       "url": "",
       "timeout": 30,
-      "_how_to_get": "wget http://releases.yourok.ru/torr/rutor.ls"
+      "_how_to_get": "wget http://releases.yourok.ru/torr/rutor.ls",
+      "inventory_shard_map": {
+        "Anime": "anime",
+        "Movie": "movies",
+        "Series": "series",
+        "CartoonMovie": "cartoons",
+        "CartoonSeries": "cartoons",
+        "DocMovie": "documentaries",
+        "DocSeries": "documentaries",
+        "TVShow": "tv",
+        "Other": "other"
+      }
     },
     {
       "id": "rutracker",
@@ -810,7 +836,7 @@
           "1959",
           "2537"
         ],
-        "MovieDVD": [
+        "Movie": [
           "93",
           "100",
           "101",
@@ -819,9 +845,7 @@
           "905",
           "1576",
           "1670",
-          "2220"
-        ],
-        "MovieHD": [
+          "2220",
           "140",
           "194",
           "312",
@@ -830,9 +854,7 @@
           "2198",
           "2199",
           "2201",
-          "2339"
-        ],
-        "MovieOther": [
+          "2339",
           "7",
           "22",
           "106",
@@ -856,9 +878,7 @@
           "2200",
           "2221",
           "2459",
-          "2540"
-        ],
-        "MovieUHD": [
+          "2540",
           "271",
           "272",
           "718",
@@ -904,7 +924,7 @@
           "2512",
           "2513"
         ],
-        "MusicLosslessElectronic": [
+        "MusicLossless": [
           "466",
           "797",
           "1818",
@@ -926,9 +946,7 @@
           "1880",
           "1894",
           "1945",
-          "1947"
-        ],
-        "MusicLosslessJazzBlues": [
+          "1947",
           "2277",
           "2278",
           "2279",
@@ -945,9 +963,7 @@
           "2293",
           "2296",
           "2297",
-          "2353"
-        ],
-        "MusicLosslessOther": [
+          "2353",
           "134",
           "556",
           "557",
@@ -980,9 +996,7 @@
           "2085",
           "2307",
           "2308",
-          "2430"
-        ],
-        "MusicLosslessPop": [
+          "2430",
           "425",
           "429",
           "714",
@@ -992,9 +1006,7 @@
           "1753",
           "2270",
           "2500",
-          "2502"
-        ],
-        "MusicLosslessRock": [
+          "2502",
           "172",
           "464",
           "731",
@@ -1028,7 +1040,7 @@
           "2230",
           "2329"
         ],
-        "MusicLossyElectronic": [
+        "MusicLossy": [
           "406",
           "454",
           "460",
@@ -1057,15 +1069,11 @@
           "1895",
           "1944",
           "1946",
-          "2229"
-        ],
-        "MusicLossyJazzBlues": [
+          "2229",
           "2287",
           "2288",
           "2295",
-          "2298"
-        ],
-        "MusicLossyOther": [
+          "2298",
           "282",
           "436",
           "441",
@@ -1103,9 +1111,7 @@
           "2309",
           "2310",
           "2311",
-          "2331"
-        ],
-        "MusicLossyPop": [
+          "2331",
           "424",
           "428",
           "735",
@@ -1119,9 +1125,7 @@
           "2501",
           "2503",
           "2504",
-          "2505"
-        ],
-        "MusicLossyRock": [
+          "2505",
           "202",
           "236",
           "463",
@@ -1186,6 +1190,21 @@
           "2267",
           "2377"
         ]
+      },
+      "inventory_shard_map": {
+        "Series": "series",
+        "CartoonMovie": "cartoons",
+        "CartoonSeries": "cartoons",
+        "Anime": "anime",
+        "DocMovie": "documentaries",
+        "TVShow": "tv",
+        "Movie": "movies",
+        "MusicHiResReview": "music-other",
+        "MusicLossless": "music-lossless",
+        "MusicLossy": "music-lossy",
+        "MusicMixed": "music-other",
+        "MusicUnknown": "music-other",
+        "Other": "other"
       }
     },
     {

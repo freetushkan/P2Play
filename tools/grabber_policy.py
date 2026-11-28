@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Dict, Optional
 
 
@@ -21,6 +22,13 @@ def validate_source_policy(source: Dict[str, Any]) -> None:
             if not value.isdigit() or value in seen:
                 raise ValueError("forum IDs must be numeric and belong to only one group")
             seen.add(value)
+    shard_map = source.get("inventory_shard_map", {})
+    if not isinstance(shard_map, dict) or len(shard_map) > 128 or any(
+        not isinstance(name, str) or not 1 <= len(name) <= 128
+        or not isinstance(shard, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", shard)
+        for name, shard in shard_map.items()
+    ):
+        raise ValueError("inventory_shard_map must map category names to valid shard names")
     extras = source.get("extra_fields", {})
     if not isinstance(extras, dict) or any(
         key not in {"description", "history", "duplicate_hints"} or not isinstance(value, bool)

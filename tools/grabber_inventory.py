@@ -206,6 +206,53 @@ class _CatalogSize:
                 "catalog_zlib_estimate_bytes": self.compressed}
 
 
+class _ExtraSizes:
+    """Compare the same catalog rows with and without stored local provenance."""
+    def __init__(self):
+        self.base = _CatalogSize()
+        self.enriched = _CatalogSize()
+        self.keys = {}
+
+    def add(self, record, provenance):
+        self.base.add(record)
+        self.enriched.add({**record, "provenance": provenance} if provenance else record)
+        for key in provenance:
+            self.keys[key] = self.keys.get(key, 0) + 1
+
+    def result(self):
+        return {**self.base.result(), "extra_field_counts": self.keys,
+                "with_local_provenance": self.enriched.result()}
+
+
+def _plan_entry(entries, shard):
+    if shard not in entries:
+        entries[shard] = ({**_empty_category(shard), "categories": set()}, _ExtraSizes())
+    return entries[shard]
+
+
+def _add_shard(entries, mapping, names, record, provenance):
+    # Assign each hash once. For multiple labels prefer the first mapped label.
+    category = next((name for name in names if name in mapping), None)
+    entry, sizes = _plan_entry(entries, mapping.get(category, "other"))
+    entry["categories"].add(category or "Other")
+    if "del" in record:
+        entry["deleted_topics"] += 1
+    else:
+        entry["records"] += 1
+        sizes.add(record, provenance)
+        value = record.get("size")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            entry["records_with_size"] += 1
+            entry["torrent_size_bytes"] += value
+        else:
+            entry["records_without_size"] += 1
+
+
+def _shard_summary(entries):
+    return [{**entry, "categories": sorted(entry["categories"]), **sizes.result()}
+            for _, (entry, sizes) in sorted(entries.items())]
+
+
 def _source_metrics(state: g.State, source_id: str, total=None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     metrics: Dict[str, Any] = {
         "unique_infohashes": 0,
@@ -309,8 +356,11 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any], total=None)
               for name, ids in configured.items()}
     by_id = {str(i): name for name, ids in configured.items() for i in ids}
     ungrouped = _empty_category("Other")
-    sizes = {name: _CatalogSize() for name in groups}
-    other_size = _CatalogSize()
+    sizes = {name: _ExtraSizes() for name in groups}
+    other_size = _ExtraSizes()
+    mapping = source.get("inventory_shard_map", {})
+    shards = {shard: ({**_empty_category(shard), "categories": set()}, _ExtraSizes())
+              for shard in set(mapping.values())}
     observed_ids = set()
     for row in gp.track(state.db.execute(
         "SELECT record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
@@ -322,11 +372,13 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any], total=None)
         entry = groups[group] if group is not None else ungrouped
         if group is None and provenance.get("forum_id"):
             observed_ids.add(str(provenance["forum_id"]))
+        if mapping:
+            _add_shard(shards, mapping, [group or "Other"], record, provenance)
         if "del" in record:
             entry["deleted_topics"] += 1
             continue
         entry["records"] += 1
-        (sizes[group] if group is not None else other_size).add(record)
+        (sizes[group] if group is not None else other_size).add(record, provenance)
         size = record.get("size")
         if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
             entry["records_with_size"] += 1
@@ -339,6 +391,7 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any], total=None)
     ungrouped.update(other_size.result())
     ungrouped["forum_count"] = len(observed_ids)
     return {"groups": list(groups.values()), "ungrouped": ungrouped,
+            "shards": _shard_summary(shards),
             "basis": "current profile category_groups applied to stored provenance forum_id"}
 
 
@@ -346,28 +399,34 @@ def _category_summary(state: g.State, source: Dict[str, Any], categories, total=
     """Native/heuristic categories for all non-forum sources; labels may overlap."""
     entries = {c["name"]: {**_empty_category(c["name"]), "forum_count": None}
                for c in categories if c["name"] != "Other"}
-    sizes = {name: _CatalogSize() for name in entries}
+    sizes = {name: _ExtraSizes() for name in entries}
     other = {**_empty_category("Other"), "forum_count": None}
-    other_size = _CatalogSize()
+    other_size = _ExtraSizes()
+    mapping = source.get("inventory_shard_map", {})
+    shards = {shard: ({**_empty_category(shard), "categories": set()}, _ExtraSizes())
+              for shard in set(mapping.values())}
     for row in gp.track(state.db.execute(
-        "SELECT record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
+        "SELECT record_json,categories_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
         (source["id"],),
     ), total):
         record = json.loads(row["record_json"])
         names = list(dict.fromkeys(json.loads(row["categories_json"] or "[]")))
+        provenance = json.loads(row["provenance_json"] or "{}")
+        if mapping:
+            _add_shard(shards, mapping, names or ["Other"], record, provenance)
         for name in names or [None]:
             if name is None or name == "Other":
                 entry, size = other, other_size
             else:
                 if name not in entries:
                     entries[name] = {**_empty_category(name), "forum_count": None}
-                    sizes[name] = _CatalogSize()
+                    sizes[name] = _ExtraSizes()
                 entry, size = entries[name], sizes[name]
             if "del" in record:
                 entry["deleted_topics"] += 1
                 continue
             entry["records"] += 1
-            size.add(record)
+            size.add(record, provenance)
             value = record.get("size")
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 entry["records_with_size"] += 1
@@ -378,6 +437,7 @@ def _category_summary(state: g.State, source: Dict[str, Any], categories, total=
         entry.update(sizes[name].result())
     other.update(other_size.result())
     return {"groups": list(entries.values()), "ungrouped": other,
+            "shards": _shard_summary(shards),
             "basis": "stored native/heuristic categories; multiple labels may overlap"}
 
 
@@ -655,17 +715,26 @@ def _format_bytes(value: Any) -> str:
     return f"{number:,} B"
 
 
+def _extra_html_row(entry, esc):
+    enriched = entry.get("with_local_provenance", {})
+    keys = ", ".join(f"{key}: {count:,}" for key, count in sorted(entry.get("extra_field_counts", {}).items()))
+    return (f"<td>{_format_bytes(enriched.get('catalog_ndjson_bytes'))}</td>"
+            f"<td>{_format_bytes(enriched.get('catalog_zlib_estimate_bytes'))}</td><td>{esc(keys or '—')}</td>")
+
+
 def _group_html_row(entry: Dict[str, Any], esc, label: Optional[str] = None) -> str:
+    details = ", ".join(entry["categories"]) or "—" if "categories" in entry else entry.get("forum_count")
     return (
         f"<tr><td>{esc(label if label is not None else entry.get('name'))}</td>"
-        f"<td class='num'>{entry.get('forum_count') if entry.get('forum_count') is not None else '—'}</td>"
+        f"<td class='num'>{esc(details)}</td>"
         f"<td class='num'>{int(entry.get('records', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('deleted_topics', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_with_size', 0)):,}</td>"
         f"<td class='num'>{int(entry.get('records_without_size', 0)):,}</td>"
         f"<td class='num'>{_format_bytes(entry.get('torrent_size_bytes'))}</td>"
         f"<td class='num'>{_format_bytes(entry.get('catalog_ndjson_bytes'))}</td>"
-        f"<td class='num'>{_format_bytes(entry.get('catalog_zlib_estimate_bytes'))}</td></tr>"
+        f"<td class='num'>{_format_bytes(entry.get('catalog_zlib_estimate_bytes'))}</td>"
+        + _extra_html_row(entry, esc) + "</tr>"
     )
 
 
@@ -673,7 +742,7 @@ def _render_html(report: Dict[str, Any]) -> str:
     esc = lambda value: html.escape(str(value if value is not None else "—"), quote=True)
     created = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(int(report.get("created_at", 0))))
     sources = {key: value for key, value in report.get("sources", {}).items()
-               if _visible_source(value)}
+               if _visible_source(value) or value.get("status") == "failed"}
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
@@ -778,16 +847,27 @@ def _render_html(report: Dict[str, Any]) -> str:
                 "<h3>Category summary</h3><div class='table-wrap'><table><thead><tr>"
                 "<th>Category</th><th>Included forums</th><th>Active</th><th>Deleted</th>"
                 "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
-                "<th>Catalog NDJSON</th><th>Catalog zlib estimate</th>"
+                "<th>Without extras: NDJSON</th><th>Without extras: zlib</th>"
+                "<th>With extras: NDJSON</th><th>With extras: zlib</th><th>Observed extra fields (rows)</th>"
                 "</tr></thead><tbody>" + "".join(group_rows) + "</tbody></table></div>"
                 "<p class='muted'>Categories from current forum rules (RuTracker) or stored labels. "
                 "Other is last. Included forums applies only to forum sources; — means not applicable. "
                 "Multiple native/heuristic labels may overlap; source totals deduplicate hashes. "
                 "Deleted entries contribute no catalog or payload bytes. Cached data retains its scan scope.</p>"
             )
+        if summary and summary.get("shards"):
+            shard_rows = "".join(_group_html_row(entry, esc) for entry in summary["shards"])
+            group_html += (
+                "<h3>Planned shards (inventory only)</h3><div class='table-wrap'><table><thead><tr>"
+                "<th>Shard</th><th>Assigned categories</th><th>Active</th><th>Deleted</th>"
+                "<th>With size</th><th>Without size</th><th>Payload size sum</th>"
+                "<th>Without extras: NDJSON</th><th>Without extras: zlib</th>"
+                "<th>With extras: NDJSON</th><th>With extras: zlib</th><th>Observed extra fields (rows)</th>"
+                "</tr></thead><tbody>" + shard_rows + "</tbody></table></div>"
+            )
         parts.append(
             f"<section><h2>{esc(source_id)} <small>({esc(source.get('type'))})</small></h2>"
-            f"<p class='muted'>{esc(source.get('category_model', ''))} · scope: {esc(source.get('scope'))}</p>"
+            f"<p class='muted'>{esc(source.get('category_model', ''))} · scope: {esc(source.get('scope'))} · status: {esc(source.get('status'))}</p>"
             "<div class='metrics'>"
             f"<div><b>{int(metrics.get('active_records', 0)):,}</b><span>active records</span></div>"
             f"<div><b>{int(metrics.get('unique_infohashes', 0)):,}</b><span>unique hashes incl. deletions</span></div>"
@@ -810,7 +890,9 @@ def _render_html(report: Dict[str, Any]) -> str:
             + ("</details>" if summary is not None else "") +
             "<p class='muted'>Catalog NDJSON includes live normalized records and newlines only. "
             "Zlib level-6 estimate uses independent 8 MiB segments; not actual publisher codec output, "
-            "SQLite size, manifest, torrent or media packs.</p></section>"
+            "SQLite size, manifest, torrent or media packs. With extras adds stored local provenance "
+            "under a hypothetical provenance key; it is not part of published records. "
+            "Disabled or never collected extras cannot be estimated from this scan.</p></section>"
         )
 
     intersections = [r for r in report.get("source_intersections", [])
