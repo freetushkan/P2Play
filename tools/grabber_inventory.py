@@ -23,6 +23,61 @@ SNAPSHOT_SOURCE_TYPES = {"csv", "torrents-csv-data", "rutor", "rutracker", "temp
 FEED_SOURCE_TYPES = {"rss", "torznab", "jackett-torznab"}
 
 
+def _field_summary(source: Dict[str, Any], source_type: str) -> List[Dict[str, str]]:
+    # Describe extraction rules, not observed columns (cached rows may use older rules).
+    if source_type in {"csv", "torrents-csv-data"}:
+        rows = [
+            ("infohash, name, size_bytes, files", "ih, title, size, files", "record"),
+            (str(source.get("date_field", "created_unix")), "date", "record"),
+            ("published, scraped_date, seeders, leechers, completed",
+             "same names (valid integers only)", "local provenance"),
+        ]
+    elif source_type == "rutor":
+        rows = [
+            ("Hash / Magnet xt", "ih", "record"),
+            ("Title, CreateDate, Size", "title, date, size", "record"),
+            ("Categories, Magnet tr", "tags, trackers", "record"),
+            ("Name, Names, Year, Link, IMDBID, KPID, VideoQuality, AudioQuality, Seed, Peer",
+             "same names (non-empty; 8 KiB combined limit)", "local provenance"),
+        ]
+    elif source_type == "rutracker":
+        rows = [
+            ("torrent@hash, title, topic@size", "ih, title, size", "record"),
+            ("topic@unixts / topic@registred_at", "date", "record"),
+            ("file elements, forum, torrent@tracker_id", "files (count), tags, trackers", "record"),
+            ("topic@id, forum@id, forum, topic@registred_at, topic@unixts, torrent@tracker_id",
+             "topic_id, forum_id, forum, registred_at, unixts, tracker_id", "local provenance"),
+        ]
+        extras = source.get("extra_fields", {})
+        for option, field, output in (("description", "content", "content_text"),
+                                      ("history", "old", "old"),
+                                      ("duplicate_hints", "dup", "dup_hints")):
+            enabled = extras.get(option, True)
+            rows.append((field, output if enabled else "—", "local provenance" if enabled
+                         else f"dropped (extra_fields.{option}=false)"))
+    else:
+        return []
+    rows.append(("Other unlisted fields", "—", "not extracted"))
+    return [{"input": field, "output": output, "destination": destination}
+            for field, output, destination in rows]
+
+
+def _field_summary_html(rows: List[Dict[str, str]], esc) -> str:
+    if not rows:
+        return ""
+    return (
+        "<details><summary>Field mapping and extra fields</summary>"
+        "<p class='muted'>Current profile rules for live records, not a scan of input keys. "
+        "Local provenance is never published. Cached rows may reflect older rules.</p>"
+        "<div class='table-wrap'><table><thead><tr><th>Source field(s)</th>"
+        "<th>Output field(s)</th><th>Destination</th></tr></thead><tbody>"
+        + "".join("<tr>" + "".join(f"<td>{esc(row[key])}</td>"
+                                   for key in ("input", "output", "destination")) + "</tr>"
+                  for row in rows)
+        + "</tbody></table></div></details>"
+    )
+
+
 def _safe_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_") or "source"
 
@@ -465,6 +520,9 @@ def _write_reports(
             "metrics": metrics,
             "categories": categories,
         }
+        field_summary = _field_summary(source, source_type)
+        if field_summary:
+            source_report["field_summary"] = field_summary
         if source_type != "rutracker":
             source_report["category_group_summary"] = _category_summary(state, source, categories)
         if source_type == "rutracker":
@@ -727,6 +785,7 @@ def _render_html(report: Dict[str, Any]) -> str:
             f"<div><b>{_format_bytes(metrics.get('catalog_ndjson_bytes'))}</b><span>Catalog NDJSON</span></div>"
             f"<div><b>{_format_bytes(metrics.get('catalog_zlib_estimate_bytes'))}</b><span>Catalog zlib estimate</span></div>"
             f"</div>{warning_html}{group_html}"
+            + _field_summary_html(source.get("field_summary", []), esc)
             + ("<details><summary>Native category / forum details</summary>" if summary is not None else "") +
             "<div class='table-wrap'><table><thead><tr>"
             "<th>Category / forum</th><th>Native ID(s)</th><th>Records</th><th>Deleted topics</th>"

@@ -306,7 +306,14 @@
 - [x] Inventory report: единая Category-сводка, NDJSON bytes и оценка zlib для
       всех источников; отключённые/пустые источники скрыты в HTML, JSON сохраняет
       диагностику; Anime выделен для Rutor/RuTracker и первой CSV-группы в профиле.
-      `tools/grabber-test.py` входит в Linux CI. См. `docs/grabber.md`.
+      `tools/grabber-test.py` входит в Linux CI. См. `docs/grabber.md`. 
+- [x] Inventory: сводка исходных → конечных полей CSV/Rutor/RuTracker в JSON
+      и под катом HTML; явно отмечены provenance и отключённые поля. Добавлен
+      `tools/profiles/catalog-inventory.example.json` с Lossy/Lossless и жанрами
+      RuTracker, разделением Movie UHD/HD/DVD/Other и осторожной CSV-классификацией.
+      Локальные тесты пройдены; выводы и команда прогона — в `docs/catalog-layout.md`.
+- [ ] Повторить inventory на исходниках, разобрать degraded, измерить реальные
+      размеры шардов и проверить маршрутизацию и лимиты списков до публикации.
 - [ ] Production classification: проверить категории на свежем полном inventory
       и на выборках источников; отчётный расчёт не заменяет экспертную классификацию.
 

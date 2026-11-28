@@ -425,6 +425,16 @@ class GrabberTests(unittest.TestCase):
         self.assertTrue(report["html_report"].endswith("inventory-report.html"))
         html_report = Path(report["html_report"]).read_text(encoding="utf-8")
         self.assertIn("Source overview", html_report)
+        self.assertIn("<details><summary>Field mapping and extra fields</summary>", html_report)
+        self.assertIn({"input": "created_unix", "output": "date", "destination": "record"},
+                      csv["field_summary"])
+        self.assertTrue(any(row["output"] == "ih" and row["input"] == "Hash / Magnet xt"
+                            for row in rutor["field_summary"]))
+        disabled = gi._field_summary({"extra_fields": {"description": False}}, "rutracker")
+        self.assertIn({"input": "content", "output": "—",
+                       "destination": "dropped (extra_fields.description=false)"}, disabled)
+        self.assertIn({"input": "dup", "output": "dup_hints", "destination": "local provenance"},
+                      disabled)
         self.assertIn("Video", html_report)
         self.assertIn("Audio", html_report)
         self.assertEqual(rutor["status"], "success")

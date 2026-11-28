@@ -308,6 +308,15 @@ CSV categories and are never copied into publisher tags. They help estimate the
 audio/video split, not decide the final taxonomy. Rutor's native `Anime` category
 remains independently visible and is not merged into Movie/Series.
 
+For CSV, Rutor and RuTracker, expand **Field mapping and extra fields** to see
+source → normalized field names and distinguish record fields, local provenance
+and dropped inputs. The same rules appear in each source's JSON `field_summary`.
+These are current adapter/profile rules, not observed headers; cached data may
+reflect older rules. The profile setting for optional RuTracker extraction is
+`extra_fields` (not `extra_headers`). `extra_info` is a diagnostic size estimate,
+not a publisher field. See [catalog layout](catalog-layout.md) for the updated
+inventory profile and the shard-sizing runbook.
+
 The HTML companion report is written next to the JSON report using the same basename
 with a `.html` extension. It contains source overview tables, category counts and
 payload-size totals, per-source warnings/filter counters and pairwise hash intersections.
