@@ -84,7 +84,7 @@
     }
     function record(hash) {
         if (!HASH.test(hash)) fail(400, "Select a v1 (40-character) torrent hash.");
-        var r = daemon("get", "/api/catalog/" + hash.toLowerCase());
+        var r = daemon("get", "/api/v1/catalog/" + hash.toLowerCase());
         if (!HASH.test(r.hash) || r.hash.toLowerCase() !== hash.toLowerCase()) fail(502, "Daemon returned the wrong torrent.");
         return r;
     }
@@ -139,17 +139,17 @@
     route("get", "/api/search", 10, function (req, res) {
         var q = text(req.query.q, 512), tag = text(req.query.tag, 128);
         var limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
-        var data = daemon("get", "/api/catalog/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag) + "&limit=" + limit);
+        var data = daemon("get", "/api/v1/catalog/search?q=" + encodeURIComponent(q) + "&tag=" + encodeURIComponent(tag) + "&limit=" + limit);
         if (!Array.isArray(data.results)) fail(502, "Invalid daemon search response.");
         res.json({ results: data.results.slice(0, limit).map(publicRecord) });
     });
     route("get", "/api/record", 10, function (req, res) { res.json(publicRecord(record(text(req.query.hash, 64)))); });
-    route("get", "/api/lists", 10, function (req, res) { res.json(publicLists(daemon("get", "/api/lists"))); });
-    route("get", "/api/discover", 10, function (req, res) { res.json(publicLists(daemon("get", "/api/lists/discover"))); });
+    route("get", "/api/lists", 10, function (req, res) { res.json(publicLists(daemon("get", "/api/v1/lists"))); });
+    route("get", "/api/discover", 10, function (req, res) { res.json(publicLists(daemon("get", "/api/v1/lists/discover"))); });
     route("post", "/api/subscribe", 50, function (req, res) {
         var key = req.body.pubkey;
         if (!PUBKEY.test(key)) fail(400, "A 64-character list public key is required.");
-        daemon("post", "/api/lists/" + key.toLowerCase(), {});
+        daemon("post", "/api/v1/lists/" + key.toLowerCase(), {});
         res.status(202).json({ status: "subscribing" });
     });
     route("post", "/api/add", 10, function (req, res) {

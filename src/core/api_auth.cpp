@@ -1,14 +1,12 @@
-// The entry of every request: errors caught, the public routes, who sends it (auth.hpp):
-// a token on /api (the native API, Silo's scheme, api_silo.cpp), Basic on the MatriX
-// routes (api_matrix.cpp, a compatibility layer). One set of users for both.
-
+// P2Play HTTP entry point: public identity/login routes, durable-token authentication,
+// the embedded web UI and the native, versioned REST API.
 #include "core_torrent.hpp"
 #include "ui_files.hpp"
 
 #include <cctype>
+#include <vector>
 
 namespace p2p {
-
     using nlohmann::json;
 
     namespace {
@@ -17,7 +15,11 @@ namespace p2p {
             return res.send(status, "application/json; charset=utf-8", json{{"error", message}}.dump(), headers);
         }
 
-        // /api/v1/torrents/<hash>/files/<index>/stream and nothing else
+        std::string tokenCookie(const std::string &token, int maxAge, const std::string &prefix) {
+            return "p2play_token=" + token + "; Path=" + (prefix.empty() ? "/" : prefix) +
+                   "; Max-Age=" + std::to_string(maxAge) + "; HttpOnly; SameSite=Lax";
+        }
+
         bool internalStreamPath(const std::string &path) {
             if (path.rfind("/api/v1/torrents/", 0) != 0) return false;
             const size_t files = path.find("/files/");
@@ -25,150 +27,130 @@ namespace p2p {
             const size_t index = files + 7;
             const size_t stream = path.find("/stream", index);
             if (stream == std::string::npos || stream != path.size() - 7 || stream == index) return false;
-            for (size_t i = index; i < stream; i++) {
-                if (path[i] < '0' || path[i] > '9') return false;
-            }
-            for (size_t i = 17; i < files; i++) {
-                if (!isxdigit(static_cast<unsigned char>(path[i]))) return false;
-            }
+            for (size_t i = index; i < stream; ++i) if (!std::isdigit(static_cast<unsigned char>(path[i]))) return false;
+            for (size_t i = 17; i < files; ++i) if (!std::isxdigit(static_cast<unsigned char>(path[i]))) return false;
             return true;
         }
 
-        std::string tokenCookie(const std::string &token, int maxAge) {
-            return "silo_token=" + token + "; Path=/; Max-Age=" + std::to_string(maxAge) + "; HttpOnly; SameSite=Lax";
+        std::vector<std::string> pathParts(const std::string &path) {
+            std::vector<std::string> parts;
+            size_t pos = 0;
+            while (pos < path.size()) {
+                const size_t end = path.find('/', pos);
+                if (end != pos) parts.push_back(path.substr(pos, end == std::string::npos ? std::string::npos : end - pos));
+                if (end == std::string::npos) break;
+                pos = end + 1;
+            }
+            return parts;
         }
     }
 
-    // an exception (a torrent closed meanwhile: its handle throws) ends the request, not the
-    // process
     void Core::handle(const HttpRequest &req, HttpResponse &res) {
         try {
             route(req, res);
         } catch (const std::exception &e) {
             log("[Web] %s %s failed: %s", req.method.c_str(), req.path.c_str(), e.what());
-            if (!res.started()) {
-                error(res, 500, e.what());
-            }
+            if (!res.started()) error(res, 500, e.what());
         }
     }
 
     void Core::route(const HttpRequest &req, HttpResponse &res) {
-        const std::string &p = req.path;
-        const bool get = req.method == "GET" || req.method == "HEAD";
-        const bool post = req.method == "POST";
-
-        // MatriX compatibility discovery is absent from standard builds.
-#if P2P_COMPAT_MATRIX
-        if (get && p == "/echo") {
-            res.text(200, echo());
-            return;
-        }
-#endif
-        // the web interface: the Silo plugin's pages (plugins/mediamesh), at /ui/; a browser at /
-        // goes there, anything else gets the node's card. It logs in through /api/auth/login.
-        if (get && p == "/") {
-            if (req.header("accept").find("text/html") != std::string::npos) {
-                res.send(302, "text/plain; charset=utf-8", "/ui/\n", {{"Location", "/ui/"}});
+        std::string path = req.path;
+        if (!m_config.httpPrefix.empty()) {
+            if (path == m_config.httpPrefix) {
+                path = "/";
+            } else if (path.rfind(m_config.httpPrefix + "/", 0) == 0) {
+                path.erase(0, m_config.httpPrefix.size());
             } else {
-                res.json(200, json{{"name", "P2Play"}, {"version", version()}, {"auth", true}}.dump());
-            }
-            return;
-        }
-        if (get && (p == "/ui" || p.rfind("/ui/", 0) == 0)) {
-            if (p == "/ui") {
-                res.send(301, "text/plain; charset=utf-8", "/ui/\n", {{"Location", "/ui/"}});
-                return;
-            }
-            const UiFile *f = uiFile(p == "/ui/" ? "/index.html" : p.substr(3));
-            if (!f) {
                 error(res, 404, "not found");
                 return;
             }
-            // the plugin's policy in Silo, the same here
-            res.send(200, f->type, std::string(reinterpret_cast<const char *>(f->data), f->size),
-                     {{"Cache-Control", "no-cache"}, {"X-Content-Type-Options", "nosniff"}, {"Referrer-Policy", "no-referrer"},
-                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; "
-                                                  "connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"}});
-            return;
         }
-        if (get && p == "/api/system/ping") {
-            res.json(200, json{{"status", "ok"}}.dump());
-            return;
-        }
-        // Native product identity is intentionally separate from the TorrServer/Silo
-        // compatibility endpoints below. Keep this probe public for client discovery.
-        if (get && p == "/api/p2play/version") {
-            res.json(200, json{{"name", "P2Play"}, {"version", productVersion()}}.dump());
-            return;
-        }
-        if (post && p == "/api/auth/login") {
-            json body = json::parse(req.body, nullptr, false);
-            const std::string name = body.is_object() ? body.value("username", "") : "";
-            User u = body.is_object() && body.value("password", json()).is_string()
-                             ? m_auth.login(name, body.value("password", ""))
-                             : User();
-            if (!u.valid() && name == Auth::kOwner && !m_auth.passwordSet()) {
-                // no password yet: the first one given becomes the owner's (Silo's clients ask a
-                // login anyway; a console has no other place to set it)
-                const std::string password = body.value("password", json()).is_string() ? body["password"].get<std::string>() : "";
-                u = password.empty() ? m_auth.find(Auth::kOwner) : m_auth.claimOwner(password);
-                if (u.valid() && !password.empty()) {
-                    log("[Auth] the owner's password set at the first login, from %s", req.peer.c_str());
-                }
-            }
-            if (!u.valid()) {
-                log("[Web] failed login for \"%s\" from %s", name.c_str(), req.peer.c_str());
-                error(res, name.empty() ? 400 : 401, name.empty() ? "invalid request format" : "invalid username or password");
-                return;
-            }
-            res.send(200, "application/json; charset=utf-8", json{{"user", u.json(true)}, {"token", u.token}}.dump(),
-                     {{"Set-Cookie", tokenCookie(u.token, 3600 * 24 * 30)}});
-            return;
-        }
-        if (post && p == "/api/auth/logout") {
-            res.send(200, "application/json; charset=utf-8", json{{"status", "logged out"}}.dump(),
-                     {{"Set-Cookie", tokenCookie("", -1)}});
+        const bool get = req.method == "GET" || req.method == "HEAD";
+        const bool post = req.method == "POST";
+
+        if (get && path == "/") {
+            if (req.header("accept").find("text/html") != std::string::npos)
+                res.send(302, "text/plain; charset=utf-8", m_config.httpPrefix + "/ui/\n", {{"Location", m_config.httpPrefix + "/ui/"}});
+            else
+                res.json(200, json{{"name", "P2Play"}, {"version", productVersion()}, {"auth", true}}.dump());
             return;
         }
 
-        // the native API: Silo's tokens
-        if (p.rfind("/api/", 0) == 0) {
-            const User user = m_auth.byToken(req);
-            if (user.valid()) {
-                routeSilo(req, res, user);
+        if (get && (path == "/ui" || path.rfind("/ui/", 0) == 0)) {
+            if (path == "/ui") {
+                res.send(301, "text/plain; charset=utf-8", m_config.httpPrefix + "/ui/\n", {{"Location", m_config.httpPrefix + "/ui/"}});
                 return;
             }
-            // The core's own ffmpeg (covers.cpp) reads one stream over loopback for the cover
-            // probe. It presents a random per-run token, is accepted from 127.0.0.1 only, and
-            // reaches nothing but the stream route: no other /api route knows this header.
+            const UiFile *file = uiFile(path == "/ui/" ? "/index.html" : path.substr(3));
+            if (!file) { error(res, 404, "not found"); return; }
+            res.send(200, file->type, std::string(reinterpret_cast<const char *>(file->data), file->size),
+                     {{"Cache-Control", "no-cache"}, {"X-Content-Type-Options", "nosniff"},
+                      {"Referrer-Policy", "no-referrer"},
+                      {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'"}});
+            return;
+        }
+
+        if (get && path == "/api/v1/system/ping") {
+            res.json(200, json{{"status", "ok"}}.dump());
+            return;
+        }
+        if (get && path == "/api/v1/system/version") {
+            res.json(200, json{{"name", "P2Play"}, {"version", productVersion()}}.dump());
+            return;
+        }
+
+        if (post && path == "/api/v1/auth/login") {
+            const json body = json::parse(req.body, nullptr, false);
+            const std::string name = body.is_object() ? body.value("username", std::string()) : std::string();
+            const std::string password = body.is_object() && body.value("password", json()).is_string()
+                                             ? body["password"].get<std::string>() : std::string();
+            User user = m_auth.login(name, password);
+            if (!user.valid() && name == Auth::kOwner && !m_auth.passwordSet())
+                user = password.empty() ? m_auth.find(Auth::kOwner) : m_auth.claimOwner(password);
+            if (!user.valid()) {
+                log("[Web] failed login for \"%s\" from %s", name.c_str(), req.peer.c_str());
+                error(res, name.empty() ? 400 : 401, name.empty() ? "username and password are required"
+                                                                  : "invalid username or password");
+                return;
+            }
+            res.send(200, "application/json; charset=utf-8",
+                     json{{"user", user.json(false)}, {"token", user.token}}.dump(),
+                     {{"Set-Cookie", tokenCookie(user.token, 3600 * 24 * 365, m_config.httpPrefix)}});
+            return;
+        }
+        if (post && path == "/api/v1/auth/logout") {
+            res.send(200, "application/json; charset=utf-8", json{{"status", "logged out"}}.dump(),
+                     {{"Set-Cookie", tokenCookie("", -1, m_config.httpPrefix)}});
+            return;
+        }
+
+        if (path.rfind("/api/v1/", 0) == 0) {
+            const User user = m_auth.byToken(req);
+            if (user.valid()) {
+                if (m_settings.catalogOnly && path.find("/catalog/") == std::string::npos &&
+                    path.find("/lists") == std::string::npos && path.find("/publish") == std::string::npos &&
+                    path != "/api/v1/auth/me" && path != "/api/v1/users") {
+                    error(res, 404, "this is a catalog-only node");
+                    return;
+                }
+                routeP2PlayV1(req, res, user, pathParts(path));
+                return;
+            }
+
+            // Cover probing uses one short-lived internal credential, loopback-only, and a
+            // single exact stream route. It does not grant access to any other API method.
             if (req.method == "GET" && req.peer == "127.0.0.1" && m_internalToken.size() == 64 &&
-                req.header("x-p2play-internal") == m_internalToken && internalStreamPath(p)) {
+                req.header("x-p2play-internal") == m_internalToken && internalStreamPath(path)) {
                 const User owner = m_auth.find(Auth::kOwner);
                 if (owner.valid()) {
-                    routeSilo(req, res, owner);
+                    routeP2PlayV1(req, res, owner, pathParts(path));
                     return;
                 }
             }
             error(res, 401, "unauthorized");
             return;
         }
-
-        if (m_settings.catalogOnly && p != "/echo") {
-            error(res, 404, "a catalog node: no streamer");
-            return;
-        }
-#if P2P_COMPAT_MATRIX
-        // MatriX: Basic; a known torrent is played without it (TorrServer leaves these open)
-        const User user = m_auth.byBasic(req);
-        if (!user.valid() && !matrixPublic(req)) {
-            error(res, 401, "unauthorized", {{"WWW-Authenticate", "Basic realm=\"Authorization Required\""}});
-            return;
-        }
-        if (routeMatrix(req, res, user)) {
-            return;
-        }
-#endif
         error(res, 404, "not found");
     }
-
 }

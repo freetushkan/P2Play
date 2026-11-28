@@ -8,13 +8,14 @@ namespace p2p {
 
     struct Core::Torrent {
         TorrentRecord rec;
+        std::set<std::string> previewUsers; // transient, non-persistent access for pPlay preview streams
         bool saved = false;               // in the library (torrents.json)
 
         bool active = false;              // in the session
         lt::torrent_handle handle;
         bool gotInfo = false;
         bool diskStored = false;           // storage backend chosen when this handle was activated
-        std::map<int, lt::file_index_t> fileIndex;  // MatriX's file id -> the torrent's file (no pad files)
+        std::map<int, lt::file_index_t> fileIndex;  // native zero-based file index -> torrent file (no pad files)
         int pieceLength = 0;
         int numPieces = 0;
         lt::sha1_hash cacheKey;           // the RAM storage's key

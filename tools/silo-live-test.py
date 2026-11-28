@@ -160,7 +160,7 @@ class P2PNode:
     def ready(self):
         if self.proc.poll() is not None:
             raise RuntimeError(self.read_log()[-4000:])
-        status, _, _ = self.call("/api/system/ping", timeout=2)
+        status, _, _ = self.call("/api/v1/system/ping", timeout=2)
         return status == 200
 
     def read_log(self):
@@ -290,7 +290,7 @@ class SiloServer:
             f"  port: {port}\n"
             "storage:\n"
             f"  data_dir: {json.dumps(str(self.data))}\n"
-            "  db_name: \"torrserver.db\"\n"
+            "  db_name: \"silo.db\"\n"
             "plugins:\n"
             f"  dir: {json.dumps(str(self.plugins))}\n"
             "auth:\n"
@@ -320,8 +320,11 @@ class SiloServer:
     def ready(self):
         if self.proc.poll() is not None:
             raise RuntimeError(self.read_log()[-5000:])
+        # This is the pinned external host, not the versioned P2Play API.
         status, _, _ = http_request(self.base, "/api/system/ping", timeout=2)
-        return status == 200
+        if status != 200:
+            raise RuntimeError(f"Silo GET /api/system/ping returned HTTP {status}")
+        return True
 
     def login(self):
         status, data, _ = http_request(
@@ -453,7 +456,7 @@ def start_p2p_mesh(daemon, root, used_ports):
 
 
 def make_silo_checkout(upstream_arg, work):
-    tree = Path(work) / "torrserver"
+    tree = Path(work) / "silo-source"
     if upstream_arg:
         source = Path(upstream_arg).resolve()
         head = subprocess.check_output(
@@ -537,7 +540,7 @@ def main():
         second = p2p_nodes["second-holder"]
 
         status, identity, _ = publisher.call(
-            "/api/publish", method="POST",
+            "/api/v1/publish", method="POST",
             body={"name": "Silo live integration", "description": "native playback test"},
         )
         pubkey = identity.get("pubkey", "") if isinstance(identity, dict) else ""
@@ -551,35 +554,35 @@ def main():
             "trackers": [tracker.url],
         }
         status, result, _ = publisher.call(
-            f"/api/publish/{pubkey}/records", method="POST",
+            f"/api/v1/publish/{pubkey}/records", method="POST",
             raw=(json.dumps(record, separators=(",", ":")) + "\n").encode(),
         )
         check(status == 200 and result.get("count") == 1,
               "publish the signed catalog record with a loopback tracker")
         status, release, _ = publisher.call(
-            f"/api/publish/{pubkey}/release", method="POST", body={},
+            f"/api/v1/publish/{pubkey}/release", method="POST", body={},
         )
         check(status == 200 and release.get("seq") == 1,
               "release signed catalog version 1")
         wait_for(
             "publisher version torrent seed",
-            lambda: (publisher.call("/api/lists")[1]["lists"][0]
+            lambda: (publisher.call("/api/v1/lists")[1]["lists"][0]
                      .get("net", {}).get("seeding")),
             30,
         )
 
-        status, _, _ = second.call(f"/api/lists/{pubkey}", method="POST", body={})
+        status, _, _ = second.call(f"/api/v1/lists/{pubkey}", method="POST", body={})
         check(status == 202, "second node subscribes as a directory holder")
         wait_for(
             "second node receives the signed catalog",
-            lambda: next((item for item in second.call("/api/lists")[1]["lists"]
+            lambda: next((item for item in second.call("/api/v1/lists")[1]["lists"]
                           if item.get("pubkey") == pubkey
                           and item.get("net", {}).get("records_ready")), None),
             90,
         )
         wait_for(
             "Silo-connected P2Play node discovers the catalog",
-            lambda: next((item for item in subscriber.call("/api/lists/discover")[1]["lists"]
+            lambda: next((item for item in subscriber.call("/api/v1/lists/discover")[1]["lists"]
                           if item.get("pubkey") == pubkey), None),
             90,
         )
@@ -600,7 +603,7 @@ def main():
 
         wait_for(
             "P2Play subscriber verifies and indexes the list",
-            lambda: next((item for item in subscriber.call("/api/lists")[1]["lists"]
+            lambda: next((item for item in subscriber.call("/api/v1/lists")[1]["lists"]
                           if item.get("pubkey") == pubkey
                           and item.get("net", {}).get("records_ready")), None),
             90,

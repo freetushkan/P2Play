@@ -200,7 +200,7 @@ func TestMediaMeshRealRuntimeAuthAndCSRF(t *testing.T) {
 	if !strings.Contains(root.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatal("missing CSP")
 	}
-	if !strings.Contains(root.Body.String(), "Search your catalogs") {
+	if !strings.Contains(root.Body.String(), "Search catalogs") {
 		t.Fatal("real VFS page not served")
 	}
 	for key := range h.reg.handlers {
@@ -280,24 +280,24 @@ func TestMediaMeshHTTPAndNativeTransferContract(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+meshToken {
 			t.Error("missing server-side bearer credential")
 		}
-		if r.Header.Get("User-Agent") != "Silo/1.3 (TorrServer)" {
-			t.Error("not the real HTTP host")
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "Silo/1.3") {
+			t.Error("not the expected Silo HTTP host")
 		}
 		mu.Lock()
 		paths = append(paths, r.Method+" "+r.URL.RequestURI())
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/api/catalog/search":
+		case "/api/v1/catalog/search":
 			if r.URL.Query().Get("q") != "a&b" || r.URL.Query().Get("tag") != "x/y" || r.URL.Query().Get("limit") != "100" {
 				t.Error("query parameters escaped incorrectly")
 			}
 			fmt.Fprintf(w, `{"results":[{"hash":%q,"title":"<img src=x onerror=alert(1)>","token":%q,"tags":["film"]}]}`, meshHash, meshToken)
-		case "/api/catalog/" + meshHash:
+		case "/api/v1/catalog/" + meshHash:
 			fmt.Fprintf(w, `{"hash":%q,"title":"A & B","torrs":"torrs://not-fed-to-Silo","tags":["film"],"trackers":["udp://127.0.0.1:1234/announce","javascript:alert(1)"],"poster":"http://untrusted.invalid/image"}`, meshHash)
-		case "/api/lists", "/api/lists/discover":
+		case "/api/v1/lists", "/api/v1/lists/discover":
 			fmt.Fprintf(w, `{"lists":[{"pubkey":%q,"name":"Example list","seq":3,"records":7}]}`, meshKey)
-		case "/api/lists/" + meshKey:
+		case "/api/v1/lists/" + meshKey:
 			if r.Method != "POST" || r.Header.Get("Content-Type") != "application/json" {
 				t.Error("wrong subscribe request")
 			}

@@ -1,4 +1,4 @@
-# Веб-интерфейс P2Play: библиотека и паритет TorrServer
+# Веб-интерфейс P2Play: библиотека и воспроизведение
 
 ## Цель и границы
 
@@ -15,8 +15,8 @@
 ## Нативный API P2Play
 
 Самостоятельный версионированный REST API расположен под /api/v1 и реализован
-в src/core/api_p2play.cpp. Он не зависит от TorrServer MatriX compatibility
-layer и продолжает работать при сборке с P2P_COMPAT_MATRIX=OFF.
+в src/core/api_p2play.cpp. Маршруты регистрируются в нативном версионированном
+API P2Play.
 
 | Метод и путь | Назначение |
 |---|---|
@@ -75,10 +75,10 @@ infohash как tie-breaker.
 Нативный API использует существующую Silo-схему авторизации core: HttpOnly
 silo_token cookie для same-origin web UI и Bearer token для API-клиентов.
 Токен не хранится в JavaScript/localStorage и не передаётся в URL. Login route
-остаётся POST /api/auth/login; Silo-compatible /api/auth/me подтверждает
+остаётся POST /api/v1/auth/login; native /api/v1/auth/me подтверждает
 сессию. Потоковые и остальные защищённые /api маршруты используют ту же
-cookie/Bearer авторизацию. Старые TorrServer MatriX маршруты и их HTTP Basic Auth
-не переименованы и не изменены; их можно выключить отдельной опцией сборки.
+cookie/Bearer авторизацию. Неверифицированные старые compatibility paths не являются частью публичного
+контракта P2Play; используйте только versioned `/api/v1` routes.
 
 Общий HTML/JS/CSS обслуживается и в Silo-host, но library tab намеренно скрыт там.
 Silo не проксирует маршруты /api/v1 и не получает доступ к чужой P2Play-библиотеке.
@@ -92,8 +92,7 @@ Silo не проксирует маршруты /api/v1 и не получает
 - Изменение display title и категории, подтверждаемое удаление и импорт/экспорт
   .torrs; общие torrent metadata отделены от per-user library membership.
 - Обложка в строке библиотеки (`<img>` на `…/cover`) и в деталях раздачи, с кнопкой
-  «Refresh cover» (`POST …/cover`) и подписью источника. Без обложки рисуется
-  placeholder, а не битая картинка; внешние постеры не вставляются (CSP `img-src`).
+  «Refresh cover» (`POST …/cover`) и подписью источника. Без обложки рисуется placeholder, а не битая картинка; внешние постеры напрямую не вставляются (CSP `img-src`).
 - Детали раздачи: список файлов, проигрывание через защищённый Range stream,
   watched/unwatched, reset позиции и watched для файла, папки или всей раздачи.
 - Continue Watching, server stats, owner engine settings и rank-aware user
@@ -140,10 +139,9 @@ CSP страницы (`script-src 'self'`, без `unsafe-eval`) запреща�
 режим — отдельная ручная проверка.
 
 Этот этап закрывает основные web-ui операции управления библиотекой и
-воспроизведением, но не заявляет абсолютный TorrServer parity: остаются
-сравнительные проверки редких BTSets, выбор приоритетов отдельных pieces,
-совместимость внешних MatriX/Silo клиентов и приёмка Android WebView/embedded
-LAN/целевых устройств. Browser CI на Linux не заменяет эти проверки.
+воспроизведением. Остаются проверки редких параметров движка, выбора приоритетов
+отдельных pieces и приёмка Android WebView/embedded LAN/целевых устройств.
+Browser CI на Linux не заменяет эти проверки.
 
 ## Состояние реализации
 
@@ -177,3 +175,15 @@ Android, Switch, PS4, PS5 и PS5 package.
 поле `poster`, содержащее URL P2Play. На текущем этапе URL-загрузка принимает
 общедоступные HTTP-адреса; HTTPS-картинки загружаются файлом. Подробности и
 ограничения безопасности — в [`covers.md`](covers.md).
+
+
+## HTTP base path
+
+Core-host may be mounted below an optional nested path, for example
+`/some_sub_dir/more_path/ololo`. Configure it with standalone
+`p2playd --base-path /some_sub_dir/more_path/ololo` or the embedded C API field
+`p2play_config.http_prefix`. The same path is applied to API/UI routes, login
+redirects, stream links and locally stored poster URLs. Without the prefix,
+legacy root routes return 404. The UI derives the configured prefix from its
+`/ui/` location, so its API, locale, export and stream requests stay under the
+same mount point. Multi-level prefixes are covered by `tools/ui-test.py`.

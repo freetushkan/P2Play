@@ -1,18 +1,13 @@
 #pragma once
 
-// The users, one set for every API: auth.json in the data directory. The schemes are those
-// of the APIs P2Play is compatible with, each on its own routes:
-//   /api (Silo's scheme): a lasting token a user, sent as ?token= (players),
-//     "Authorization: Bearer" (clients) or the silo_token / p2play_token cookie (browsers);
-//     POST /api/auth/login gives it for a name and a password.
-//   the MatriX routes: "Authorization: Basic" (WWW-Authenticate).
-// Required on both APIs, as Silo's clients ask a login anyway: one set of credentials. The
-// owner (id "owner", rank 100) always exists; until it has a password, the first login as the
-// owner with a password sets it (/api/auth/login or Basic): a console has no other place to.
-// The MatriX routes that TorrServer leaves open (/stream, /play, /playlist) play a known torrent
-// without a login, as there.
-// auth.json: {"users": [{"id", "username", "password_hash", "rank", "api_token", "is_banned",
-// "created_at"}]}. A plain "password" (written by hand) is hashed at the start.
+// P2Play accounts and durable API keys, stored in auth.json.
+// Each user has one stable API token. Login returns that existing token; it is not rotated
+// until the user (or an administrator with sufficient rank) explicitly resets it.
+// Requests use Authorization: Bearer, the ?token= query for shareable stream URLs, or the
+// HttpOnly p2play_token cookie used by the web UI. The owner (id "owner", rank 100) always
+// exists; the first owner login may set its password when no password has been configured.
+// auth.json stores password hashes and one api_token per user. Legacy plaintext passwords
+// are hashed on load.
 
 #include <cstdint>
 #include <mutex>
@@ -36,8 +31,8 @@ namespace p2p {
 
         bool valid() const { return !id.empty(); }
 
-        // as Silo's /api/auth/me and /api/users (the hash never leaves; the token only for
-        // the user himself)
+        // Public account representation. API tokens are returned only from login,
+        // user creation/reset and explicit stream-link creation.
         nlohmann::json json(bool withToken) const;
     };
 
@@ -55,11 +50,8 @@ namespace p2p {
         // the owner without a password (none set yet): this one set; the owner, else invalid
         User claimOwner(const std::string &password);
 
-        // the user of a token (?token=, Bearer, cookie) or of Basic (the owner's password set
-        // by the first one, see above); invalid if none
+        // Resolve the stable user's token from a share URL, Bearer header or web cookie.
         User byToken(const HttpRequest &req) const;
-
-        User byBasic(const HttpRequest &req);
 
         User find(const std::string &id) const;
 

@@ -41,6 +41,26 @@ namespace p2p {
     namespace {
 
 
+        bool normalizeHttpPrefix(std::string &prefix) {
+            if (prefix.empty()) return true;
+            if (prefix.front() != '/') prefix.insert(prefix.begin(), '/');
+            if (prefix.size() > 1 && prefix.back() == '/') prefix.pop_back();
+            if (prefix == "/") { prefix.clear(); return true; }
+            if (prefix.size() > 1024) return false;
+            size_t start = 1;
+            while (start <= prefix.size()) {
+                const size_t end = prefix.find('/', start);
+                const std::string part = prefix.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                if (part.empty() || part == "." || part == "..") return false;
+                for (unsigned char ch : part) {
+                    if (!std::isalnum(ch) && ch != '_' && ch != '-' && ch != '.' && ch != '~') return false;
+                }
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            return true;
+        }
+
         bool directoryExists(const std::string &path) {
             struct stat st{};
             return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
@@ -144,9 +164,9 @@ namespace p2p {
             return true;
         }
 
-        // TorrServer's file order (server/utils CompareStrings): after the common prefix (back
+        // P2Play's file order (server/utils CompareStrings): after the common prefix (back
         // to the start of a number it ends in), numbers compare as numbers: "e2" before "e10"
-        bool torrServerLess(const std::string &first, const std::string &second) {
+        bool torrentFileLess(const std::string &first, const std::string &second) {
             size_t prefix = 0;
             while (prefix < first.size() && prefix < second.size() && first[prefix] == second[prefix]) {
                 prefix++;
@@ -171,10 +191,10 @@ namespace p2p {
 
     }
 
-    // The files as TorrServer numbers them. MatriX (anacrolix): every file of the torrent,
-    // pad files (BEP 47) too, sorted by path (CompareStrings), ids from 1 in that order. Silo:
+    // The files as P2Play numbers them. legacy compatibility (anacrolix): every file of the torrent,
+    // pad files (BEP 47) too, sorted by path (CompareStrings), ids from 1 in that order. the native API:
     // the index in the torrent's own order. Pad files keep their ids but are not listed.
-    static std::vector<FileInfo> torrServerFiles(const lt::torrent_info &ti, int64_t &size,
+    static std::vector<FileInfo> orderedTorrentFiles(const lt::torrent_info &ti, int64_t &size,
                                           std::map<int, lt::file_index_t> &index) {
         const lt::file_storage &fs = ti.files();
         std::vector<std::pair<std::string, lt::file_index_t>> sorted;
@@ -190,7 +210,7 @@ namespace p2p {
         // stable_sort: the comparison is not a strict order in every case (std::sort may then
         // run past the range)
         std::stable_sort(sorted.begin(), sorted.end(),
-                         [](const auto &a, const auto &b) { return torrServerLess(a.first, b.first); });
+                         [](const auto &a, const auto &b) { return torrentFileLess(a.first, b.first); });
         std::vector<FileInfo> files;
         index.clear();
         int id = 0;
@@ -276,89 +296,11 @@ namespace p2p {
             return true;
         }
 
-        // http:// only (no TLS in the core); a few redirects
-        bool httpGet(std::string url, std::string &body, std::string &error) {
-            for (int hop = 0; hop < 4; hop++) {
-                if (url.rfind("http://", 0) != 0) {
-                    error = "only http:// links can be fetched";
-                    return false;
-                }
-                std::string rest = url.substr(7);
-                size_t slash = rest.find('/');
-                std::string hostPort = rest.substr(0, slash);
-                std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
-                std::string host = hostPort, port = "80";
-                size_t colon = hostPort.rfind(':');
-                if (colon != std::string::npos) {
-                    host = hostPort.substr(0, colon);
-                    port = hostPort.substr(colon + 1);
-                }
-                addrinfo hints{};
-                hints.ai_family = AF_INET;
-                hints.ai_socktype = SOCK_STREAM;
-                addrinfo *res = nullptr;
-                if (getaddrinfo(host.c_str(), port.c_str(), &hints, &res) != 0 || !res) {
-                    error = "cannot resolve " + host;
-                    return false;
-                }
-                int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-                bool connected = fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen) == 0;
-                freeaddrinfo(res);
-                if (!connected) {
-                    if (fd >= 0) {
-                        ::close(fd);
-                    }
-                    error = "cannot connect to " + hostPort;
-                    return false;
-                }
-                std::string req = "GET " + path + " HTTP/1.0\r\nHost: " + hostPort +
-                                  "\r\nUser-Agent: P2Play\r\nConnection: close\r\n\r\n";
-                ::send(fd, req.data(), req.size(), 0);
-                std::string data;
-                char buf[8192];
-                ssize_t n;
-                while ((n = recv(fd, buf, sizeof(buf), 0)) > 0 && data.size() < 32 * 1024 * 1024) {
-                    data.append(buf, static_cast<size_t>(n));
-                }
-                ::close(fd);
-                size_t headEnd = data.find("\r\n\r\n");
-                if (headEnd == std::string::npos) {
-                    error = "bad answer from " + hostPort;
-                    return false;
-                }
-                std::string head = data.substr(0, headEnd);
-                int status = std::atoi(head.substr(head.find(' ') + 1, 3).c_str());
-                if (status >= 300 && status < 400) {
-                    std::string lh = lower(head);
-                    size_t loc = lh.find("\r\nlocation:");
-                    if (loc == std::string::npos) {
-                        error = "redirect without a location";
-                        return false;
-                    }
-                    size_t end = head.find("\r\n", loc + 2);
-                    std::string target = head.substr(loc + 11, end == std::string::npos ? std::string::npos : end - loc - 11);
-                    target.erase(0, target.find_first_not_of(' '));
-                    url = target.rfind("http", 0) == 0 ? target : "http://" + hostPort + target;
-                    continue;
-                }
-                if (status != 200) {
-                    error = "http status " + std::to_string(status);
-                    return false;
-                }
-                body = data.substr(headEnd + 4);
-                return true;
-            }
-            error = "too many redirects";
-            return false;
-        }
+
     }
 
     const char *Core::version() {
-#if P2P_COMPAT_MATRIX
-        return "MatriX.141 P2Play/0.1";
-#else
-        return "P2Play/" P2P_NATIVE_VERSION;
-#endif
+return "P2Play/" P2P_NATIVE_VERSION;
     }
 
     const char *Core::productVersion() {
@@ -435,6 +377,10 @@ namespace p2p {
 
     bool Core::start() {
         m_started = Clock::now();
+        if (!normalizeHttpPrefix(m_config.httpPrefix)) {
+            log("[Core] invalid HTTP base path; use simple URL path segments");
+            return false;
+        }
         try {
             m_store.load();
             loadSettings();
@@ -537,6 +483,16 @@ namespace p2p {
         meshTick(true);
         coverInit();
         m_idleThread = std::thread(&Core::idleLoop, this);
+
+        if (!m_http.start(m_config.httpPort, [this](const HttpRequest &req, HttpResponse &res) { handle(req, res); },
+                          m_config.httpLoopbackOnly)) {
+            log("[Web] cannot listen on port %d", m_config.httpPort);
+            stop();
+            return false;
+        }
+        // The cover worker uses the core's authenticated loopback stream. Start it only
+        // after the HTTP listener has a real port, otherwise startup jobs could be cached
+        // as permanent misses before their source can be read.
         m_coverThread = std::thread(&Core::coverLoop, this);
         // a library filled before covers existed, or one whose torrents were closed: the
         // worker fills only those without a picture, and skips the cached misses
@@ -544,12 +500,6 @@ namespace p2p {
             const bool saved = entry.second->saved;
             const std::string poster = entry.second->rec.poster;
             if (saved && poster.empty()) coverRequest(entry.first);
-        }
-
-        if (!m_http.start(m_config.httpPort, [this](const HttpRequest &req, HttpResponse &res) { handle(req, res); })) {
-            log("[Web] cannot listen on port %d", m_config.httpPort);
-            stop();
-            return false;
         }
         log("[Core] %s, libtorrent %s, storage %s, http port %d, %d torrents in the library, the owner's password %s",
             version(), LIBTORRENT_VERSION,
@@ -592,6 +542,8 @@ namespace p2p {
         b("UseDisk", m_settings.useDisk);
         b("DiskCacheEnabled", m_settings.diskCacheEnabled);
         b("CacheListsInMemory", m_settings.cacheListsInMemory);
+        b("CoverFiles", m_settings.coverFiles);
+        b("CoverEmbedded", m_settings.coverEmbedded);
         b("CoverProbe", m_settings.coverProbe);
         if (s.contains("DiskCacheSize") && s["DiskCacheSize"].is_number_integer())
             m_settings.diskCacheSize = s["DiskCacheSize"].get<int64_t>();
@@ -686,7 +638,7 @@ namespace p2p {
     }
 
     json Core::settingsJson() {
-        // TorrServer's BTSets; the stored ones on top of the defaults
+        // P2Play's BTSets; the stored ones on top of the defaults
         json s = {
                 {"CacheSize", m_settings.cacheSize},
                 {"ReaderReadAHead", m_settings.readAhead},
@@ -695,6 +647,8 @@ namespace p2p {
                 {"DiskCacheEnabled", m_settings.diskCacheEnabled},
                 {"DiskCacheSize", m_settings.diskCacheSize},
                 {"CacheListsInMemory", m_settings.cacheListsInMemory},
+                {"CoverFiles", m_settings.coverFiles},
+                {"CoverEmbedded", m_settings.coverEmbedded},
                 {"CoverProbe", m_settings.coverProbe},
                 {"TorrentsSavePath", m_settings.savePath},
                 {"RemoveCacheOnDrop", false},
@@ -725,6 +679,7 @@ namespace p2p {
         static const std::set<std::string> used = {
                 "CacheSize", "ReaderReadAHead", "PreloadCache", "UseDisk", "TorrentsSavePath",
                 "DiskCacheEnabled", "DiskCacheSize", "CacheListsInMemory",
+                "CoverFiles", "CoverEmbedded", "CoverProbe",
                 "TorrentDisconnectTimeout", "ConnectionsLimit", "DownloadRateLimit", "UploadRateLimit",
                 "DisableUpload", "DisableTCP", "DisableUTP", "DisableDHT", "DisableMeshDirectory",
                 "DisableUPNP", "PeersListenPort"};
@@ -827,7 +782,7 @@ namespace p2p {
 
     bool Core::owns(const TorrentPtr &t, const std::string &user) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        return t->rec.users.count(user) > 0;
+        return t->rec.users.count(user) > 0 || t->previewUsers.count(user) > 0;
     }
 
     void Core::keep(const TorrentPtr &t, const std::string &user) {
@@ -842,24 +797,27 @@ namespace p2p {
     }
 
     void Core::unlink(const TorrentPtr &t, const std::string &user) {
-        bool last;
+        bool last = false;
+        bool preview = false;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            t->rec.users.erase(user);
-            last = t->rec.users.empty();
+            preview = t->previewUsers.erase(user) > 0;
+            if (!preview) t->rec.users.erase(user);
+            last = t->rec.users.empty() && t->previewUsers.empty();
         }
-        m_store.removeViewed(user, t->rec.hash, 0);
-        if (last) {
-            remove(t);
-        } else {
-            save(t);
-        }
+        if (!preview) m_store.removeViewed(user, t->rec.hash, 0);
+        if (last) remove(t);
+        else if (!preview) save(t);
     }
 
     void Core::removeUser(const std::string &user) {
         for (const TorrentPtr &t : listOf(user, false)) {
             std::lock_guard<std::mutex> lock(m_mutex);
             t->rec.users.erase(user);
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (auto &entry : m_torrents) entry.second->previewUsers.erase(user);
         }
         for (const std::string &hash : m_store.removeUser(user)) {
             if (TorrentPtr t = find(hash)) {
@@ -888,8 +846,8 @@ namespace p2p {
                 error = "HTTP torrent fetch is disabled with PublisherProxy; upload metadata or use a magnet";
                 return nullptr;
             }
-            std::string body;
-            if (!httpGet(link, body, error)) {
+            std::string body, contentType;
+            if (!fetchUrl(link, 16u * 1024u * 1024u, body, contentType, error)) {
                 return nullptr;
             }
             return addMetadata(body, title, poster, category, data, saveFor, error);
@@ -954,7 +912,7 @@ namespace p2p {
                 }
                 m_torrents[hash] = t;
             }
-            // MatriX's AddTorrent: a field given fills an empty one (set changes them)
+            // legacy compatibility's AddTorrent: a field given fills an empty one (set changes them)
             const TorrentRecord before = t->rec;
             if (!title2.empty() && (t->rec.title.empty() || t->rec.title == atp.name)) t->rec.title = title2;
             if (!poster2.empty() && t->rec.poster.empty()) t->rec.poster = poster2;
@@ -988,7 +946,7 @@ namespace p2p {
     }
 
     // a record of an earlier version: its files numbered again from the metadata kept (as
-    // TorrServer, see torrServerFiles), the progress moved along by path
+    // P2Play, see orderedTorrentFiles), the progress moved along by path
     void Core::renumber(TorrentRecord &r) {
         std::string raw;
         std::shared_ptr<const lt::torrent_info> ti;
@@ -1010,7 +968,7 @@ namespace p2p {
         }
         int64_t size = 0;
         std::map<int, lt::file_index_t> index;
-        std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
+        std::vector<FileInfo> files = orderedTorrentFiles(*ti, size, index);
         bool same = files.size() == r.files.size();
         for (size_t i = 0; same && i < files.size(); i++) {
             same = files[i].id == r.files[i].id && files[i].path == r.files[i].path && files[i].index == r.files[i].index;
@@ -1026,7 +984,7 @@ namespace p2p {
                 }
             }
         }
-        log("[Torrent:%s] files numbered again as TorrServer (%d moved)", r.hash.c_str(), static_cast<int>(moved.size()));
+        log("[Torrent:%s] files numbered again as P2Play (%d moved)", r.hash.c_str(), static_cast<int>(moved.size()));
         r.files = files;
         r.size = size;
         m_store.putTorrent(r);
@@ -1174,7 +1132,7 @@ namespace p2p {
         const lt::file_storage &fs = ti->files();
         int64_t size = 0;
         std::map<int, lt::file_index_t> index;
-        std::vector<FileInfo> files = torrServerFiles(*ti, size, index);
+        std::vector<FileInfo> files = orderedTorrentFiles(*ti, size, index);
         // nothing is downloaded but the readers' windows
         h.prioritize_files(std::vector<lt::download_priority_t>(static_cast<size_t>(fs.num_files()), lt::dont_download));
 
@@ -1199,6 +1157,12 @@ namespace p2p {
         }
         if (saved) {
             save(t);
+            bool needsCover = false;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                needsCover = t->saved && t->rec.poster.empty();
+            }
+            if (needsCover) coverRequest(t->rec.hash);
         }
         log("[Torrent:%s] metadata: %s, %d files, %.1f MB", t->rec.hash.c_str(), ti->name().c_str(),
             static_cast<int>(files.size()), static_cast<double>(size) / 1048576.0);
@@ -1315,12 +1279,12 @@ namespace p2p {
         int stat = !active ? (saved ? 5 : 4) : !gotInfo ? 1 : preloading ? 2 : 3;
         static const char *statNames[] = {"Torrent added", "Torrent getting info", "Torrent preload",
                                           "Torrent working", "Torrent closed", "Torrent in db"};
-        // data: the client's JSON with the files added, as TorrServer keeps it
+        // data: the client's JSON with the files added, as P2Play keeps it
         std::string data = rec.data;
         if (!rec.files.empty()) {
             json d = rec.data.empty() ? json::object() : json::parse(rec.data, nullptr, false);
             if (d.is_object()) {
-                d["TorrServer"]["Files"] = filesData(t);
+                d["P2Play"]["Files"] = filesData(t);
                 data = d.dump();
             }
         }

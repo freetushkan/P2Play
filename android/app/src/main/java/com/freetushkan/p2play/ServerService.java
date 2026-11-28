@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Runs the P2Play server (p2playd, packaged as lib/<abi>/libp2playd.so) as a foreground
- * service: the TorrServer API and the streams on port 8090 while a player is in front, as
- * TorrServe does. Stop: SIGTERM, then SIGKILL after 5 s.
+ * service: API and the streams on port 8090 while a player is in front.
+ * Stop: SIGTERM, then SIGKILL after 5 s.
  */
 public class ServerService extends Service {
     static final String ACTION_START = "com.freetushkan.p2play.START";
@@ -39,6 +39,7 @@ public class ServerService extends Service {
     private Process mProcess;
     private PowerManager.WakeLock mWakeLock;
     private WifiManager.WifiLock mWifiLock;
+    private TlsBridge mTlsBridge;
 
     static boolean isRunning() {
         return sRunning;
@@ -129,8 +130,25 @@ public class ServerService extends Service {
         File dir = dataDir(this);
         dir.mkdirs();
         try {
+            int bridgePort = 0;
+            String bridgeToken = "";
+            try {
+                mTlsBridge = new TlsBridge();
+                bridgePort = mTlsBridge.start();
+                bridgeToken = mTlsBridge.token();
+            } catch (Exception e) {
+                Log.w(TAG, "Android system TLS bridge unavailable; HTTPS posters are disabled", e);
+                closeTlsBridge();
+            }
+
             ProcessBuilder pb = new ProcessBuilder(executable(this).getPath(),
                     "--data", dir.getPath(), "--port", String.valueOf(PORT));
+            if (bridgePort > 0) {
+                pb.command().add("--https-bridge-port");
+                pb.command().add(String.valueOf(bridgePort));
+                pb.command().add("--https-bridge-token");
+                pb.command().add(bridgeToken);
+            }
             pb.directory(dir);
             pb.redirectErrorStream(true);
             final Process process = pb.start();
@@ -157,6 +175,7 @@ public class ServerService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "can't start p2playd", e);
             sRunning = false;
+            closeTlsBridge();
             stopForegroundCompat();
             stopSelf();
         }
@@ -169,6 +188,7 @@ public class ServerService extends Service {
         mProcess = null;
         sRunning = false;
         releaseLocks();
+        closeTlsBridge();
         stopForegroundCompat();
         stopSelf();
     }
@@ -191,6 +211,13 @@ public class ServerService extends Service {
         }
         sRunning = false;
         releaseLocks();
+        closeTlsBridge();
+    }
+
+    private void closeTlsBridge() {
+        TlsBridge bridge = mTlsBridge;
+        mTlsBridge = null;
+        if (bridge != null) bridge.close();
     }
 
     private void acquireLocks() {

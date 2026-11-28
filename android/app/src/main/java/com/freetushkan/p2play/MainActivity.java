@@ -33,14 +33,12 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.util.Collections;
 
 /**
  * The P2Play server screen: start / stop, its addresses, the torrents, the log tail; a link
- * (typed, pasted, a magnet opened or shared with the app) is added to the library and its
- * largest media file opened in a player. Players and Lampa use the server at
- * http://127.0.0.1:8090 as a TorrServer. Usable with a remote (Android TV).
+ * (typed, pasted, or opened/shared with the app) is added to the library through the
+ * native P2Play API and its largest file opened in a player. Usable with Android TV.
  */
 public class MainActivity extends Activity {
     private static final String LOCAL = "http://127.0.0.1:" + ServerService.PORT;
@@ -213,7 +211,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // POST /api/torrents (into the owner's library), wait for the file list, open the largest file
+    // Import the original link so the server can parse the whole card, including its poster.
     private void addAndPlay() {
         final String link = mLink.getText().toString().trim();
         if (link.isEmpty()) {
@@ -226,28 +224,25 @@ public class MainActivity extends Activity {
             String error = null;
             String url = null;
             try {
-                JSONObject add = new JSONObject().put("link", link).put("save_to_db", true);
-                JSONObject st = null;
-                // the server may be starting
-                for (int i = 0; i < 20 && st == null; i++) {
+                // Retry readiness, not the mutating request (which may already have succeeded).
+                boolean ready = false;
+                for (int i = 0; i < 20 && !ready; i++) {
                     try {
-                        st = new JSONObject(post("/api/torrents", add.toString()));
+                        request("GET", "/api/v1/auth/me", null);
+                        ready = true;
                     } catch (Exception e) {
                         Thread.sleep(500);
                     }
                 }
-                if (st == null) {
-                    throw new Exception("the server does not answer");
+                if (!ready) {
+                    throw new Exception("the server does not answer or owner authorization failed");
                 }
-                String hash = st.getString("hash");
-                for (int i = 0; i < 120 && !st.has("file_stats"); i++) {
-                    Thread.sleep(500);
-                    st = new JSONObject(request("GET", "/api/torrents/" + hash, null));
-                }
-                if (!st.has("file_stats")) {
-                    throw new Exception("no metadata in 60 s (no peers?)");
-                }
-                JSONArray files = st.getJSONArray("file_stats");
+                JSONObject add = new JSONObject().put("link", link);
+                JSONObject torrent = new JSONObject(post("/api/v1/torrents", add.toString()))
+                        .getJSONObject("torrent");
+                String path = "/api/v1/torrents/" + torrent.getString("hash");
+                JSONArray files = new JSONObject(request("GET", path + "/files?wait=60", null, 65000))
+                        .getJSONArray("files");
                 JSONObject best = null;
                 for (int i = 0; i < files.length(); i++) {
                     JSONObject f = files.getJSONObject(i);
@@ -255,8 +250,11 @@ public class MainActivity extends Activity {
                         best = f;
                     }
                 }
-                url = LOCAL + "/api/stream/" + hash + "/" + best.getInt("id") + "?token="
-                        + URLEncoder.encode(token(), "UTF-8");
+                if (best == null) {
+                    throw new Exception("no files to play");
+                }
+                JSONObject share = new JSONObject(post(path + "/files/" + best.getInt("id") + "/share", "{}"));
+                url = LOCAL + share.getString("url");
             } catch (Exception e) {
                 error = e.getMessage();
             }
@@ -307,21 +305,18 @@ public class MainActivity extends Activity {
         }
     }
 
-    // a line a torrent: title, state, peers, speed
+    // a line per torrent: title, state, download speed
     private static String torrents() {
         try {
-            JSONArray list = new JSONObject(request("GET", "/api/torrents", null)).getJSONArray("torrents");
+            JSONArray list = new JSONObject(request("GET", "/api/v1/library/torrents", null)).getJSONArray("items");
             if (list.length() == 0) {
                 return "Server running, no torrents";
             }
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < list.length(); i++) {
                 JSONObject t = list.getJSONObject(i);
-                sb.append(t.optString("title")).append(" - ").append(t.optString("stat_string"));
-                if (t.has("active_peers")) {
-                    sb.append(", ").append(t.optInt("active_peers")).append(" peers, ")
-                            .append(Math.round(t.optDouble("download_speed") / 1024)).append(" KB/s");
-                }
+                sb.append(t.optString("title")).append(" - ").append(t.optString("state_text"));
+                sb.append(", ").append(Math.round(t.optDouble("download_speed", 0) / 1024)).append(" KB/s");
                 sb.append('\n');
             }
             return sb.toString().trim();
@@ -335,14 +330,17 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String link = null, title = null;
             try {
-                JSONArray list = new JSONObject(request("GET", "/api/torrents", null)).getJSONArray("torrents");
-                long newest = -1;
+                JSONArray list = new JSONObject(request("GET", "/api/v1/library/torrents?sort=date&order=desc", null))
+                        .getJSONArray("items");
                 for (int i = 0; i < list.length(); i++) {
                     JSONObject t = list.getJSONObject(i);
-                    if (t.has("torrs") && t.optLong("timestamp") > newest) {
-                        newest = t.optLong("timestamp");
-                        link = t.getString("torrs");
+                    JSONObject details = new JSONObject(request("GET", "/api/v1/torrents/" + t.getString("hash"), null))
+                            .getJSONObject("details");
+                    String candidate = details.optString("torrs");
+                    if (!candidate.isEmpty()) {
+                        link = candidate;
                         title = t.optString("title");
+                        break;
                     }
                 }
             } catch (Exception e) {
@@ -394,11 +392,15 @@ public class MainActivity extends Activity {
     }
 
     private static String request(String method, String path, String body) throws Exception {
+        return request(method, path, body, 10000);
+    }
+
+    private static String request(String method, String path, String body, int readTimeout) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(LOCAL + path).openConnection();
         c.setRequestProperty("Authorization", "Bearer " + token());
         try {
             c.setConnectTimeout(1500);
-            c.setReadTimeout(10000);
+            c.setReadTimeout(readTimeout);
             c.setRequestMethod(method);
             if (body != null) {
                 c.setDoOutput(true);

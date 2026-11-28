@@ -19,7 +19,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 
-spec = importlib.util.spec_from_file_location("core_test", os.path.join(os.path.dirname(__file__), "core-test.py"))
+spec = importlib.util.spec_from_file_location("test_utils", os.path.join(os.path.dirname(__file__), "test_utils.py"))
 ct = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ct)
 check = ct.check
@@ -59,78 +59,78 @@ def main():
             with open(os.path.join(data, "settings.json"), "w") as f:
                 json.dump({"DisableDHT": True, "DisableMeshDirectory": True}, f)
         proc = ct.start_daemon(daemon, a)
-        check(call("/api/lists")[1]["lists"] == [], "fresh server has no catalog lists")
-        check(call("/api/catalog/search?q=anything")[1]["results"] == [], "search is empty before a list is added")
-        status, out = call("/api/publish", {"name": "Test 0 list", "description": "for the test"})
+        check(call("/api/v1/lists")[1]["lists"] == [], "fresh server has no catalog lists")
+        check(call("/api/v1/catalog/search?q=anything")[1]["results"] == [], "search is empty before a list is added")
+        status, out = call("/api/v1/publish", {"name": "Test 0 list", "description": "for the test"})
         pk = out.get("pubkey", "")
         check(status == 201 and len(pk) == 64 and os.path.exists(os.path.join(a, "keys", pk + ".seed")), "a list made, its key kept")
-        status, child = call("/api/publish", {"name": "Child 0 list"})
+        status, child = call("/api/v1/publish", {"name": "Child 0 list"})
         child_pk = child.get("pubkey", "")
-        status, meta = call("/api/publish", {"name": "Meta list", "type": "meta"})
+        status, meta = call("/api/v1/publish", {"name": "Meta list", "type": "meta"})
         meta_pk = meta.get("pubkey", "")
         check(status == 201 and len(child_pk) == 64 and len(meta_pk) == 64, "child and meta lists created")
-        bad_annotation = call(f"/api/publish/{meta_pk}/meta", {
+        bad_annotation = call(f"/api/v1/publish/{meta_pk}/meta", {
             "items": [{"pubkey": child_pk, "annotation": "bad" + chr(0) + "annotation", "enabled": True}]
         })
         check(bad_annotation[0] == 400, "a meta-list annotation containing NUL is rejected")
-        good_annotation = call(f"/api/publish/{meta_pk}/meta", {
+        good_annotation = call(f"/api/v1/publish/{meta_pk}/meta", {
             "items": [{"pubkey": child_pk, "annotation": "Version 0", "enabled": True}]
         })
         check(good_annotation[0] == 200, "a meta-list annotation containing digit zero is accepted")
-        status, out = call(f"/api/publish/{pk}/records", raw=b'{"ih": "xyz", "title": "bad"}\n')
+        status, out = call(f"/api/v1/publish/{pk}/records", raw=b'{"ih": "xyz", "title": "bad"}\n')
         check(status == 400 and "line 1" in out["error"], "a bad record refused")
-        status, out = call(f"/api/publish/{pk}/records", raw=RECORDS.encode())
+        status, out = call(f"/api/v1/publish/{pk}/records", raw=RECORDS.encode())
         check(status == 200 and out["count"] == 3 and out["pending"] == 3, "records waiting")
-        status, out = call(f"/api/publish/{pk}/release", {})
+        status, out = call(f"/api/v1/publish/{pk}/release", {})
         check(status == 200 and out["seq"] == 1 and out["records"] == 3, "version 1 released")
-        check(call(f"/api/publish/{pk}/release", {})[0] == 400, "nothing to release")
+        check(call(f"/api/v1/publish/{pk}/release", {})[0] == 400, "nothing to release")
 
-        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 1080P"))[1]["results"]
+        res = call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал 1080P"))[1]["results"]
         check([r["hash"] for r in res] == [IH1] and res[0]["torrs"].startswith("torrs://") and res[0]["lists"] == [pk],
               "search: Cyrillic in another case, a torrs:// link")
-        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал WEB-DL"))[1]["results"]
+        res = call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал WEB-DL"))[1]["results"]
         check([r["hash"] for r in res] == [IH1],
               "multi-keyword search: terms can match the title and tags")
-        res = call("/api/catalog/search?q=" + urllib.parse.quote("сериал 4K"))[1]["results"]
+        res = call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал 4K"))[1]["results"]
         check(res == [], "multi-keyword search requires every query term to match")
-        scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk)[1]["results"]
+        scoped = call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk)[1]["results"]
         check([r["hash"] for r in scoped] == [IH1], "search scoped to a selected catalog list")
-        scoped = call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk + "," + "f" * 64)[1]["results"]
+        scoped = call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + pk + "," + "f" * 64)[1]["results"]
         check([r["hash"] for r in scoped] == [IH1], "search scoped to any of several selected lists")
-        check(call("/api/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + "f" * 64)[1]["results"] == [],
+        check(call("/api/v1/catalog/search?q=" + urllib.parse.quote("сериал") + "&lists=" + "f" * 64)[1]["results"] == [],
               "an unknown selected list does not broaden the search");
-        res = call("/api/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"]
+        res = call("/api/v1/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"]
         check([r["hash"] for r in res] == [IH3] and "torrs" not in res[0], "search: ё as е; no torrs:// for a v2-only hash")
-        res = call("/api/catalog/search?q=&tag=MOVIE")[1]["results"]
+        res = call("/api/v1/catalog/search?q=&tag=MOVIE")[1]["results"]
         check([r["hash"] for r in res] == [IH2], "search: a tag, hashes in lower case")
-        status, rec = call(f"/api/catalog/{IH1}")
+        status, rec = call(f"/api/v1/catalog/{IH1}")
         check(status == 200 and rec["size"] == 1234567 and rec["sources"][0]["name"] == "Test 0 list", "a record and its list")
 
-        call(f"/api/publish/{pk}/records", raw=json.dumps({"del": IH2}).encode())
-        status, out = call(f"/api/publish/{pk}/release", {})
+        call(f"/api/v1/publish/{pk}/records", raw=json.dumps({"del": IH2}).encode())
+        status, out = call(f"/api/v1/publish/{pk}/release", {})
         check(status == 200 and out["seq"] == 2 and out["records"] == 2
-              and call("/api/catalog/search?q=movie")[1]["results"] == [], "version 2: a removal")
+              and call("/api/v1/catalog/search?q=movie")[1]["results"] == [], "version 2: a removal")
 
         replacement = json.dumps({
             "ih": IH1, "title": "Curated Catalog Entry", "date": 1700000100,
             "tags": ["clean"],
         }, ensure_ascii=False) + "\n"
-        status, out = call(f"/api/publish/{pk}/replace", raw=replacement.encode())
+        status, out = call(f"/api/v1/publish/{pk}/replace", raw=replacement.encode())
         check(status == 200 and out["seq"] == 3 and out["records"] == 1
               and out["input_records"] == 1, "version 3: full replacement")
-        check([r["hash"] for r in call("/api/catalog/search?q=curated")[1]["results"]] == [IH1]
-              and call("/api/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"] == []
-              and call("/api/catalog/search?q=сериал")[1]["results"] == [],
+        check([r["hash"] for r in call("/api/v1/catalog/search?q=curated")[1]["results"]] == [IH1]
+              and call("/api/v1/catalog/search?q=" + urllib.parse.quote("елки"))[1]["results"] == []
+              and call("/api/v1/catalog/search?q=сериал")[1]["results"] == [],
               "replacement keeps included row and removes omitted rows")
-        check(call(f"/api/publish/{pk}/status")[1]["pubkey"] == pk,
+        check(call(f"/api/v1/publish/{pk}/status")[1]["pubkey"] == pk,
               "replacement preserves the original public key")
         src = os.path.join(root, "published-v3")
         shutil.copytree(os.path.join(a, "lists", pk), src)
 
-        status, out = call(f"/api/publish/{pk}/replace", raw=b"")
+        status, out = call(f"/api/v1/publish/{pk}/replace", raw=b"")
         check(status == 200 and out["seq"] == 4 and out["records"] == 0
               and out["input_records"] == 0
-              and call("/api/catalog/search?q=curated")[1]["results"] == [],
+              and call("/api/v1/catalog/search?q=curated")[1]["results"] == [],
               "empty replacement clears the catalog")
 
         ct.stop_daemon(proc)
@@ -147,25 +147,25 @@ def main():
             byte = f.read(1)
             f.seek(10)
             f.write(bytes([byte[0] ^ 1]))
-        status, out = call("/api/lists/import", {"dir": bad})
+        status, out = call("/api/v1/lists/import", {"dir": bad})
         check(status == 400 and "hash mismatch" in out["error"], "a tampered segment refused")
         shutil.rmtree(bad)
         shutil.copytree(src, bad)
         manifest = open(os.path.join(bad, "manifest.ben"), "rb").read()
         open(os.path.join(bad, "manifest.ben"), "wb").write(manifest.replace(b"4:name11:Test 0 list", b"4:name11:Evil list 0"))
-        status, out = call("/api/lists/import", {"dir": bad})
+        status, out = call("/api/v1/lists/import", {"dir": bad})
         check(status == 400 and "signature" in out["error"], "a tampered manifest refused")
-        status, _ = call("/api/lists/import", {"dir": src})
-        lists = call("/api/lists")[1]["lists"]
+        status, _ = call("/api/v1/lists/import", {"dir": src})
+        lists = call("/api/v1/lists")[1]["lists"]
         check(status == 200 and len(lists) == 1 and lists[0]["seq"] == 3 and not lists[0]["own"], "the version taken")
-        check(call("/api/lists/import", {"dir": src})[0] == 400, "the same version again refused")
-        check([r["hash"] for r in call("/api/catalog/search?q=curated")[1]["results"]] == [IH1], "searched on the other node")
+        check(call("/api/v1/lists/import", {"dir": src})[0] == 400, "the same version again refused")
+        check([r["hash"] for r in call("/api/v1/catalog/search?q=curated")[1]["results"]] == [IH1], "searched on the other node")
         ct.stop_daemon(proc)
         proc = ct.start_daemon(daemon, b)
-        check(len(call("/api/lists")[1]["lists"]) == 1, "kept after a restart")
-        check(call(f"/api/publish/{pk}/status")[0] == 404, "no publishing without the key")
-        check(call(f"/api/lists/{pk}", method="DELETE")[0] == 200 and call("/api/lists")[1]["lists"] == []
-              and call("/api/catalog/search?q=" + urllib.parse.quote("тест"))[1]["results"] == [], "the list dropped")
+        check(len(call("/api/v1/lists")[1]["lists"]) == 1, "kept after a restart")
+        check(call(f"/api/v1/publish/{pk}/status")[0] == 404, "no publishing without the key")
+        check(call(f"/api/v1/lists/{pk}", method="DELETE")[0] == 200 and call("/api/v1/lists")[1]["lists"] == []
+              and call("/api/v1/catalog/search?q=" + urllib.parse.quote("тест"))[1]["results"] == [], "the list dropped")
         print("PASS")
     finally:
         if proc:

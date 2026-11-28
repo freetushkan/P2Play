@@ -1,6 +1,6 @@
 # /etc/systemd/system/p2playd.service (the binary in /usr/local/bin)
 [Unit]
-Description=P2Play (TorrServer-compatible streamer, MediaMesh)
+Description=P2Play (Torrent-streamer with search via MediaMesh extension)
 After=network-online.target
 Wants=network-online.target
 

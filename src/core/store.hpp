@@ -16,7 +16,7 @@
 namespace p2p {
 
     struct FileInfo {
-        int id = 0;          // MatriX's: from 1, as TorrServer numbers them (pad files counted)
+        int id = 0;          // legacy compatibility's: from 1, as P2Play numbers them (pad files counted)
         std::string path;    // inside the torrent, '/' separated, the torrent's name first
         int64_t length = 0;
         int index = -1;      // Silo's: the file's index in the torrent
@@ -28,7 +28,7 @@ namespace p2p {
         std::string title;
         std::string poster;
         std::string category;
-        std::string data;    // free text of the client (TorrServer: JSON with the files)
+        std::string data;    // free text of the client (P2Play: JSON with the files)
         std::string name;    // the torrent's own name
         int64_t timestamp = 0;
         int64_t size = 0;
@@ -36,12 +36,12 @@ namespace p2p {
         std::map<std::string, int64_t> users;   // whose library holds it: user id -> when added
     };
 
-    // a file a user played: the position (MatriX's timecode, Silo's progress) and the viewed
+    // a file a user played: the position (legacy compatibility's timecode, Silo's progress) and the viewed
     // mark (Silo's viewed_files; set by hand, or once the position passes the threshold)
     struct ViewedRecord {
         std::string user;     // the user id (auth.hpp), "owner" without users
         std::string hash;
-        int fileIndex = 0;    // from 1 (MatriX's); Silo's index is fileIndex - 1
+        int fileIndex = 0;    // from 1 (legacy compatibility's); native file index is fileIndex - 1
         double timecode = 0;  // the position, seconds
         double duration = 0;  // seconds, 0: unknown
         bool viewed = false;

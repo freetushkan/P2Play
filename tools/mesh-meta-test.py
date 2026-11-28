@@ -68,7 +68,7 @@ class Node:
             if self.proc.poll() is not None:
                 raise RuntimeError("daemon exited: " + (self.data / "stdout.log").read_text()[-4000:])
             try:
-                if self.call("/api/system/ping")[0] == 200:
+                if self.call("/api/v1/system/ping")[0] == 200:
                     return
             except (OSError, urllib.error.URLError):
                 pass
@@ -90,7 +90,7 @@ class Node:
 
 
 def make_list(node, name, kind="catalog"):
-    status, result = node.call("/api/publish", {
+    status, result = node.call("/api/v1/publish", {
         "name": name, "description": "meta-list test fixture", "type": kind
     })
     key = result.get("pubkey", "")
@@ -110,7 +110,7 @@ def main():
         nested = make_list(publisher, "Nested meta", "meta")
         collection = make_list(publisher, "Curated collection", "meta")
 
-        endpoint = f"/api/publish/{collection}/meta"
+        endpoint = f"/api/v1/publish/{collection}/meta"
         status, result = publisher.call(endpoint, {"items": [
             {"pubkey": collection, "annotation": "self", "enabled": True}
         ]})
@@ -129,10 +129,10 @@ def main():
             {"pubkey": disabled, "annotation": "Temporarily hidden", "enabled": False}
         ]})
         check(status == 200 and result.get("items") == 2, "two signed meta items staged")
-        status, state = publisher.call(f"/api/publish/{collection}/status")
+        status, state = publisher.call(f"/api/v1/publish/{collection}/status")
         check(status == 200 and state.get("type") == "meta" and state.get("pending_meta") is True,
               "meta-list type and pending state visible")
-        status, released = publisher.call(f"/api/publish/{collection}/release", {})
+        status, released = publisher.call(f"/api/v1/publish/{collection}/release", {})
         check(status == 200 and released.get("seq") == 1 and released.get("items", [])[0]["enabled"],
               "metadata-only release signed at sequence 1")
 
@@ -141,7 +141,7 @@ def main():
             {"pubkey": disabled, "annotation": "Curated documentaries", "enabled": True}
         ]})
         check(status == 200, "meta-list item enable flags can be changed")
-        status, released = publisher.call(f"/api/publish/{collection}/release", {})
+        status, released = publisher.call(f"/api/v1/publish/{collection}/release", {})
         check(status == 200 and released.get("seq") == 2, "meta-list edit released as sequence 2")
         current = next(x for x in released["items"] if x["pubkey"] == disabled)
         check(current["enabled"] is True and current["annotation"] == "Curated documentaries",
@@ -152,7 +152,7 @@ def main():
             {"pubkey": disabled, "annotation": "Temporarily hidden", "enabled": False}
         ]})
         check(status == 200, "meta-list selection can be restored")
-        status, released = publisher.call(f"/api/publish/{collection}/release", {})
+        status, released = publisher.call(f"/api/v1/publish/{collection}/release", {})
         check(status == 200 and released.get("seq") == 3, "restored selection released as sequence 3")
 
         # Import the enabled leaf and collection on a second node. The disabled leaf is
@@ -171,14 +171,14 @@ def main():
         manifest_path.write_bytes(tampered)
 
         subscriber.start()
-        status, result = subscriber.call("/api/lists/import", {"dir": str(sources / nested)})
+        status, result = subscriber.call("/api/v1/lists/import", {"dir": str(sources / nested)})
         check(status == 200, "standalone meta-list can be imported as a root")
-        status, result = subscriber.call("/api/lists/import", {"dir": str(bad)})
+        status, result = subscriber.call("/api/v1/lists/import", {"dir": str(bad)})
         check(status == 400 and "signature" in result.get("error", "").lower(),
               "tampered meta annotation rejected by manifest signature")
-        status, result = subscriber.call("/api/lists/import", {"dir": str(sources / collection)})
+        status, result = subscriber.call("/api/v1/lists/import", {"dir": str(sources / collection)})
         check(status == 200, "signed meta-list imported")
-        lists = subscriber.call("/api/lists")[1].get("lists", [])
+        lists = subscriber.call("/api/v1/lists")[1].get("lists", [])
         by_key = {item["pubkey"]: item for item in lists}
         check(collection in by_key and by_key[collection]["type"] == "meta",
               "subscriber exposes meta-list type")
@@ -188,8 +188,8 @@ def main():
               "subscriber receives ordered annotations and enable flags")
         check(enabled not in by_key and disabled not in by_key,
               "child catalogs are not imported merely with the parent manifest")
-        status, enabled_state = subscriber.call(f"/api/lists/{enabled}/status")
-        status_disabled, disabled_state = subscriber.call(f"/api/lists/{disabled}/status")
+        status, enabled_state = subscriber.call(f"/api/v1/lists/{enabled}/status")
+        status_disabled, disabled_state = subscriber.call(f"/api/v1/lists/{disabled}/status")
         check(status == 200 and enabled_state["net"]["wanted"] is True and
               enabled_state["net"]["meta_child"] is True,
               "enabled child is automatically queued as a one-level subscription")
@@ -206,24 +206,24 @@ def main():
             {"pubkey": disabled, "annotation": "Curated documentaries", "enabled": True}
         ]})
         check(status == 200, "meta-list child can be disabled in a later version")
-        status, changed = publisher.call(f"/api/publish/{collection}/release", {})
+        status, changed = publisher.call(f"/api/v1/publish/{collection}/release", {})
         check(status == 200 and changed.get("seq") == 4, "changed child selection is signed")
         changed_source = root / "changed-meta"
         shutil.copytree(publisher.data / "lists" / collection, changed_source)
-        status, result = subscriber.call("/api/lists/import", {"dir": str(changed_source)})
+        status, result = subscriber.call("/api/v1/lists/import", {"dir": str(changed_source)})
         check(status == 200, "subscriber accepts newer meta-list selection")
-        enabled_state = subscriber.call(f"/api/lists/{enabled}/status")[1]
-        disabled_state = subscriber.call(f"/api/lists/{disabled}/status")[1]
+        enabled_state = subscriber.call(f"/api/v1/lists/{enabled}/status")[1]
+        disabled_state = subscriber.call(f"/api/v1/lists/{disabled}/status")[1]
         check(enabled_state["net"]["wanted"] is False and enabled_state["net"]["meta_child"] is False and
               disabled_state["net"]["wanted"] is True and disabled_state["net"]["meta_child"] is True,
               "new signed selection cancels the disabled child and queues the enabled child")
 
         subscriber.stop()
         subscriber.start()
-        lists = subscriber.call("/api/lists")[1].get("lists", [])
+        lists = subscriber.call("/api/v1/lists")[1].get("lists", [])
         by_key = {item["pubkey"]: item for item in lists}
-        enabled_state = subscriber.call(f"/api/lists/{enabled}/status")[1]
-        disabled_state = subscriber.call(f"/api/lists/{disabled}/status")[1]
+        enabled_state = subscriber.call(f"/api/v1/lists/{enabled}/status")[1]
+        disabled_state = subscriber.call(f"/api/v1/lists/{disabled}/status")[1]
         check(collection in by_key and by_key[collection]["items"][0]["enabled"] is False,
               "latest meta-list selection survives daemon restart")
         check(enabled_state["net"]["wanted"] is False and disabled_state["net"]["wanted"] is True and

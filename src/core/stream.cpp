@@ -264,7 +264,7 @@ namespace p2p {
             done();
             return;
         }
-        std::map<std::string, std::string> headers = {{"Accept-Ranges", "bytes"}};
+        std::map<std::string, std::string> headers = {{"Accept-Ranges", "bytes"}, {"Referrer-Policy", "no-referrer"}};
         if (req.hasRange) {
             headers["Content-Range"] = "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(size);
         }
@@ -301,7 +301,7 @@ namespace p2p {
             std::chrono::duration<double>(Clock::now() - began).count());
     }
 
-    // TorrServer's preload: the start of the file (PreloadCache % of the cache, at most the
+    // Preload behaviour: the start of the file (PreloadCache % of the cache, at most the
     // window) and its last piece, before the player opens it
     void Core::preload(const TorrentPtr &t, int index) {
         int first, last, tail, pieceLength;

@@ -1,6 +1,6 @@
 # Platform and runtime matrix
 
-Updated: 2026-11-27. This matrix distinguishes code/build evidence from device-level
+Updated: 2026-11-28. This matrix distinguishes code/build evidence from device-level
 acceptance. "Built" does not imply that the integrated lifecycle has been tested.
 
 ## Intended product layout
@@ -13,15 +13,13 @@ acceptance. "Built" does not imply that the integrated lifecycle has been tested
 | PS4 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
 | PS5 | No standalone daemon is part of the target product layout | `P2Play_embedded` is implemented and built in CI; physical-device acceptance pending | Not a target |
 
-## Compatibility build policy
+## Native API build policy
 
-Standard CMake, package, Android, Switch, PS4 and PS5 builds use
-`P2P_COMPAT_MATRIX=OFF`. This disables only the optional TorrServer MatriX
-routes and their HTTP Basic authentication. The Silo-compatible token API,
-native P2Play identity/API, MediaMesh catalog and authenticated streaming remain
-in the standard build. Linux CI separately configures `P2P_COMPAT_MATRIX=ON`
-and runs the MatriX/Basic compatibility suite against that binary; the default
-OFF binary runs the native API and MediaMesh acceptance tests.
+P2Play ships one native, versioned REST API under `/api/v1`. The MatriX
+compatibility router, HTTP Basic authentication and old unversioned Silo-compatible
+REST routes are removed from standard builds and are not optional build features.
+The `torrs://` URI and `.torrs` card format remain application data formats used
+by Android/pPlay; their retention does not imply legacy API emulation.
 
 ## Current evidence
 
@@ -94,3 +92,32 @@ keeps fork PR caches read-only, and preserves partial cache state after failed b
 P2Play run #339 passed all five platform jobs and the PS5 package job; pPlay PR #14
 merged corresponding changes and run #1485 passed. This addresses dependency-resolution
 reliability, not every possible Android build failure.
+
+## Outbound HTTP(S) fetch transport
+
+- **Linux standalone:** libcurl with peer/hostname verification enabled. No
+  application CA file is forced; the system libcurl trust configuration is used.
+  The shared path imports remote `.torrent` files (up to 16 MiB) and posters
+  (up to 2 MiB).
+- **Android standalone:** an authenticated loopback-only bridge from `p2playd`
+  to Java `SSLSocket`. The bridge uses Android's system CA store and hostname
+  verification; the daemon supplies the DNS-pinned IPv4 address. Its bounded
+  response capacity supports both poster and torrent-file limits.
+- **Switch standalone:** trusted certificates are exported at startup from the
+  current libnx SSL certificate store and loaded by libcurl.
+- **PS4 / PS5 standalone:** libcurl uses the CA bundle at
+  `data/ca/cacert.pem`, generated from the same bundle used by pPlay builds.
+- **pPlay embedded:** PR [pPlay #17](https://github.com/freetushkan/pPlay/pull/17)
+  supplies a host callback backed by pPlay's existing `Http::perform`, platform
+  CA configuration and `Io::tlsVerify()` preference. The callback carries the
+  DNS pin and disables automatic redirects/proxies for the request. There is no
+  separate TLS implementation
+  in the MediaMesh Silo plugin; it only searches signed catalogs and passes a
+  selected magnet to Silo's own torrent host API.
+
+All hosts return redirect locations to the core without automatic following.
+The shared fetcher is bounded per request: 2 MiB for posters, 16 MiB for torrent
+metadata. It re-resolves and validates every redirect target (public IPv4 only),
+pins the selected address into the transport, and rejects HTTPS-to-HTTP downgrade.
+See [HTTP(S) fetch policy and tests](http-fetch.md).
+The core re-resolves and checks each target and rejects HTTPS-to-HTTP downgrade.

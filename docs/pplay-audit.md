@@ -1,6 +1,6 @@
 # pPlay ↔ P2Play: аудит паритета и сборки
 
-Дата обновления: 2026-11-27. Это code-review и требования, **не** результат
+Дата обновления: 2026-11-28. Это code-review и требования, **не** результат
 device acceptance. Текущие refs: P2Play `master`
 `f5a70868f791a2e1dfc07654767adde0383d7098`; pPlay `dev`
 `23444a68e920329f09c7dbef89ad39c00a18afb2`. Все пути `src/app`, `src/player`,
@@ -13,8 +13,8 @@ library/add/delete UI и native API; ветка не является часть
 ## Вывод
 
 Базовый P2Play client и embedded core реализованы, но полной функциональной
-эквивалентности TorrServer нет. Отдельный adapter не использует `torrserve.*`,
-однако некоторые общие UI/player пути всё ещё вызывают TorrServer напрямую.
+эквивалентности legacy backend нет. Отдельный adapter не использует `previous backend files`,
+однако некоторые общие UI/player пути всё ещё вызывают legacy backend напрямую.
 Нельзя считать зелёную сборку доказательством паритета поведения.
 
 Публичный Actions API на момент аудита показывает успешный workflow для pPlay
@@ -25,7 +25,7 @@ https://github.com/freetushkan/pPlay/actions/runs/45752020074 .
 
 ## Матрица возможностей
 
-| Возможность TorrServer / общий клиент | P2Play | Доказательство / граница |
+| Возможность legacy backend / общий клиент | P2Play | Доказательство / граница |
 | --- | --- | --- |
 | Идентификация, credentials, TLS policy | Реализовано | `src/net/p2play.cpp`: verifyServer/apiJson, native version + Bearer; общий HTTP transport |
 | Просмотр torrent files, preview/add, playback | Реализовано | openTorrent/addTorrent/getDirList/toStreamUrl, `Filer::showP2PlayRecord/openP2PlayLink` |
@@ -35,18 +35,18 @@ https://github.com/freetushkan/pPlay/actions/runs/45752020074 .
 | Изменение title/category из library UI | Пробел в `dev`; добавлено в feature branch | В feature branch `PUT /api/v1/torrents/{hash}` редактирует общие метаданные infohash; это не per-user display alias. Branch-only, ещё не проверено сборкой |
 | Возобновление позиции, запись duration | Реализовано | `Io::get/setPlaybackProgress`, `Player::load/saveProgress`, per-user file_progress |
 | Continue Watching | Реализовано | `P2Play::getProgress`, virtual progress path, фильтр viewed/position, refresh при возврате из fullscreen |
-| Mark watched / reset file/folder на сервере | Неполный паритет | `Filer::markWatched/markFolder`, reset path в `filer.cpp` используют TorrServe-specific branch. Для P2Play меняется локальный watch-later, серверная метка/позиция не синхронизируются |
-| Значки watched, полосы прогресса, folder marks | Неполный паритет | `filer_item.cpp`, `details_view.cpp`, `media/folder_marks.cpp`: `TorrServe::isFileViewed/keptPosition/getTree` |
-| Локальная копия / offline Saved | Нет нейтрального P2Play аналога | `Io::localCopy` для P2Play возвращает пусто, `touchSavedFile` пропускается. Нельзя подключать TorrServer Saved как обход |
-| Deep links | Частично | `torrs://` в `main.cpp` → `openP2PlayLink` с последней внешней P2Play сетью (lastP2PlayNetworkIndex исключает embedded); HTTP stream-link ownership/resolution в `Main::openLink` остаётся TorrServer-only |
+| Mark watched / reset file/folder на сервере | Неполный паритет | `Filer::markWatched/markFolder`, reset path в `filer.cpp` используют legacy adapter-specific branch. Для P2Play меняется локальный watch-later, серверная метка/позиция не синхронизируются |
+| Значки watched, полосы прогресса, folder marks | Неполный паритет | `filer_item.cpp`, `details_view.cpp`, `media/folder_marks.cpp`: `legacy adapter::isFileViewed/keptPosition/getTree` |
+| Локальная копия / offline Saved | Нет нейтрального P2Play аналога | `Io::localCopy` для P2Play возвращает пусто, `touchSavedFile` пропускается. Нельзя подключать legacy backend Saved как обход |
+| Deep links | Частично | `torrs://` в `main.cpp` → `openP2PlayLink` с последней внешней P2Play сетью (lastP2PlayNetworkIndex исключает embedded); HTTP stream-link ownership/resolution в `Main::openLink` остаётся legacy backend-only |
 | Описания/постеры | Catalog details реализованы | signed refs загружаются лениво в `getCatalogDetails`; это не доказывает паритет обложек файлов/audio screen |
-| Audio artwork / shared-player independence | Нарушение границы | `Player::pictureUrlsOf` в `player_visual.cpp` напрямую вызывает `TorrServe::toStreamUrl/getInfo`; `DetailsInfo::coverOf` использует `Saved::openUrl` |
-| Discover, meta-lists, выбор списков поиска | Реализовано, P2Play-specific | `getCatalogLists`, `.p2play/discover/lists/results`; нет оснований требовать аналог в TorrServer |
+| Audio artwork / shared-player independence | Нарушение границы | `Player::pictureUrlsOf` в `player_visual.cpp` напрямую вызывает `legacy adapter::toStreamUrl/getInfo`; `DetailsInfo::coverOf` использует `Saved::openUrl` |
+| Discover, meta-lists, выбор списков поиска | Реализовано, P2Play-specific | `getCatalogLists`, `.p2play/discover/lists/results`; нет оснований требовать аналог в legacy backend |
 | Users UI | Реализовано | `getUsers/createUser/...`, меню разрешено и для external, и embedded; сервер проверяет numeric rank |
 | Embedded start/drain/stop | Реализовано по коду | `p2play_embedded.cpp`, `Io::forgetNetworks/update/shutdown`; physical acceptance открыта |
 
 Паритет означает одинаковые пользовательские сценарии там, где backend имеет
-соответствующие функции; это не копирование всех API TorrServer. Для capability,
+соответствующие функции; это не копирование всех API legacy backend. Для capability,
 которой нет, UI обязан явно скрыть/объяснить действие, а не молча сохранить только
 локальное состояние с сообщением о серверном успехе.
 
@@ -73,7 +73,7 @@ roadmap до прохождения CI/проверок клиента.
    synthetic secret, включая ошибки/retry. Core log redaction это не исправляет.
 2. **Прогресс блокирует player update.** `saveProgress(false)` вызывается в
    `Player::onUpdate`, P2Play PUT выполняется синхронно через `Http::perform`,
-   тогда как TorrServer setter ставит работу в thread. Timeout может заморозить
+   тогда как legacy backend setter ставит работу в thread. Timeout может заморозить
    интерфейс. Требуются bounded async очередь, coalescing по user/file, порядок
    final write/reset, отмена при смене аккаунта и ограниченный flush перед shutdown.
 3. **Reset не равен viewed=false.** P2Play backend (`src/core/api_silo.cpp`)
@@ -186,7 +186,7 @@ fingerprint SDK/compiler, иначе restore prefix слишком широки�
 3. pPlay/dev: redact URL log и async progress; тесты account switch, slow/offline
    server, last write on exit, отсутствие secrets в logs/cache paths.
 4. pPlay/dev: neutral viewed/reset/folder state и library CRUD. Добавить backend
-   методы, не использовать TorrServer Saved или прямые вызовы из player/probe.
+   методы, не использовать legacy backend Saved или прямые вызовы из player/probe.
 5. Отдельно определить offline P2Play storage и stream-link ownership; acceptance
    на реальных Linux/Android/Switch/PS4/PS5 с LAN-вторым клиентом и crash restart.
 
@@ -240,19 +240,19 @@ P2Play MatriX build opt-out не должен выключать native/Silo aut
 
 ### Сокращение вариантов сети
 
-Текущая модель pPlay имеет отдельные NetworkType::TorrServe и
-TorrServeSilo, а также P2Play и P2PlayEmbedded. UI показывает
-TorrServer.MatriX, TorrServer.Silo, P2Play, P2Play_embedded.
+Текущая модель pPlay имеет отдельные NetworkType::legacy adapter и
+legacy Silo adapter, а также P2Play и P2PlayEmbedded. UI показывает
+legacy Matrix adapter, legacy Silo adapter, P2Play, P2Play_embedded.
 Discovery в src/net/discovery.cpp ищет хосты в локальном /24 на TCP 8090,
 после чего для одного выбора типа проверяет только один маршрут:
 MatriX /echo, Silo /api/system/ping (ответ JSON status=ok).
-Встроить оба probe в единую проверку одного типа TorrServer; не считать
+Встроить оба probe в единую проверку одного типа legacy backend; не считать
 отсутствие MatriX /echo признаком недоступности Silo. Сканирование сейчас
 опирается на один адрес, выбранный route-to-8.8.8.8; многосетевые интерфейсы
 и конкретные interface routes ещё не проверены.
 
 Предлагаемая модель настройки:
-- один видимый тип TorrServer, dialect определяется успешным уникальным ping;
+- один видимый тип legacy backend, dialect определяется успешным уникальным ping;
 - один видимый тип P2Play, рядом instance selector: External/Built-in;
 - External сохраняет URL, user/password, Bearer login;
 - Built-in использует 127.0.0.1:8090, фиксированный user owner и только
@@ -261,14 +261,14 @@ MatriX /echo, Silo /api/system/ping (ответ JSON status=ok).
   нормализуются при сохранении; существующие URLs, users, passwords, TLS/sync
   settings не теряются.
 
-### Возможная область прерываний TorrServer playback
+### Возможная область прерываний legacy backend playback
 
-Наблюдение пользователя: playback через TorrServer иногда прерывается, когда
+Наблюдение пользователя: playback через legacy backend иногда прерывается, когда
 в filer открыт встроенный P2Play; предполагаемая корреляция — моменты sync.
 Причина пока не подтверждена.
 
 Статические участки, которые нужно измерить:
-- TorrServer list refresh: torrserve.cpp использует global g_fetchMutex
+- legacy backend list refresh: previous backend source использует global g_fetchMutex
   для одного fetch одновременно, cache interval networkSync(root), stale
   fallback и отдельные viewed/progress workers.
 - Embedded P2Play: p2play_embedded.cpp запускает отдельный core worker,
@@ -277,15 +277,59 @@ MatriX /echo, Silo /api/system/ping (ответ JSON status=ok).
 - HTTP: pPlay Http::perform использует Utility::NetworkLock; сам lock
   блокирует параллельные операции только на Switch, на остальных платформах
   это no-op. Это не доказывает, что lock участвует в mpv stream stalls.
-- Player progress: Io dispatch различает TorrServer и P2Play; TorrServer
+- Player progress: Io dispatch различает legacy backend и P2Play; legacy backend
   progress setter ставит фоновую job, а P2Play setter выполняется через свой
-  adapter. Предыдущий unconditional TorrServer flush уже ограничен только
-  DeviceType::TorrServe.
+  adapter. Предыдущий unconditional legacy backend flush уже ограничен только
+  DeviceType::legacy adapter.
 
 Следующий шаг — instrumentation с monotonic timestamps и bounded regression test:
-TorrServer stream active + filer listing embedded library + periodic MediaMesh
+legacy backend stream active + filer listing embedded library + periodic MediaMesh
 sync, сравнить без embedded, embedded idle и embedded loaded. Фиксировать
 stream read gaps/reconnects, CPU/network throughput, lock wait times, queue depth,
 sync duration и stop/drain transitions. Не считать CPU/network contention доказанной
 причиной до воспроизводимого теста.
 
+
+
+## Update 2026-11-28: P2Play path restore, saved copies and progress reset
+
+The pPlay integration branch now keeps the P2Play virtual filesystem semantics when restoring
+both the last library selection and the last playback session. A virtual media file
+(`.p2play/file/<hash>/<index>/<title>/<relative-path>`) is not itself a directory; restore
+opens its owning `.p2play/library/<hash>/<title>` directory (or `.p2play/direct/<hash>`
+for direct-route files) and then re-selects the exact file. The library listing also accepts
+the canonical `.p2play/library/<hash>` parent without a title component and obtains the
+display title from the server details.
+
+Offline saved-copy reads now go through the network-neutral `Io::streamUrl` dispatcher.
+This prevents `Saved::Source` from accidentally calling the TorrServe URL converter on a
+P2Play path. The TorrServe-specific `[all files]` pseudo-item exclusion is likewise now
+guarded by the actual device type.
+
+For P2Play file/folder progress reset, the client uses the native
+`DELETE /api/v1/torrents/{hash}/files/{id}/progress` operation. This deletes the user's
+position and viewed record together; sending only `viewed=false` was insufficient.
+Folder mark/unmark now reads and updates P2Play's per-file viewed/progress records as well
+as TorrServe state, without routing P2Play requests through TorrServe methods.
+
+These are code changes on the current pPlay PR branch; CI and runtime acceptance are still
+required. Watch-later paths continue to be keyed from the stream URL; the server's per-user
+API token is durable across ordinary reconnects. Token reset intentionally creates a new
+security identity and should not be treated as a transparent credential refresh.
+
+
+## Web UI refinement (2026-11-28)
+
+- Main navigation remains Library → Playback history → Search; library cards now use inline title editing and save category/title on Enter or blur.
+- The library filter endpoint reports both the post-filter result count and total per-user library count; a one-page result hides pagination.
+- Duration values use compact unit labels (hours, minutes, seconds) rather than clock notation.
+- Theme preference supports light, dark and automatic (OS color-scheme) and is persisted per user.
+- Replaced native browser prompts/confirms/alerts with the centered accessible UI dialog; account role is shown under username in the account menu.
+- Disk-cache size control is grouped with and hidden by its enable switch; the catalog memory index and public MediaMesh directory settings share a group.
+- List names in Lists/Discover are returned by the lists APIs and are displayed as supplied. A specific item name (for example “Media HTTP”) is not a hard-coded UI control; check the runtime list record before removing it.
+
+  
+The public MediaMesh directory switch is evaluated during core startup. Changing
+`DisableMeshDirectory` therefore returns `restart_required: true`, and the UI labels
+the setting accordingly. Lists shown by Lists/Discover remain the records returned by
+the catalog APIs; changing the local announcement setting does not delete list records.

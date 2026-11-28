@@ -174,7 +174,7 @@ namespace p2p {
                 r.fileIndex = static_cast<int>(num(item, "file_index"));
                 r.timecode = item.value("timecode", 0.0);
                 r.duration = item.value("duration", 0.0);
-                // before the users: MatriX's list, every file in it viewed
+                // before per-user state: every file in the saved list was viewed
                 r.viewed = item.value("viewed", r.user.empty());
                 r.updated = num(item, "updated");
                 if (r.user.empty()) {

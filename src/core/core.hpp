@@ -1,10 +1,8 @@
 #pragma once
 
-// The P2Play core: a libtorrent session, the torrents (active or only in the library),
-// streaming any file of a torrent over HTTP; the native API of Silo's scheme (api_silo.cpp) and
-// the TorrServer MatriX API (api_matrix.cpp), one set of users (auth.hpp).
+// The P2Play core: libtorrent session, library, streaming, native REST API and users.
 // Torrents are downloaded only around what is read (the readers' windows), as in
-// TorrServer; with the RAM storage nothing else is kept.
+// P2Play; with the RAM storage nothing else is kept.
 
 #include <atomic>
 #include <chrono>
@@ -36,14 +34,17 @@ namespace p2p {
 
     struct CoreConfig {
         std::string dataDir;
-        uint16_t httpPort = 8090;   // TorrServer's
+        uint16_t httpPort = 8660;   // P2Play's default HTTP port
+        bool httpLoopbackOnly = false; // embedded hosts can keep the Web UI/API on localhost
+        std::string httpPrefix;     // optional URL path prefix, e.g. /media/p2play
         bool console = false;       // fewer connections, no LSD/UPnP/NAT-PMP, IPv4 only
         std::string platform;       // shown by /echo
         std::string ownerPassword;
         std::function<void(const std::string &)> log;
+        std::function<int(const std::string &, const std::string &, size_t, std::string &, std::string &, std::string &, std::string &)> httpGet;
     };
 
-    // TorrServer's settings (BTSets) the core uses; the others are kept and given back
+    // P2Play's settings (BTSets) the core uses; the others are kept and given back
     struct Settings {
         int64_t cacheSize = 128LL * 1024 * 1024;
         int readAhead = 95;          // % of the cache for the readers' windows (at most half of it)
@@ -71,7 +72,9 @@ namespace p2p {
         // A torrent added without a poster (a magnet, a .torrent file, a torrs:// card without
         // one) gets the image found inside it; with none there, a frame of its video through
         // ffmpeg when that binary is present. Off: only posters given by the client.
-        bool coverProbe = true;
+        bool coverFiles = true;
+        bool coverEmbedded = true;
+        bool coverProbe = false;
     };
 
     class Core {
@@ -97,13 +100,13 @@ namespace p2p {
         // accepted HTTP requests which are still using this core
         int activeRequests() const;
 
-        // a client asked the server to stop (MatriX /shutdown); the host decides
+        // a client asked the server to stop (legacy compatibility /shutdown); the host decides
         bool shutdownRequested() const { return m_shutdownRequested; }
 
         // a catalog node: the lists and the search only, no streamer
         bool catalogOnly() const { return m_settings.catalogOnly; }
 
-        static const char *version();       // MatriX version when enabled, native P2Play identity otherwise
+        static const char *version();       // legacy compatibility version when enabled, native P2Play identity otherwise
         static const char *productVersion(); // native P2Play version, sourced from CMake
 
         // /echo: the version and the platform
@@ -119,9 +122,7 @@ namespace p2p {
         void handle(const HttpRequest &req, HttpResponse &res);
         void route(const HttpRequest &req, HttpResponse &res);
 
-        // api_silo.cpp: the native API, Silo's scheme under /api (file indexes from 0)
-        void routeSilo(const HttpRequest &req, HttpResponse &res, const User &user);
-        // api_p2play.cpp: P2Play's versioned native API (independent of MatriX).
+        // api_p2play.cpp: P2Play's versioned native API (independent of legacy compatibility).
         bool routeP2PlayV1(const HttpRequest &req, HttpResponse &res, const User &user,
                             const std::vector<std::string> &parts);
 
@@ -192,27 +193,13 @@ namespace p2p {
 
         // api_catalog.cpp: the lists, the catalog search, publishing (stage 3)
         void routeMesh(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
-        void siloEvents(HttpResponse &res, const User &user);
-        void siloAdd(const HttpRequest &req, HttpResponse &res, const User &user);
-        void siloUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
-        nlohmann::json siloStatus(const TorrentPtr &t, const std::string &user);
-        nlohmann::json siloProgress(const std::string &user, int64_t since);
+        void apiUsers(const HttpRequest &req, HttpResponse &res, const User &user, const std::vector<std::string> &parts);
+        nlohmann::json torrentStatus(const TorrentPtr &t, const std::string &user);
+        nlohmann::json libraryProgress(const std::string &user, int64_t since);
         // a position: viewed set past the threshold
         void setPosition(const std::string &user, const std::string &hash, int fileIndex, double position,
                          double duration, bool keepViewed);
 
-        // api_matrix.cpp: the MatriX compatibility layer (file ids from 1)
-        bool routeMatrix(const HttpRequest &req, HttpResponse &res, const User &user);
-        bool matrixPublic(const HttpRequest &req);
-        void downloadTest(const HttpRequest &req, HttpResponse &res, int64_t megabytes);
-        void apiTorrents(const HttpRequest &req, HttpResponse &res, const User &user);
-        void apiStream(const HttpRequest &req, HttpResponse &res, const std::string &hash, int index, const User &user);
-        void apiViewed(const HttpRequest &req, HttpResponse &res, const User &user);
-        void apiSettings(const HttpRequest &req, HttpResponse &res);
-        void apiCache(const HttpRequest &req, HttpResponse &res);
-        void apiUpload(const HttpRequest &req, HttpResponse &res, const User &user);
-        std::string playlist(const std::vector<TorrentPtr> &torrents, const std::string &host, int fromIndex,
-                             const std::string &user, const std::string &query);
 
         // the hex infohash of a magnet, an infohash (hex or base32); empty otherwise
         static std::string hashOfLink(const std::string &link);
@@ -226,7 +213,7 @@ namespace p2p {
         TorrentPtr addMetadata(const std::string &torrentFile, const std::string &title, const std::string &poster,
                                const std::string &category, const std::string &data, const std::string &saveFor,
                                std::string &error);
-        // a torrs:// card into a user's library, not opened (Silo's import); false: a bad link
+        // a torrs:// card into a user's library, not opened (external host's import); false: a bad link
         bool addCard(const std::string &link, const std::string &user);
         // the torrs:// link of a torrent (its card, size and trackers)
         std::string torrsOf(const TorrentPtr &t);
@@ -260,7 +247,14 @@ namespace p2p {
         // the cached cover of a torrent: its bytes, image type and where it came from
         bool coverRead(const std::string &hash, std::string &bytes, std::string &type, std::string &source);
         // validate and persist a user-selected image in the same infohash-owned cover store
+#ifdef P2P_FETCH_TEST
+        friend bool p2playFetchTest(Core &, const std::string &, size_t, std::string &, std::string &, std::string &);
+        friend bool p2playAddTest(Core &, const std::string &, std::string &);
+#endif
         bool coverValidate(const std::string &bytes, std::string &type) const;
+        // Bounded public HTTP(S) fetch shared by torrent metadata and poster downloads.
+        bool fetchUrl(const std::string &url, size_t maxBytes, std::string &bytes,
+                      std::string &type, std::string &error);
         bool coverFetchUrl(const std::string &url, std::string &bytes, std::string &type, std::string &error);
         bool coverStore(const std::string &hash, const std::string &bytes, const std::string &source, std::string &error);
         // the same without the bytes: for a listing, one small file read per torrent

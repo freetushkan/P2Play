@@ -184,7 +184,7 @@ def main():
         nodes.append(subscriber)
 
         status, created = publisher.call(
-            "/api/publish", {"name": "Large catalog resource profile",
+            "/api/v1/publish", {"name": "Large catalog resource profile",
                              "description": "Synthetic acceptance profile"}
         )
         check(status == 201 and len(created.get("pubkey", "")) == 64,
@@ -194,25 +194,25 @@ def main():
         description = b"D" * DESCRIPTION_LIMIT
         poster = b"\xff\xd8\xff" + b"P" * (POSTER_LIMIT - 5) + b"\xff\xd9"
         status, body, _ = post_raw(
-            publisher, f"/api/publish/{pubkey}/media/description",
+            publisher, f"/api/v1/publish/{pubkey}/media/description",
             description, "text/plain; charset=utf-8"
         )
         check(status == 201, "64 KiB UTF-8 description accepted")
         description_ref = json.loads(body)
         status, body, _ = post_raw(
-            publisher, f"/api/publish/{pubkey}/media/poster",
+            publisher, f"/api/v1/publish/{pubkey}/media/poster",
             poster, "image/jpeg"
         )
         check(status == 201, "2 MiB poster accepted")
         poster_ref = json.loads(body)
 
         status, _body, _ = post_raw(
-            publisher, f"/api/publish/{pubkey}/media/description",
+            publisher, f"/api/v1/publish/{pubkey}/media/description",
             description + b"x", "text/plain; charset=utf-8"
         )
         check(status == 400, "description above 64 KiB refused")
         status, _body, _ = post_raw(
-            publisher, f"/api/publish/{pubkey}/media/poster",
+            publisher, f"/api/v1/publish/{pubkey}/media/poster",
             poster + b"x", "image/jpeg"
         )
         check(status == 400, "poster above 2 MiB refused")
@@ -228,21 +228,21 @@ def main():
 
         started = time.monotonic()
         status, accepted, _ = post_raw(
-            publisher, f"/api/publish/{pubkey}/records",
+            publisher, f"/api/v1/publish/{pubkey}/records",
             ndjson, "application/x-ndjson"
         )
         check(status == 200 and json.loads(accepted)["count"] == MOVIE_RECORDS + SERIES_RECORDS,
               "all large-catalog records accepted")
-        status, released = publisher.call(f"/api/publish/{pubkey}/release", {})
+        status, released = publisher.call(f"/api/v1/publish/{pubkey}/release", {})
         check(status == 200 and released["records"] == MOVIE_RECORDS + SERIES_RECORDS,
               "multi-shard version released")
         metrics["publish_seconds"] = round(time.monotonic() - started, 3)
 
         wait_for(
-            lambda: publisher.call("/api/lists")[1]["lists"][0]["net"]["seeding"],
+            lambda: publisher.call("/api/v1/lists")[1]["lists"][0]["net"]["seeding"],
             seconds=30, label="publisher torrent seeding"
         )
-        status, publisher_plan = publisher.call(f"/api/lists/{pubkey}/files")
+        status, publisher_plan = publisher.call(f"/api/v1/lists/{pubkey}/files")
         check(status == 200, "publisher signed file plan available")
         publisher_files = publisher_plan["files"]
         movie_segments = [f for f in publisher_files
@@ -265,7 +265,7 @@ def main():
         metrics["media_pack_bytes"] = sum(f["bytes"] for f in media_packs)
 
         status, policy = subscriber.call(
-            f"/api/lists/{pubkey}/policy",
+            f"/api/v1/lists/{pubkey}/policy",
             {"shards": ["movies"], "record_bytes": RECORD_BUDGET,
              "media_bytes": MEDIA_BUDGET, "cache_bytes": CACHE_BUDGET,
              "mirror_media": False}
@@ -274,7 +274,7 @@ def main():
         before_subscribe = loopback_counters()
         started = time.monotonic()
         status, response = subscriber.call(
-            f"/api/lists/{pubkey}", {"peers": [f"127.0.0.1:{publisher.bt}"]}
+            f"/api/v1/lists/{pubkey}", {"peers": [f"127.0.0.1:{publisher.bt}"]}
         )
         check(status == 202, f"subscriber accepted peer-hinted subscription ({response})")
 
@@ -291,10 +291,10 @@ def main():
         metrics["initial_loopback_tx_bytes"] = after_subscribe["tx"] - before_subscribe["tx"]
         check(received["records"] == MOVIE_RECORDS,
               f"subscriber indexed exactly {MOVIE_RECORDS} selected records")
-        check(subscriber.call(f"/api/catalog/{MOVIE_RECORDS + 1:040x}")[0] == 404,
+        check(subscriber.call(f"/api/v1/catalog/{MOVIE_RECORDS + 1:040x}")[0] == 404,
               "unselected series shard is absent from the subscriber index")
 
-        status, subscriber_plan = subscriber.call(f"/api/lists/{pubkey}/files")
+        status, subscriber_plan = subscriber.call(f"/api/v1/lists/{pubkey}/files")
         check(status == 200, "subscriber signed file plan available")
         received_files = subscriber_plan["files"]
         selected = [f for f in received_files if f["kind"] == "records" and f["shard"] == "movies"]
@@ -315,7 +315,7 @@ def main():
 
         query = urllib.parse.quote("Catalog Feature 01234")
         started = time.monotonic()
-        status, result = subscriber.call(f"/api/catalog/search?q={query}&limit=5")
+        status, result = subscriber.call(f"/api/v1/catalog/search?q={query}&limit=5")
         metrics["search_seconds"] = round(time.monotonic() - started, 4)
         check(status == 200 and any(r["hash"] == f"{1235:040x}" for r in result["results"]),
               "large catalog is searchable by indexed title")
@@ -334,7 +334,7 @@ def main():
 
         before_media = loopback_counters()
         started = time.monotonic()
-        poster_path = f"/api/catalog/{1:040x}/poster?list={pubkey}"
+        poster_path = f"/api/v1/catalog/{1:040x}/poster?list={pubkey}"
         poster_result = wait_for(
             lambda: (lambda response: response if response[0] == 200 else None)(
                 get_raw(subscriber, poster_path)
@@ -353,7 +353,7 @@ def main():
         check(not media_paths["description"].exists(),
               "description pack remains absent until its object is requested")
         started = time.monotonic()
-        description_path = f"/api/catalog/{1:040x}/description?list={pubkey}"
+        description_path = f"/api/v1/catalog/{1:040x}/description?list={pubkey}"
         description_result = wait_for(
             lambda: (lambda response: response if response[0] == 200 else None)(
                 get_raw(subscriber, description_path)
@@ -388,7 +388,7 @@ def main():
         subscriber.start()
         metrics["cold_start_seconds"] = round(time.monotonic() - started, 3)
         memory_after_restart = proc_memory(subscriber.proc.pid)
-        status, result = subscriber.call(f"/api/catalog/search?q={query}&limit=5")
+        status, result = subscriber.call(f"/api/v1/catalog/search?q={query}&limit=5")
         check(status == 200 and any(r["hash"] == f"{1235:040x}" for r in result["results"]),
               "large catalog index survives a cold daemon restart")
         restarted_list = next(x for x in subscriber.lists() if x["pubkey"] == pubkey)

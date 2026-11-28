@@ -1,6 +1,6 @@
 # P2Play / MediaMesh — рабочий план
 
-Обновлено: 2026-11-27. Это компактный сопровождаемый план для ветки разработки.
+Обновлено: 2026-11-28. Это компактный сопровождаемый план для ветки разработки.
 Платформенная матрица и границы Android/Silo описаны отдельно в
 `docs/platform-matrix.md`; исходный DOCX в ветке `docs` остаётся справочным.
 Исходный большой документ `P2Play_MediaMesh.docx` и его текстовая версия `P2Play_MediaMesh.md`
@@ -13,7 +13,7 @@
 
 - [x] Общая C++-библиотека ядра и автономный демон; Linux, Android, Switch, PS4 и PS5
       имеют отдельные сборочные обвязки.
-- [x] TorrServer MatriX API, API по схеме Silo, авторизация, пользователи и прогресс.
+- [x] Native P2Play REST API `/api/v1`: авторизация, пользователи, библиотека, прогресс и стриминг.
 - [x] Linux CI собирает приложение и запускает API-, стриминговые и сетевые тесты.
 
 ### Этап 3: списки и сеть MediaMesh
@@ -127,11 +127,7 @@
       Контракты: `docs/web-ui.md`.
 
 
-- [x] MatriX compatibility сделан opt-in: `P2P_COMPAT_MATRIX=OFF` — default
-      в `src/core/CMakeLists.txt`; legacy MatriX API и HTTP Basic собираются только
-      при явном `-DP2P_COMPAT_MATRIX=ON`. Native `/api/v1`, Silo auth и streaming
-      сохраняются без MatriX; Linux CI PR #42 собирал и проверял конфигурацию OFF.
-      Legacy MatriX ON остаётся отдельной compatibility-конфигурацией, а не default.
+- [x] PR #45 removes MatriX/HTTP Basic and the unversioned Silo REST API completely. The compatibility CMake option and compatibility-only tests are removed; the versioned P2Play REST API and Bearer authentication remain. `tools/auth-test.py` asserts that the legacy routes return 404.
 - [ ] pPlay/dev: мигрировать и завершить проверку library/add/delete через native API:
       `GET /api/v1/library/torrents`, `GET /api/v1/library/categories`,
       `POST /api/v1/torrents`, `GET/PUT/DELETE /api/v1/torrents/{hash}`.
@@ -146,7 +142,7 @@
       Login и уже существующие Catalog/MediaMesh endpoints мигрировать отдельно
       только после добавления их versioned contract.
 - [ ] Сократить сетевые типы pPlay: один `TorrServer` с автоопределением MatriX
-      по `/echo` и Silo по `/api/system/ping`; один тип `P2Play` с дополнительным
+      по `/echo` и Silo по `/api/v1/system/ping`; один тип `P2Play` с дополнительным
       режимом instance: external или built-in. External показывает URL/user/password
       и сохраняет существующую схему; built-in скрывает URL/user, оставляет пароль
       для фиксированного `owner` и использует embedded lifecycle. Сохранить миграцию
@@ -157,13 +153,17 @@
       при параллельной работе filer. Проверить contention CPU/network, fetch mutex,
       curl/NetworkLock (особенно Switch) и embedded session activity. Добавить
       regression stress test; не менять sync cadence/locks без измеренного источника.
-- [ ] Подготовлен code-review pPlay/dev `402ee80` относительно P2Play/master
-      `052d569`: матрица паритета, реальные пробелы, расхождение core pins и план
-      кэширования. `docs/pplay-audit.md`; это не runtime/device acceptance.
-- [ ] pPlay/dev: единый resolver latest master → immutable SHA на workflow,
-      manifest для release/re-run, ccache по platform/ABI/toolchain/flags,
-      Boost cache с fingerprint патчей, исправление diagnostic workflow/include path.
-      Не заменять воспроизводимость mutable checkout в каждом platform job.
+- [x] Подготовлен статический code-review pPlay/dev `402ee80` относительно
+      P2Play/master `052d569`: матрица паритета, реальные пробелы, расхождение core
+      pins и план кэширования. `docs/pplay-audit.md`. Это исторический срез аудита,
+      не актуальный runtime/device acceptance и не доказательство функционального паритета.
+- [x] pPlay workflow разрешает latest P2Play master один раз на run и использует
+      один immutable SHA во всех platform jobs/Android ABI; checkout проверяет SHA.
+      Boost headers кэшируются с учётом core SHA.
+- [ ] pPlay workflow: build manifest для release/re-run, compiler cache (ccache)
+      с ключом platform/ABI/toolchain/flags, полный fingerprint SDK/container и
+      проверка diagnostic workflow. Не подменять сборку восстановлением готовых
+      бинарников из mutable cache.
 - [ ] pPlay/dev: устранить token URL в Debug log и синхронную запись прогресса
       из player update; безопасная async очередь/flush/reset/account switch и тесты.
 - [ ] Паритет TorrServer: server watched/reset, file/folder marks, нейтральный
@@ -188,10 +188,10 @@
       Switch, Android, PS4, PS5, PS5 package и отдельный Silo plugin CI jobs прошли.
       Спецификация: `docs/meta-lists.md` и `docs/mediamesh-v1.md`.
 - [x] Отдельный публичный endpoint идентичности и версии P2Play:
-      `GET /api/p2play/version` возвращает `{"name":"P2Play","version":"0.1"}` без
+      `GET /api/v1/system/version` возвращает `{"name":"P2Play","version":"0.1"}` без
       MatriX/TorrServer/Silo compatibility prefixes. Версия берётся из единственного
       CMake VERSION_MAJOR/MINOR источника. Endpoint работает без токена; legacy
-      `/api/system/ping`, `/api/system/version` и MatriX `/echo` не изменены.
+      `/api/v1/system/ping`, `/api/v1/system/version` и MatriX `/echo` не изменены.
       Реализован в PR #12; CI и проверки совместимости прошли.
 - [x] Базовая внешняя интеграция pPlay реализована в `freetushkan/pPlay/dev`:
       отдельные `src/net/p2play.h/.cpp`, проверка native version, Bearer login,
@@ -294,33 +294,30 @@
 
 - [x] Собственный версионированный P2Play REST API начат в PR #39: библиотека и
       torrent CRUD расположены под `/api/v1`, отделены от MatriX compatibility router
-      и проходят сборку с `P2P_COMPAT_MATRIX=OFF`. Это ещё не миграция всего API.
-- [ ] Последовательно версионировать Catalog, progress, users и streaming contracts,
-      мигрировать pPlay/web/embedded и внешних клиентов; только после фактической
-      миграции удалить MatriX и TorrServer.Silo compatibility routes/shims. До этого
-      совместимость остаётся доступной как opt-in.
+      и проходят сборку с `compatibility flags are absent`. Это ещё не миграция всего API.
+- [x] Версионировать собственный P2Play API: Catalog, progress, users, library,
+      torrent CRUD, share/stream contracts находятся под `/api/v1`; MatriX,
+      HTTP Basic и unversioned Silo compatibility routes удалены в PR #45.
+      Миграция внешнего pPlay клиента отслеживается отдельно (pPlay PR #17; merge
+      ещё не выполнен).
 
 ### Этап 5: наполнение каталога
 
-- [ ] Уточнение inventory: единая Category-сводка и размер NDJSON/zlib estimate
-      для всех источников; отключённые/пустые скрыты в HTML и матрице, JSON хранит
-      диагностику. Anime сохраняется отдельно в Rutor/RuTracker и добавлен первым
-      эвристическим CSV group в примере профиля. Локальные тесты проходят; CI и
-      production классификация ещё не подтверждены. См. `docs/grabber.md`.
+- [x] Inventory report: единая Category-сводка, NDJSON bytes и оценка zlib для
+      всех источников; отключённые/пустые источники скрыты в HTML, JSON сохраняет
+      диагностику; Anime выделен для Rutor/RuTracker и первой CSV-группы в профиле.
+      `tools/grabber-test.py` входит в Linux CI. См. `docs/grabber.md`.
+- [ ] Production classification: проверить категории на свежем полном inventory
+      и на выборках источников; отчётный расчёт не заменяет экспертную классификацию.
 
-- [ ] Компактный RuTracker/CSV: отдельный deleted inventory, profile-controlled
-      extra_fields, группы forum ID, непересекающиеся Video/Music и выбор lists/shards.
-      Локальная реализация и ограничения описаны в `docs/catalog-layout.md`;
-      отметить выполненные части отдельным PR только после успешного CI/merge.
-      Добавлена таблица покрытия каждого источника объединением остальных live
-      inventory (без двойного счёта), JSON/HTML; запуск всех enabled без --source
-      закреплён отдельным тестом. RuTracker inventory дополнен сводкой category_groups
-      рядом с native форумами, с отдельным ungrouped и группировкой cached данных
-      по forum_id; JSON/HTML и тесты обновлены. Уточнение: HTML coverage N×N,
-      Category/Included forums/Other, NDJSON bytes и явно оценочный zlib размер;
-      native форумы в details, Relative count убран. Эти изменения также ожидают CI.
-      Production пересборка, точный DocSeries и физический CSV export двух каталогов
-      пока не проверены/не реализованы.
+- [x] Компактный inventory layout: deleted inventory, profile-controlled
+      extra_fields, forum-ID category groups, отдельные Video/Music правила,
+      N×N source coverage, Category/Other, NDJSON bytes и оценка zlib. Отчёт и
+      fixtures проверяются `tools/grabber-test.py` в Linux CI.
+- [ ] Каталог/публикация: production пересборка на свежей базе; точная классификация
+      DocSeries и неоднозначных форумов; проверка групп на живых выборках; физический
+      экспорт двух CSV каталогов и окончательный выбор одного списка с shard policy
+      или двух независимых списков. Ограничения: `docs/catalog-layout.md`.
 
 - [x] Отдельный Python Grabber реализован в `tools/grabber.py`, `grabber_lib.py`,
       `grabber_adapters.py` и `grabber_templates.py`. Источники независимо включаются
@@ -356,8 +353,13 @@
 - [ ] Обложки, остаток: лимит и очистка каталога `covers/`, срок жизни отметки `.none`,
       ручной выбор файла-обложки и загрузка своей картинки в API, кадр для MP4 без
       `faststart`, ffmpeg на консолях. См. `docs/covers.md` («Что не сделано»).
-- [ ] Репрезентативный большой набор данных и измерения размера сегментов, индекса,
-      паков и времени поиска; на их основе уточнить лимиты клиентов.
+- [x] Первый измеренный large-catalog baseline: 20 000 выбранных записей,
+      lazy media packs, compressed segments, search latency, cold start и RSS.
+      Профиль входит в Linux CI; метрики и границы измерений — `docs/media-shards.md`.
+- [ ] Расширить выборку до production-масштаба (включая 1.8 млн записей) и сравнить
+      один каталог с shard selection против двух независимых списков; по результатам
+      уточнить клиентские лимиты. Первый 20k baseline не доказывает масштабирование
+      на полный inventory.
 
 ### Этап 6: проверка сетевой достижимости и port mapping — поздний этап
 
@@ -379,6 +381,52 @@
       Справка: [libtorrent UPnP/NAT-PMP settings](https://libtorrent.org/reference-Settings.html),
       [session port mapping](https://libtorrent.org/reference-Session.html) и
       [pinned NAT-PMP/PCP mapper](https://github.com/arvidn/libtorrent/blob/9d7443f467147d1784fb7516d2a882db1abb5a8b/src/natpmp.cpp).
+
+## Этап 5: native API, внешние плееры и HTTPS (PR #45)
+
+Реализация идёт в `feature/native-api-silo-ssl` от `master`, PR #45 открыт.
+Статусы [x] означают реализацию и проверяемые тесты в этой ветке, а не факт
+merge. pPlay PR #17 также открыт; его embedded callback использует существующий
+pPlay HTTP/TLS transport. Silo plugin остаётся поисковым адаптером и передаёт
+выбранный magnet в Silo через host API; HTTPS transport ему не добавляется.
+
+- [x] Перевести web-ui и pPlay client adapter на версионированный `/api/v1`
+      (P2Play PR #45, pPlay PR #17); соответствующие PR остаются открыты до merge.
+- [x] Исправить маршруты Linux-теста `Live Silo MediaMesh playback`: внешний Silo
+      использует `/api`, P2Play — `/api/v1`. Проверка готовности проходит на
+      локальном HTTP-стенде; после патча пользователь подтвердил успешную сборку.
+- [x] Удалить MatriX и старый unversioned Silo REST API, HTTP Basic и связанные
+      сборочные опции/тесты. Сохранить `torrs://` и `.torrs` как форматы Android/pPlay.
+- [x] Один постоянный API-токен на пользователя; повторный login его не меняет,
+      явный reset отзывает старые ссылки и Bearer-сессии. Проверяется
+      `tools/auth-test.py`, включая сохранение токена после рестарта.
+- [x] Web UI копирует share URL как для playable file, так и для всего торрента;
+      ссылки используют per-user token и отзываются через explicit token reset.
+      Проверки: `tools/ui-test.py` и `docs/native-api-security.md`.
+- [x] Silo plugin ищет только в подписанных MediaMesh-каталогах и передаёт
+      выбранный magnet непосредственно в Silo через host API.
+      Списки обнаруживаются и добавляются по публичному ключу в разделе Lists.
+- [x] Ветка поддерживает вложенный HTTP-префикс. `tools/ui-test.py` проверяет
+      404 без полного префикса и URL потока с префиксом.
+- [x] Android открывает `magnet:` и `torrs://` и отправляет исходную ссылку в
+      native API; карточку и постер разбирает сервер. Проверка APK на устройстве
+      ещё не выполнена. Web UI уже поддерживает добавление карточек и редактирование
+      названия, категории и постера.
+- [x] Исправить распознавание PNG и не вызывать HTTP-колбэк без проверенного IPv4.
+- [x] HTTPS URL-постеров на всех платформах: Linux — системное CA-хранилище через
+      libcurl; Android — системный CA store через аутентифицированный loopback
+      SSLSocket bridge; Switch — доверенные CA из libnx SSL service; PS4/PS5 —
+      bundle `data/ca/cacert.pem`. pPlay embedded переиспользует pPlay libcurl и
+      сетевую TLS preference. Проверка цепочки и hostname включена по умолчанию.
+      Redirect без auto-follow, повторная SSRF/DNS проверка каждого hop, downgrade
+      HTTPS→HTTP запрещён. Тест: `tools/https-test.py` (CA/hostname/pin/redirect/size).
+- [x] Регрессионные проверки token persistence/reset (`auth-test.py`), share links,
+      non-persistent preview/base-path (`ui-test.py`), Silo native magnet hand-off
+      (Silo plugin/live harness) и HTTPS certificate/hostname/DNS pin/redirect/body
+      limits (`https-test.py`). Пяти-платформенный CI — обязательный merge gate PR #45.
+
+Контракт: `docs/native-api-security.md`. Источник TLS для embedded mode:
+`pPlay/dev`, `src/net/net_http.cpp`, `Io::tlsVerify()`.
 
 ## Инварианты протокола
 

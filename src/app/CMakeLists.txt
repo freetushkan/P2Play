@@ -3,6 +3,7 @@
 set(APP_SRC
         main.cpp
         platform.cpp
+        https.cpp
 )
 
 # the crash handlers of pPlay, a file a platform
@@ -38,6 +39,41 @@ elseif (PLATFORM_LINUX)
     target_link_options(p2play PRIVATE -rdynamic)
 endif ()
 target_compile_options(p2play PRIVATE -g)
+
+# Standalone outbound HTTPS transport. Android uses its system SSLSocket bridge; all
+# other targets use libcurl, with OS trust on Linux and the platform CA source elsewhere.
+if (NOT PLATFORM_ANDROID)
+    find_package(CURL REQUIRED)
+    target_include_directories(p2play PRIVATE ${CURL_INCLUDE_DIRS})
+    target_link_libraries(p2play PRIVATE ${CURL_LIBRARIES})
+    if (PLATFORM_SWITCH)
+        # Switch curl uses mbedTLS plus zlib/zstd (same link dependencies as pPlay).
+        target_link_libraries(p2play PRIVATE mbedtls mbedx509 mbedcrypto zstd z)
+    elseif (PLATFORM_PS4)
+        # PS4 curl uses mbedTLS and zlib.
+        target_link_libraries(p2play PRIVATE mbedtls mbedx509 mbedcrypto z)
+    elseif (PLATFORM_PS5)
+        # The PS5 portlib curl is static; keep all of its OpenSSL/PSL/compression
+        # dependencies after libcurl, as in pPlay's PS5 link set.
+        target_link_libraries(p2play PRIVATE psl ssl crypto zstd z m)
+    endif ()
+endif ()
+
+if (PLATFORM_PS4 OR PLATFORM_PS5)
+    file(READ ${PROJECT_SOURCE_DIR}/data/ca/cacert.pem P2P_CA_BUNDLE)
+    configure_file(https_ca_bundle.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/https_ca_bundle.hpp @ONLY)
+    target_include_directories(p2play PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+    target_compile_definitions(p2play PRIVATE P2P_HAS_EMBEDDED_CA=1)
+endif ()
+
+if (PLATFORM_LINUX)
+    add_executable(p2play_https_test EXCLUDE_FROM_ALL
+            ${PROJECT_SOURCE_DIR}/tools/https-transport-test.cpp https.cpp)
+    target_include_directories(p2play_https_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src/core ${CURL_INCLUDE_DIRS})
+    target_compile_definitions(p2play_https_test PRIVATE P2P_HTTPS_TEST=1)
+    target_link_libraries(p2play_https_test PRIVATE ${CURL_LIBRARIES})
+endif ()
 
 set(RELEASE_DIR ${CMAKE_BINARY_DIR}/release/p2play)
 # the unstripped binary of the release, for crash.log offsets (CI: P2Play-Symbols-<platform>)

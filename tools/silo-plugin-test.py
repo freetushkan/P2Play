@@ -2,7 +2,7 @@
 """Run MediaMesh tests in an isolated copy of the exact upstream Silo tree.
 
 No changes to Silo or the native P2Play core are made. Requires git and Go >=1.26.
-An existing checkout can avoid a network clone: --upstream /path/to/TorrServer.
+An existing checkout can avoid a network clone: --upstream /path/to/silo-source.
 """
 import argparse
 import os
@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 
 PIN = "3610db846fd2132f06aa626a4cb94f4a0cfa69ae"
+# This upstream repository carries the Silo plugin host branch used only by this test harness.
 UPSTREAM = "https://github.com/YouROK/TorrServer.git"
 
 
