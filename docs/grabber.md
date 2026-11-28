@@ -50,10 +50,13 @@ All built-in source types are selected through `SOURCE_ADAPTERS` in
 wrappers around the first working handlers, and new/custom parser types are added
 there without changing the SQLite/export pipeline.
 
-- **torrents-csv-data:** reads an existing local Git checkout or a configured local
-  CSV file; it never clones/fetches the large dataset. For a Git checkout it records
-  HEAD, the HEAD blob OID and the worktree hash. A changed worktree is streamed and
-  diffed by infohash. Title regex include/exclude filters, `any`/`all` matching
+- **torrents-csv-data:** reads an existing local Git checkout, a local CSV file,
+  or a direct HTTPS URL. To download without Git, set `url` and
+  `remote_enabled: true`, and remove `repo` and `path` (local inputs take priority).
+  Each run streams the full remote CSV into temporary storage (up to 16 GiB),
+  checks the response length when provided, and compares SHA-256 before parsing.
+  The temporary file is removed after the run. Git mode still records HEAD,
+  the HEAD blob OID and the worktree hash. Title regex include/exclude filters, `any`/`all` matching
   and configurable `created_unix`/`published` date policy are supported.
   Seeder/leecher/completed and scrape/published metrics stay in local provenance.
 - **Rutor:** reads a local `rutor.ls` raw-DEFLATE cache. A remote URL is used only

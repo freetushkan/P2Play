@@ -13,8 +13,6 @@
       "type": "csv",
       "enabled": false,
       "priority": 10,
-      "repo": "../../sources/torrents-csv-data",
-      "data_file": "torrents.csv",
       "date_field": "created_unix",
       "inventory_categories": {
         "Anime": [
@@ -58,7 +56,7 @@
         }
       },
       "inventory_category_mode": "first",
-      "_how_to_get": "git clone https://codeberg.org/heretic/torrents-csv-data.git",
+      "_how_to_get": "Direct HTTPS snapshot; no Git checkout required",
       "inventory_shard_map": {
         "Anime": "anime",
         "MovieUHD": "movies-uhd",
@@ -68,19 +66,21 @@
         "MusicLossy": "music-lossy",
         "MusicUnknown": "music-other",
         "Other": "other"
-      }
+      },
+      "url": "https://codeberg.org/heretic/torrents-csv-data/raw/branch/main/torrents.csv",
+      "remote_enabled": true,
+      "timeout": 60
     },
     {
       "id": "rutor",
       "type": "rutor",
       "enabled": false,
       "priority": 20,
-      "path": "../../sources/rutor.ls",
       "size_unit": "binary",
-      "remote_enabled": false,
-      "url": "",
+      "remote_enabled": true,
+      "url": "https://releases.yourok.ru/torr/rutor.ls",
       "timeout": 30,
-      "_how_to_get": "wget http://releases.yourok.ru/torr/rutor.ls",
+      "_how_to_get": "Direct HTTPS snapshot",
       "inventory_shard_map": {
         "Anime": "anime",
         "Movie": "movies",

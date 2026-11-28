@@ -7,6 +7,7 @@ import csv
 import datetime as dt
 import decimal
 import hashlib
+import http.client
 import itertools
 import json
 import os
@@ -16,6 +17,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -735,9 +737,58 @@ def _compile_inventory_title_groups(source: Dict[str, Any]) -> Dict[str, List[re
     return compiled
 
 
+def _download_csv(url: str, timeout: int, path: Path) -> str:
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise SourceError("remote CSV URL must use HTTPS")
+    request = urllib.request.Request(url, headers={"User-Agent": "P2Play-Grabber/1.0",
+                                                   "Accept-Encoding": "identity"})
+    digest = hashlib.sha256()
+    progress = gp.active()
+    received = 0
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response, path.open("wb") as stream:
+            if (response.status != 200 or response.headers.get("Content-Range") is not None
+                    or urllib.parse.urlsplit(response.geturl()).scheme != "https"):
+                raise SourceError("remote CSV requires a complete HTTPS response")
+            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                raise SourceError("remote CSV response must not use content encoding")
+            length = response.headers.get("Content-Length")
+            total = int(length) if length is not None and not response.chunked else None
+            if total is not None and not 0 <= total <= MAX_LOCAL_CSV_BYTES:
+                raise SourceError("remote CSV exceeds the size limit")
+            while chunk := response.read(1024 * 1024):
+                received += len(chunk)
+                if received > MAX_LOCAL_CSV_BYTES:
+                    raise SourceError("remote CSV exceeds the size limit")
+                stream.write(chunk)
+                digest.update(chunk)
+                if progress:
+                    progress.update(received, total, "bytes downloaded")
+            if total is not None and received != total:
+                raise SourceError("remote CSV download was incomplete")
+    except urllib.error.HTTPError as exc:
+        raise SourceError(f"remote CSV download failed (HTTP {exc.code})") from exc
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise SourceError("remote CSV download failed (network, response or temporary storage)") from exc
+    return digest.hexdigest()
+
+
 def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Dict[str, Any],
                 quarantine_dir: Path) -> Dict[str, Any]:
     source_id = str(source["id"])
+    if not (source.get("repo") or source.get("path")) and source.get("url") and source.get("remote_enabled") is True:
+        timeout = int(source.get("timeout", 60))
+        if not 1 <= timeout <= 300:
+            raise SourceError("remote timeout must be between 1 and 300 seconds")
+        gp.substage(f"{source_id}: downloading CSV", 0, .2)
+        try:
+            with tempfile.TemporaryDirectory(prefix="p2play-csv-") as tmp:
+                path = Path(tmp) / "torrents.csv"
+                digest = _download_csv(str(source["url"]), timeout, path)
+                return _scan_csv(source, state, run_id, publisher, quarantine_dir, path,
+                                 {"kind": "http-csv", "file_sha256": digest}, digest, "remote:torrents.csv")
+        except OSError as exc:
+            raise SourceError("remote CSV temporary storage failed") from exc
     gp.substage(f"{source_id}: checking CSV revision", 0, .2)
     repo_text = source.get("repo")
     if repo_text:
@@ -760,8 +811,13 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
         checkpoint = {"kind": "file-csv", "file_sha256": _file_sha256(path) if path.is_file() else ""}
         revision_key = checkpoint["file_sha256"]
     else:
-        return {"status": "skipped", "reason": "local CSV checkout/path is not configured",
+        return {"status": "skipped", "reason": "local CSV checkout/path is not configured and remote CSV is not enabled",
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
+    return _scan_csv(source, state, run_id, publisher, quarantine_dir, path, checkpoint, revision_key, str(path))
+
+
+def _scan_csv(source, state, run_id, publisher, quarantine_dir, path, checkpoint, revision_key, ref):
+    source_id = str(source["id"])
     if not path.is_file():
         raise SourceError("configured CSV file does not exist")
     from grabber_policy import policy_revision
@@ -798,7 +854,7 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                 counters["fetched"] += 1
                 if progress and counters["fetched"] % 256 == 1:
                     progress.update(stream.buffer.tell(), total_bytes, "bytes read")
-                source_ref = f"{path}:{reader.line_num}"
+                source_ref = f"{ref}:{reader.line_num}"
                 try:
                     title = _clean_text(row.get("name"), "title")
                     if not title:

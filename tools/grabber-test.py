@@ -388,6 +388,41 @@ class GrabberTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_remote_csv_inventory_and_truncated_download(self):
+        from unittest.mock import patch
+
+        payload = self.csv_path.read_bytes()
+
+        class Response(io.BytesIO):
+            status = 200
+            chunked = False
+
+            def __init__(self, length):
+                super().__init__(payload)
+                self.headers = {"Content-Length": str(length)}
+
+            def geturl(self):
+                return "https://example.test/torrents.csv"
+
+        source = {"id": "csv", "type": "csv", "url": "https://example.test/torrents.csv",
+                  "remote_enabled": True, "enabled": True}
+        self.profile.write_text(json.dumps({"version": 1, "sources": [source]}))
+
+        def inventory():
+            return gi.run_inventory(self.profile, self.report, self.state)["sources"]["csv"]
+
+        with patch.object(g.urllib.request, "urlopen", side_effect=[
+                Response(len(payload)), Response(len(payload)), Response(len(payload) + 1)]):
+            first = inventory()
+            self.assertEqual(first["status"], "success")
+            self.assertGreater(first["accepted"], 0)
+            self.assertEqual(first["checkpoint_after"]["file_sha256"], g._sha256(payload))
+            self.assertEqual(inventory()["status"], "unchanged")
+            failed = inventory()
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("incomplete", failed["reason"])
+            self.assertEqual(failed["metrics"]["active_records"], first["metrics"]["active_records"])
+
     def test_csv_first_group_and_policy_refresh(self):
         self.csv_path.write_text("infohash,name\n" + "e" * 40 + ",Film x264 AAC\n" +
                                  "f" * 40 + ",Album AAC\n")
