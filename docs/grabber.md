@@ -140,6 +140,16 @@ normal source filters to keep the published catalog within them.
 
 The local state DB, work outputs, quarantine and credentials belong outside Git.
 
+## CLI progress
+
+Grabber commands print a heartbeat to stderr every 10 seconds and a final line
+on completion. Stdout remains JSON. Use `--no-progress` after the subcommand
+to silence the heartbeat. The overall percentage estimates completed workflow
+stages, not elapsed time. Stage progress and ETA use bytes read or rows processed
+when a total is known; buffered reads may lead parsing. Network waits and bulk
+SQL can have unknown progress and ETA. No total runtime ETA is extrapolated
+from stage weights.
+
 ## Independent source inventory (no merge / no publishing)
 
 Use `grabber.py inventory` before designing lists or shards. This mode processes

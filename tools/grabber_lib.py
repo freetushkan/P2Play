@@ -10,7 +10,9 @@ import hashlib
 import itertools
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
+
 import re
 import sqlite3
 import subprocess
@@ -21,6 +23,7 @@ import urllib.request
 import uuid
 import zlib
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+import grabber_progress as gp
 
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_LOCAL_CSV_BYTES = 16 * 1024 * 1024 * 1024
@@ -66,12 +69,18 @@ def _sha256(data: bytes) -> str:
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
+    progress = gp.active()
+    total = path.stat().st_size if progress else None
+    read = 0
     with path.open("rb") as stream:
         while True:
             chunk = stream.read(1024 * 1024)
             if not chunk:
                 break
             digest.update(chunk)
+            if progress:
+                read += len(chunk)
+                progress.update(read, total, "bytes")
     return digest.hexdigest()
 
 
@@ -726,6 +735,7 @@ def _compile_inventory_title_groups(source: Dict[str, Any]) -> Dict[str, List[re
 def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Dict[str, Any],
                 quarantine_dir: Path) -> Dict[str, Any]:
     source_id = str(source["id"])
+    gp.substage(f"{source_id}: checking CSV revision", 0, .2)
     repo_text = source.get("repo")
     if repo_text:
         repo = Path(repo_text).expanduser().resolve()
@@ -767,6 +777,9 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
         if getattr(state, "inventory_mode", False) else {}
     )
     quarantine_path = quarantine_dir / f"{source_id}.jsonl"
+    gp.substage(f"{source_id}: scanning CSV", .2, .9)
+    progress = gp.active()
+    total_bytes = path.stat().st_size if progress else None
     old_limit = csv.field_size_limit()
     csv.field_size_limit(MAX_CSV_FIELD_BYTES)
     try:
@@ -776,6 +789,8 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
                 raise SourceError("CSV requires infohash and name columns")
             for row in reader:
                 counters["fetched"] += 1
+                if progress and counters["fetched"] % 256 == 1:
+                    progress.update(stream.buffer.tell(), total_bytes, "bytes read")
                 source_ref = f"{path}:{reader.line_num}"
                 try:
                     title = _clean_text(row.get("name"), "title")
@@ -843,6 +858,7 @@ def _csv_source(source: Dict[str, Any], state: State, run_id: str, publisher: Di
 def _rutor_source(source: Dict[str, Any], state: State, run_id: str, publisher: Dict[str, Any],
                   quarantine_dir: Path) -> Dict[str, Any]:
     source_id = str(source["id"])
+    gp.substage(f"{source_id}: loading Rutor snapshot", 0, .25)
     if source.get("path"):
         path = Path(str(source["path"])).expanduser().resolve()
         if not path.is_file():
@@ -866,6 +882,7 @@ def _rutor_source(source: Dict[str, Any], state: State, run_id: str, publisher: 
     if previous and previous.get("file_sha256") == digest:
         return {"status": "unchanged", "checkpoint": checkpoint,
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
+    gp.substage(f"{source_id}: decoding Rutor snapshot", .25, .4)
     expanded = _decompress_raw_deflate(compressed)
     try:
         payload = json.loads(expanded)
@@ -895,7 +912,8 @@ def _rutor_source(source: Dict[str, Any], state: State, run_id: str, publisher: 
     size_mode = str(source.get("size_unit", "binary"))
     if size_mode not in {"binary", "decimal"}:
         raise SourceError("Rutor size_unit must be binary or decimal")
-    for index, item in enumerate(payload):
+    gp.substage(f"{source_id}: normalizing records", .4, .9)
+    for index, item in enumerate(gp.track(payload, len(payload))):
         source_row = f"{source_ref}#{index + 1}"
         try:
             if not isinstance(item, dict):
@@ -1129,6 +1147,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                                   "created_at": int(time.time()), "sources": {}, "merge_conflicts": [],
                                   "counts": {"full": 0, "delta": 0}}
         enabled = 0
+        source_count = sum(item.get("enabled", True) is True for item in sources)
         successful_or_unchanged = 0
         for source in sources:
             source_id = str(source["id"])
@@ -1137,6 +1156,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                 result = {"status": "disabled", "reason": "source disabled in profile"}
                 state.set_source_result(run_id, source_id, "disabled", None, result)
             else:
+                gp.source(source_id, enabled, source_count, 2, 55)
                 enabled += 1
                 source_type = str(source.get("type") or source_id)
                 before = state.checkpoint(source_id)
@@ -1150,6 +1170,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                     else:
                         result = adapter(source, config.get("templates", {}), state,
                                          run_id, publisher, quarantine_dir)
+                    gp.substage(f"{source_id}: saving scan results", .9, 1)
                     state.db.execute(f"RELEASE SAVEPOINT {savepoint}")
                     result["checkpoint_before"] = before
                     result["priority"] = int(source.get("priority", 0))
@@ -1174,6 +1195,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                     state.set_source_result(run_id, source_id, "failed", None, result)
             report["sources"][source_id] = result
 
+        gp.stage("collecting category labels", 55, 65)
         # Category inventory remains useful when a source file has not changed.
         for saved in state.db.execute("SELECT source_id,categories_json FROM observations").fetchall():
             for category in json.loads(saved["categories_json"]):
@@ -1202,8 +1224,9 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
         delta_count = 0
         full_temp = full_path.with_name(full_path.name + f".{run_id}.tmp")
         delta_temp = delta_path.with_name(delta_path.name + f".{run_id}.tmp")
+        gp.stage("merging sources and writing full/delta catalogs", 65, 95)
         with full_temp.open("wb") as full_stream, delta_temp.open("wb") as delta_stream:
-            for ih, rows, previous, override, suppressed in state.iter_catalog_inputs(run_id):
+            for ih, rows, previous, override, suppressed in gp.track(state.iter_catalog_inputs(run_id)):
                 if suppressed:
                     continue
                 merged, conflict = _merge_observations(rows, publisher)
@@ -1238,6 +1261,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
                 if previous is None or _record_fingerprint(previous) != _record_fingerprint(merged):
                     _write_ndjson_line(delta_stream, digest_delta, merged)
                     delta_count += 1
+            gp.stage("writing suppression tombstones and flushing catalogs", 95, 98)
             # Explicit manual suppressions are represented as shard-correct tombstones
             # in ordinary delta mode. Snapshot-source omission never creates a tombstone.
             for row in state.db.execute("SELECT s.ih,s.record_json FROM staged_records s JOIN suppressions x ON x.ih=s.ih ORDER BY s.ih"):
@@ -1254,6 +1278,7 @@ def run_grabber(profile_path: Path, full_path: Path, delta_path: Path,
         with state.db:
             state.finalize(run_id, full_path, delta_path, report_path, digest_full.hexdigest(),
                            digest_delta.hexdigest(), full_count, delta_count)
+        gp.stage("writing category dumps and review reports", 98, 99)
         if dump_categories:
             report["category_files"] = state.write_category_dump(run_id, dump_categories.expanduser().resolve())
         report["status"] = "degraded" if report["merge_conflicts"] or any(
@@ -1386,18 +1411,21 @@ def ack_run(state_path: Path, run_id: str, full_file: Path,
         expected_full = Path(run["full_path"]).resolve()
         if full_file != expected_full:
             raise GrabberError("--file must point to the full catalog file recorded for this run")
+        gp.stage("verifying full catalog checksum", 5, 20)
         current_full_sha = _file_sha256(full_file)
         unchanged = current_full_sha == run["full_sha256"]
         selected_mode = ("delta" if unchanged else "replace") if mode == "auto" else mode
         if selected_mode == "delta" and not unchanged:
             raise GrabberError("full catalog was edited; publish it with --replace instead of the delta")
         input_path = Path(run["delta_path"] if selected_mode == "delta" else run["full_path"]).resolve()
+        gp.stage("checking publication file", 20, 30)
         if selected_mode == "delta" and _file_sha256(input_path) != run["delta_sha256"]:
             raise GrabberError("delta file was edited independently; restore it from the report or use a reviewed full replacement")
         temp_name = f"ack_{uuid.uuid4().hex}"
         state.db.execute(f"CREATE TEMP TABLE {temp_name}(ih TEXT PRIMARY KEY,record_json TEXT NOT NULL)")
         count = 0
-        for record in _read_ndjson(input_path):
+        gp.stage("validating publication records", 30, 55)
+        for record in gp.track(_read_ndjson(input_path), accepted_count):
             if "del" in record:
                 # Tombstones are legal only in the delta stream, never in a replacement.
                 if selected_mode == "replace":
@@ -1415,6 +1443,7 @@ def ack_run(state_path: Path, run_id: str, full_file: Path,
         if count != accepted_count:
             raise GrabberError(f"publisher accepted-count {accepted_count} does not match file record count {count}")
 
+        gp.stage("applying publisher acknowledgement", 55, 85)
         with state.db:
             if selected_mode == "replace":
                 # Manual omissions become durable suppressions. Manual edits/additions
@@ -1446,7 +1475,8 @@ def ack_run(state_path: Path, run_id: str, full_file: Path,
                         state.db.execute("INSERT OR REPLACE INTO staged_records VALUES(?,?,?)",
                                          (record["ih"], _json(record), _record_fingerprint(record)))
 
-            for row in state.db.execute("SELECT source_id,ih,priority,record_json,categories_json,source_ref,revision,provenance_json FROM run_observations WHERE run_id=?", (run_id,)).fetchall():
+            gp.stage("committing observations and checkpoints", 85, 99)
+            for row in gp.track(state.db.execute("SELECT source_id,ih,priority,record_json,categories_json,source_ref,revision,provenance_json FROM run_observations WHERE run_id=?", (run_id,)).fetchall()):
                 state.db.execute("INSERT OR REPLACE INTO observations VALUES(?,?,?,?,?,?,?,?)",
                                  tuple(row))
             for row in state.db.execute("SELECT source_id,checkpoint_json,status,report_json FROM run_sources WHERE run_id=?", (run_id,)).fetchall():
@@ -1580,6 +1610,8 @@ def build_parser():
     manual.add_argument("--state", required=True, type=Path)
     manual.add_argument("--kind", choices=("suppression", "override", "both"), default="both")
     manual.add_argument("--ih")
+    for command in (run, inventory, ack, discard, manual):
+        command.add_argument("--no-progress", action="store_true", help="disable stderr progress")
     return parser
 
 
@@ -1587,23 +1619,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "run":
-            state_path = args.state or (args.report.parent / "grabber.sqlite3")
-            result = run_grabber(args.profile, args.output, args.delta, args.report, state_path, args.dump_categories)
-        elif args.command == "inventory":
-            from grabber_inventory import run_inventory
-            state_path = args.state or (args.report.parent / "inventory.sqlite3")
-            result = run_inventory(
-                args.profile, args.report, state_path, args.categories_dir, args.sources
-            )
-        elif args.command == "ack":
-            result = ack_run(args.state, args.run_id, args.file, args.accepted_count, args.mode)
-        elif args.command == "discard":
-            result = discard_run(args.state, args.run_id)
-        elif args.command == "manual":
-            result = manual_state(args.state, args.action, args.kind, args.ih)
-        else:
-            return 2
+        with nullcontext() if args.no_progress else gp.Progress(args.command):
+            if args.command == "run":
+                state_path = args.state or (args.report.parent / "grabber.sqlite3")
+                result = run_grabber(args.profile, args.output, args.delta, args.report, state_path, args.dump_categories)
+            elif args.command == "inventory":
+                from grabber_inventory import run_inventory
+                state_path = args.state or (args.report.parent / "inventory.sqlite3")
+                result = run_inventory(
+                    args.profile, args.report, state_path, args.categories_dir, args.sources
+                )
+            elif args.command == "ack":
+                result = ack_run(args.state, args.run_id, args.file, args.accepted_count, args.mode)
+            elif args.command == "discard":
+                gp.stage("discarding pending run", 0, 99)
+                result = discard_run(args.state, args.run_id)
+            elif args.command == "manual":
+                gp.stage(f"manual decisions: {args.action}", 0, 99)
+                result = manual_state(args.state, args.action, args.kind, args.ih)
+            else:
+                return 2
         print(_json(result))
         return 0
     except (GrabberError, OSError, sqlite3.Error) as exc:

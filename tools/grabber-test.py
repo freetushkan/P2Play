@@ -63,6 +63,48 @@ class GrabberTests(unittest.TestCase):
         encoder = zlib.compressobj(level=9, wbits=-15)
         self.rutor_path.write_bytes(encoder.compress(raw) + encoder.flush())
 
+    def test_progress_reports_stage_eta(self):
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+        from grabber_progress import Progress
+        output = io.StringIO()
+        with redirect_stderr(output), patch("grabber_progress.time.monotonic", side_effect=[0, 5, 15]):
+            progress = Progress("inventory")
+            self.assertEqual(progress.interval, 10)
+            progress.stage("rutracker: scanning XML", 20, 60)
+            progress.update(25, 100, "bytes")
+            progress.emit()
+        self.assertIn("[inventory ~30.0%] rutracker: scanning XML", output.getvalue())
+        self.assertIn("stage 25.0% (25/100 bytes) | stage ETA ~30s", output.getvalue())
+        self.assertIn("overall ETA unknown", output.getvalue())
+
+    def test_progress_heartbeat_during_opaque_work(self):
+        from unittest.mock import patch
+        from grabber_progress import Progress, stage
+        seen = threading.Event()
+        progress = Progress("inventory", interval=.001)
+        with patch.object(progress, "emit", side_effect=seen.set) as emit:
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                with progress:
+                    stage("calculating source intersections", 96, 98)
+                    self.assertTrue(seen.wait(2))
+                    raise RuntimeError("fixture failure")
+            self.assertTrue(emit.called)
+            self.assertFalse(progress.done)
+            self.assertFalse(progress.thread.is_alive())
+
+    def test_inventory_cli_progress_preserves_json_stdout(self):
+        self.write_profile()
+        command = [sys.executable, "-I", str(Path(__file__).with_name("grabber.py")),
+                   "inventory", "--profile", str(self.profile), "--report", str(self.root / "report.json")]
+        for flags in ([], ["--no-progress"]):
+            result = subprocess.run(command + flags, check=True, text=True, capture_output=True)
+            self.assertEqual(json.loads(result.stdout)["status"], "complete")
+            if flags:
+                self.assertEqual(result.stderr, "")
+            else:
+                self.assertIn("[inventory 100%] finished | ETA 0s", result.stderr)
+
     def write_profile(self, csv_enabled=True, rutor_enabled=True):
         config = {
             "version": 1,

@@ -21,6 +21,7 @@ from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import grabber_lib as g
+import grabber_progress as gp
 from grabber_templates import TemplateError, parse_template
 
 
@@ -370,6 +371,7 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
         raise g.SourceError("max_topics must be between 1 and 50,000,000")
     if not path.is_file() or path.stat().st_size > compressed_limit:
         raise g.SourceError("RuTracker dump is missing or exceeds the compressed size limit")
+    gp.substage(f"{source_id}: checking XML snapshot checksum", 0, .2)
     digest = g._file_sha256(path)
     is_named_xz = path.name.lower().endswith(".xz")
     checkpoint = {"kind": "rutracker-xml-xz" if is_named_xz else "rutracker-xml",
@@ -392,6 +394,8 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
                 "errors": [], "compressed_bytes": path.stat().st_size,
                 "topic_limit": max_topics}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
+    gp.substage(f"{source_id}: scanning XML snapshot", .2, .9)
+    progress = gp.active()
     raw = None
     try:
         raw = path.open("rb")
@@ -403,7 +407,10 @@ def rutracker_source(source: Dict[str, Any], templates, state, run_id: str,
         xml_stream = _XzReader(raw, memory_limit) if is_xz else raw
         bounded = _BoundedXmlReader(xml_stream, expanded_limit)
         stack: List[ET.Element] = []
-        for event, element in ET.iterparse(bounded, events=("start", "end")):
+        events = ET.iterparse(bounded, events=("start", "end"))
+        for index, (event, element) in enumerate(events):
+            if progress and index % 4096 == 0:
+                progress.update(raw.tell(), counters["compressed_bytes"], "input bytes read")
             if event == "start":
                 stack.append(element)
                 continue
@@ -635,7 +642,12 @@ def torznab_source(source: Dict[str, Any], templates, state, run_id: str,
                 "checkpoint": dict(previous), "errors": []}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
     seen_guids = set()
-    for page in range(1 if is_rss else pages):
+    page_count = 1 if is_rss else pages
+    for page in range(page_count):
+        start = .1 + .8 * page / page_count
+        end = .1 + .8 * (page + 1) / page_count
+        middle = (start + end) / 2
+        gp.substage(f"{source_id}: fetching feed page {page + 1}", start, middle)
         if is_rss:
             url = endpoint
         else:
@@ -645,7 +657,8 @@ def torznab_source(source: Dict[str, Any], templates, state, run_id: str,
         data = _http_bytes(url, timeout)
         items = _rss_items(data, category_map)
         counters["fetched"] += len(items)
-        for item in items:
+        gp.substage(f"{source_id}: processing feed page {page + 1}", middle, end)
+        for item in gp.track(items, len(items)):
             if counters["parsed"] + counters["rejected"] >= max_items:
                 break
             item_id = str(item.get("source_id") or item.get("_source_id") or "unknown")[:256]
@@ -744,6 +757,7 @@ def template_source(source: Dict[str, Any], templates, state, run_id: str,
     if previous and previous.get("file_sha256") == digest and previous.get("template") == template_name:
         return {"status": "unchanged", "checkpoint": checkpoint,
                 "fetched": 0, "parsed": 0, "accepted": 0, "filtered": 0, "rejected": 0, "duplicates": 0}
+    gp.substage(f"{source_id}: parsing template payload", .2, .4)
     try:
         items = parse_template(payload, template, source_ref)
     except TemplateError as exc:
@@ -754,7 +768,8 @@ def template_source(source: Dict[str, Any], templates, state, run_id: str,
                 "checkpoint": checkpoint, "errors": []}
     quarantine = quarantine_dir / f"{source_id}.jsonl"
     title_filter = g._compile_title_filter(source)
-    for index, item in enumerate(items):
+    gp.substage(f"{source_id}: processing template records", .4, .9)
+    for index, item in enumerate(gp.track(items, len(items))):
         source_ref = str(item.get("_source_ref") or f"{source_ref}#{index + 1}")
         try:
             if item.get("_error"):

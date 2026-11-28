@@ -17,6 +17,7 @@ import zlib
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import grabber_lib as g
+import grabber_progress as gp
 
 
 SNAPSHOT_SOURCE_TYPES = {"csv", "torrents-csv-data", "rutor", "rutracker", "template"}
@@ -205,7 +206,7 @@ class _CatalogSize:
                 "catalog_zlib_estimate_bytes": self.compressed}
 
 
-def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+def _source_metrics(state: g.State, source_id: str, total=None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     metrics: Dict[str, Any] = {
         "unique_infohashes": 0,
         "active_records": 0,
@@ -243,7 +244,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
         "SELECT ih,record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
         (source_id,),
     )
-    for row in cursor:
+    for row in gp.track(cursor, total):
         metrics["unique_infohashes"] += 1
         record = json.loads(row["record_json"])
         record_categories = json.loads(row["categories_json"] or "[]")
@@ -301,7 +302,7 @@ def _source_metrics(state: g.State, source_id: str) -> Tuple[Dict[str, Any], Lis
     return metrics, ordered
 
 
-def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str, Any]:
+def _rutracker_group_summary(state: g.State, source: Dict[str, Any], total=None) -> Dict[str, Any]:
     """Derive groups from stored forum IDs, never from potentially ambiguous labels."""
     configured = source.get("category_groups", {})
     groups = {name: {**_empty_category(name), "category_ids": [str(i) for i in ids]}
@@ -311,10 +312,10 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
     sizes = {name: _CatalogSize() for name in groups}
     other_size = _CatalogSize()
     observed_ids = set()
-    for row in state.db.execute(
+    for row in gp.track(state.db.execute(
         "SELECT record_json,provenance_json FROM observations WHERE source_id=? ORDER BY ih",
         (str(source["id"]),),
-    ):
+    ), total):
         record = json.loads(row["record_json"])
         provenance = json.loads(row["provenance_json"] or "{}")
         group = by_id.get(str(provenance.get("forum_id", "")))
@@ -341,17 +342,17 @@ def _rutracker_group_summary(state: g.State, source: Dict[str, Any]) -> Dict[str
             "basis": "current profile category_groups applied to stored provenance forum_id"}
 
 
-def _category_summary(state: g.State, source: Dict[str, Any], categories) -> Dict[str, Any]:
+def _category_summary(state: g.State, source: Dict[str, Any], categories, total=None) -> Dict[str, Any]:
     """Native/heuristic categories for all non-forum sources; labels may overlap."""
     entries = {c["name"]: {**_empty_category(c["name"]), "forum_count": None}
                for c in categories if c["name"] != "Other"}
     sizes = {name: _CatalogSize() for name in entries}
     other = {**_empty_category("Other"), "forum_count": None}
     other_size = _CatalogSize()
-    for row in state.db.execute(
+    for row in gp.track(state.db.execute(
         "SELECT record_json,categories_json FROM observations WHERE source_id=? ORDER BY ih",
         (source["id"],),
-    ):
+    ), total):
         record = json.loads(row["record_json"])
         names = list(dict.fromkeys(json.loads(row["categories_json"] or "[]")))
         for name in names or [None]:
@@ -461,7 +462,7 @@ def _write_reports(
     source_reports: Dict[str, Any] = {}
     category_files: Dict[str, str] = {}
 
-    for source in source_configs:
+    for index, source in enumerate(source_configs):
         source_id = str(source["id"])
         source_type = str(source.get("type") or source_id)
         result = dict(source_results.get(source_id, {}))
@@ -470,7 +471,12 @@ def _write_reports(
                 "status": "not-selected" if selected_ids else "disabled",
                 "reason": "source was not selected for this inventory pass",
             }
-        metrics, categories = _source_metrics(state, source_id)
+        gp.source(source_id, index, len(source_configs), 65, 94)
+        gp.substage(f"{source_id}: counting stored observations", 0, .05)
+        total = (state.db.execute("SELECT COUNT(*) FROM observations WHERE source_id=?",
+                                  (source_id,)).fetchone()[0] if gp.active() else None)
+        gp.substage(f"{source_id}: calculating inventory metrics and sizes", .05, .45)
+        metrics, categories = _source_metrics(state, source_id, total)
         warnings = []
         if source_type in {"csv", "torrents-csv-data"} and source.get("filters"):
             warnings.append("CSV title filters are enabled; this inventory covers only matching rows.")
@@ -523,10 +529,12 @@ def _write_reports(
         field_summary = _field_summary(source, source_type)
         if field_summary:
             source_report["field_summary"] = field_summary
+        gp.substage(f"{source_id}: calculating category sizes", .45, .9)
         if source_type != "rutracker":
-            source_report["category_group_summary"] = _category_summary(state, source, categories)
+            source_report["category_group_summary"] = _category_summary(state, source, categories, total)
         if source_type == "rutracker":
-            source_report["category_group_summary"] = _rutracker_group_summary(state, source)
+            source_report["category_group_summary"] = _rutracker_group_summary(state, source, total)
+            gp.substage(f"{source_id}: exporting deleted topics and category report", .9, 1)
             categories_dir.mkdir(parents=True, exist_ok=True)
             deleted_path = categories_dir / f"{_safe_name(source_id)}-deleted.ndjson"
             temporary = deleted_path.with_suffix(".tmp")
@@ -563,6 +571,7 @@ def _write_reports(
         )
         category_files[source_id] = str(category_path)
 
+    gp.stage("calculating cross-source totals", 94, 96)
     totals = state.db.execute(
         """
         SELECT COUNT(*) AS source_observations,
@@ -574,6 +583,7 @@ def _write_reports(
         """SELECT COUNT(DISTINCT ih) FROM observations
            WHERE substr(record_json,1,7)!='{"del":'"""
     ).fetchone()[0]
+    gp.stage("calculating source intersections and coverage", 96, 98)
     result = {
         "version": 1,
         "run_id": run_id,
@@ -622,6 +632,7 @@ def _write_reports(
     elif failing:
         result["status"] = "degraded"
 
+    gp.stage("writing JSON and HTML reports", 98, 99)
     html_path = report_path.with_suffix(".html")
     result["html_report"] = str(html_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -882,6 +893,7 @@ def run_inventory(
         )
         state.db.commit()
 
+        selected_index = 0
         for index, source in enumerate(sources):
             source_id = str(source["id"])
             if source_id not in selected:
@@ -891,6 +903,8 @@ def run_inventory(
                     source_results[source_id] = {"status": "not-selected", "reason": "use --source to inventory this source separately"}
                 continue
 
+            gp.source(source_id, selected_index, len(selected), 2, 65)
+            selected_index += 1
             source_type = str(source.get("type") or source_id)
             before = state.checkpoint(source_id)
             adapter = __import__("grabber_adapters").SOURCE_ADAPTERS.get(source_type)
@@ -905,6 +919,7 @@ def run_inventory(
                     source, config.get("templates", {}), state, run_id,
                     publisher, quarantine_dir,
                 )
+                gp.substage(f"{source_id}: saving inventory observations", .9, 1)
                 state.db.execute(f"RELEASE SAVEPOINT {savepoint}")
                 result["checkpoint_before"] = before
                 result["priority"] = int(source.get("priority", 0))
@@ -965,6 +980,7 @@ def run_inventory(
             state, report_path, categories_dir, run_id, sources,
             source_results, sorted(selected),
         )
+        gp.stage("cleaning up inventory staging", 99, 99)
         state.db.execute("DELETE FROM runs WHERE id=?", (run_id,))
         state.db.commit()
         return report
